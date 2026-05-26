@@ -2,10 +2,32 @@
 
 > Trajectory-distillation king-of-the-hill subnet on Bittensor. Miners submit challengers; the reigning king and challenger duel on SWE-ZERO rollouts judged by an ensemble of LLMs. Full duel traces are published for downstream distillation.
 
+**Subnet:** `ALBEDO_NETUID=97` (finney)
+
+## Repository
+
+Canonical open-source repo for this subnet:
+
+| | |
+|---|---|
+| **GitHub** | https://github.com/unarbos/albedo |
+| **Org / repo** | `unarbos/albedo` |
+| **Default branch** | `main` |
+| **README** | https://github.com/unarbos/albedo/blob/main/README.md |
+| **License** | MIT |
+
+```bash
+git clone https://github.com/unarbos/albedo.git
+cd albedo
+uv venv && source .venv/bin/activate
+uv pip install -e .
+```
+
+Do not use `github.com/albedo/albedo` — that is not this project. The dashboard GitHub icon and all docs point at `unarbos/albedo`.
+
 ## Codebase
 
-- **GitHub:** https://github.com/unarbos/albedo
-- **Layout (repo root = `albedo/`):**
+- **Layout (repo root):**
   - `chain.toml` — active chain, judges, dataset pin, duel knobs (single source of truth)
   - `chain_config.py` — loads `chain.toml` into constants
   - `validator.py` — on-chain reveal scanner, config gate, duel dispatch, weights, dashboard
@@ -17,12 +39,6 @@
   - `scripts/start_eval.sh` — eval-box env + `uvicorn eval:app`
   - `scripts/seed_genesis.py` — one-shot genesis king upload
   - `website/` — static dashboard UI (`index.html`, `dashboard.example.json`, this file)
-- **Setup:**
-  ```bash
-  cd albedo
-  uv venv && source .venv/bin/activate
-  uv pip install -e .
-  ```
 - **Override chain for experiments:** `ALBEDO_CHAIN_OVERRIDE=/path/to/alt.toml`
 
 ## Website
@@ -267,3 +283,15 @@ pm2 start ecosystem.config.js --only albedo-validator
 - Live state: https://us-east-1.hippius.com/albedo/dashboard.json
 - Genesis king weights: `ricdomolm/mini-coder-1.7b@hf:ea686024…` (Qwen3 1.7B); challengers upload to Hippius as `sha256:` manifests
 - Rolling payout: current king + up to four prior kings share emission (`king_chain_depth = 5`)
+
+## Links
+
+- **GitHub:** https://github.com/unarbos/albedo
+- **README:** https://github.com/unarbos/albedo/blob/main/README.md
+- **Dashboard UI:** https://us-east-1.hippius.com/albedo/index.html
+- **Dashboard JSON:** https://us-east-1.hippius.com/albedo/dashboard.json
+- **Eval traces:** https://us-east-1.hippius.com/albedo/evals/
+- **This file:** https://us-east-1.hippius.com/albedo/llms.txt
+- **Hippius registry:** https://registry.hippius.com
+- **SWE-ZERO dataset:** https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories
+- **Genesis model:** https://huggingface.co/ricdomolm/mini-coder-1.7b
