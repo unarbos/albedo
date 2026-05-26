@@ -1,7 +1,7 @@
 """Albedo eval server.
 
 Runs on the GPU box. Manages two long-/short-lived vLLM subprocesses
-(king, challenger), pulls samples from a pinned SWE-ZERO parquet shard,
+(king, challenger), pulls samples from the local SWE-ZERO parquet corpus,
 queries both contestants for the same `(messages_prefix, turn)`, scores
 each reply via Chutes LLM-as-judge with the 3-tier rubric, and emits an
 SSE stream of progress + a final per-judge dimensional verdict (ensemble
@@ -73,16 +73,23 @@ VLLM_STARTUP_TIMEOUT_S = int(os.environ.get("ALBEDO_VLLM_STARTUP_TIMEOUT_S", "30
 VLLM_MAX_MODEL_LEN = int(os.environ.get(
     "ALBEDO_VLLM_MAX_MODEL_LEN", str(chain_config.DUEL_GEN_MAX_MODEL_LEN)
 ))
+# Extra headroom: local tokenizer counts often under-estimate vLLM's chat-template
+# tokenization, causing 400s when prompt + max_tokens exceeds max_model_len.
+VLLM_CONTEXT_SAFETY_MARGIN = int(
+    os.environ.get("ALBEDO_VLLM_CONTEXT_SAFETY_MARGIN", "512")
+)
 # Reserve headroom for generation + vLLM overhead when truncating long trajectories.
 VLLM_PROMPT_TOKEN_BUDGET = max(
     512,
-    VLLM_MAX_MODEL_LEN - chain_config.DUEL_GEN_MAX_TOKENS - 64,
+    VLLM_MAX_MODEL_LEN
+    - chain_config.DUEL_GEN_MAX_TOKENS
+    - 64
+    - VLLM_CONTEXT_SAFETY_MARGIN,
 )
+# Reject duels where too many turns fail vLLM generation (unfair comparison).
+MIN_VALID_TURN_FRAC = float(os.environ.get("ALBEDO_MIN_VALID_TURN_FRAC", "0.8"))
 
-DATASET_SHARD_PATH = os.environ.get(
-    "ALBEDO_DATASET_SHARD_PATH",
-    f"/var/albedo/dataset/{Path(chain_config.DATASET_SHARD).name}",
-)
+DATASET_DIR = os.environ.get("ALBEDO_DATASET_DIR", "/var/albedo/dataset")
 
 # Per-duel concurrency caps. Each "task" = (one model query + one judge call)
 # for one (sample, turn). Two tasks per sample (king + challenger) run side
@@ -232,6 +239,8 @@ class DatasetSink:
         )
         parse_by_judge: dict[str, int] = {}
         for t in turns:
+            if t.get("error"):
+                continue
             for j in t.get("judges", []):
                 if not j.get("parse_ok"):
                     parse_by_judge[j.get("model", "?")] = (
@@ -540,6 +549,12 @@ def _fit_messages_for_vllm(
             hi = mid - 1
 
     if best <= 0:
+        # Last-resort: drop non-system prefix turns until the prompt fits.
+        while len(msgs) > 2 and _chat_prompt_tokens(tok, msgs) > VLLM_PROMPT_TOKEN_BUDGET:
+            drop = next((i for i, m in enumerate(msgs) if m.get("role") != "system"), 0)
+            if drop >= len(msgs) - 1:
+                break
+            msgs.pop(drop)
         return msgs, {
             "truncated": len(msgs) != original_n,
             "original_n_messages": original_n,
@@ -641,6 +656,7 @@ def dethrone_by_judge_dimensions(
     *,
     min_turns: int,
     n_done: int,
+    n_valid: int,
 ) -> tuple[bool, dict]:
     """Match-and-exceed across judge dimensions (scores per judge).
 
@@ -652,8 +668,10 @@ def dethrone_by_judge_dimensions(
     wins = sum(1 for o in judge_outcomes if o == "win")
     ties = sum(1 for o in judge_outcomes if o == "tie")
     loses = sum(1 for o in judge_outcomes if o == "lose")
+    min_valid = max(min_turns, int(n_done * MIN_VALID_TURN_FRAC))
     accepted = (
-        n_done >= min_turns
+        n_valid >= min_turns
+        and n_valid >= min_valid
         and wins >= 1
         and loses == 0
     )
@@ -663,6 +681,9 @@ def dethrone_by_judge_dimensions(
         "n_ties": ties,
         "n_loses": loses,
         "min_turns": min_turns,
+        "n_valid": n_valid,
+        "n_done": n_done,
+        "min_valid_turns": min_valid,
     }
 
 
@@ -744,10 +765,13 @@ async def _score_one_turn(
                 {"model": jm, "king_verdict": "reject", "chal_verdict": "reject",
                  "king_score": 0.0, "chal_score": 0.0,
                  "king_rationale": "vllm_error", "chal_rationale": "vllm_error",
-                 "parse_ok": False}
+                 "parse_ok": True, "vllm_error": True}
                 for jm in judge_models
             ]
             return {
+                "global_idx": sample.global_idx,
+                "shard_idx": sample.shard_idx,
+                "shard_name": sample.shard_name,
                 "sample_idx": sample.sample_idx,
                 "turn_idx": sample.turn_idx,
                 "instance_id": sample.instance_id,
@@ -815,6 +839,9 @@ async def _score_one_turn(
         king_avg = king_sum / n
         chal_avg = chal_sum / n
         return {
+            "global_idx": sample.global_idx,
+            "shard_idx": sample.shard_idx,
+            "shard_name": sample.shard_name,
             "sample_idx": sample.sample_idx,
             "turn_idx": sample.turn_idx,
             "instance_id": sample.instance_id,
@@ -885,8 +912,8 @@ async def run_duel(req: EvalRequest) -> AsyncIterator[bytes]:
         "gen_max_tokens": chain_config.DUEL_GEN_MAX_TOKENS,
         "vllm_prompt_token_budget": VLLM_PROMPT_TOKEN_BUDGET,
         "dataset_repo": chain_config.DATASET_REPO,
-        "dataset_shard": chain_config.DATASET_SHARD,
-        "dataset_shard_sha256": chain_config.DATASET_SHARD_SHA256,
+        "dataset_shard_glob": chain_config.DATASET_SHARD_GLOB,
+        "dataset_manifest_sha256": chain_config.DATASET_MANIFEST_SHA256,
         "chain_name": chain_config.NAME,
         "verdict_scale": judge_mod.VERDICT_SCORES,
     })
@@ -953,7 +980,7 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
             seed,
             n_samples=n_samples,
             max_turns_per_sample=max_turns,
-            shard_path=DATASET_SHARD_PATH,
+            dataset_dir=DATASET_DIR,
         )
     except Exception as exc:
         log.exception("sampling failed")
@@ -976,7 +1003,9 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
     king_avg_sum = 0.0
     chal_avg_sum = 0.0
     n_done = 0
+    n_valid = 0
     parse_failures = 0
+    vllm_errors = 0
     per_turn_ensemble_deltas: list[float] = []  # paired-bootstrap input
 
     # Per-judge accumulators. One `Counter` per side per judge so the
@@ -1018,30 +1047,37 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
                 judge_mod.ChutesJudge() as judge_client:
 
             async def runner(sample: trajectory_sampler.Sample) -> None:
-                nonlocal king_avg_sum, chal_avg_sum, n_done, parse_failures
+                nonlocal king_avg_sum, chal_avg_sum, n_done, n_valid
+                nonlocal parse_failures, vllm_errors
                 rec = await _score_one_turn(
                     sample, vllm_client, judge_client, sem, judge_models,
                     hotkey=req.hotkey,
                     challenger=req.challenger,
                 )
-                # Ensemble.
-                king_avg_sum += rec["king_score_avg"]
-                chal_avg_sum += rec["chal_score_avg"]
-                if not rec.get("parse_ok", True):
-                    parse_failures += 1
-                per_turn_ensemble_deltas.append(rec["delta_avg"])
+                n_done += 1
+                is_vllm_error = bool(rec.get("error"))
+                if is_vllm_error:
+                    vllm_errors += 1
+                else:
+                    n_valid += 1
+                    # Ensemble — only scored turns count toward means/deltas.
+                    king_avg_sum += rec["king_score_avg"]
+                    chal_avg_sum += rec["chal_score_avg"]
+                    if not rec.get("parse_ok", True):
+                        parse_failures += 1
+                    per_turn_ensemble_deltas.append(rec["delta_avg"])
 
-                # Per-judge accumulation.
-                for pj in rec["per_judge"]:
-                    acc = per_judge_acc[pj["model"]]
-                    acc["n"] += 1
-                    acc["king_sum"] += pj["king_score"]
-                    acc["chal_sum"] += pj["chal_score"]
-                    acc["verdicts_king"][pj["king_verdict"]] += 1
-                    acc["verdicts_chal"][pj["chal_verdict"]] += 1
-                    acc["deltas"].append(pj["chal_score"] - pj["king_score"])
-                    if not pj["parse_ok"]:
-                        acc["parse_failures"] += 1
+                    # Per-judge accumulation.
+                    for pj in rec["per_judge"]:
+                        acc = per_judge_acc[pj["model"]]
+                        acc["n"] += 1
+                        acc["king_sum"] += pj["king_score"]
+                        acc["chal_sum"] += pj["chal_score"]
+                        acc["verdicts_king"][pj["king_verdict"]] += 1
+                        acc["verdicts_chal"][pj["chal_verdict"]] += 1
+                        acc["deltas"].append(pj["chal_score"] - pj["king_score"])
+                        if not pj["parse_ok"]:
+                            acc["parse_failures"] += 1
 
                 per_turn_records.append({
                     "sample_idx":    rec["sample_idx"],
@@ -1097,15 +1133,16 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
                     "error":          rec.get("error"),
                     "completed_at":   datetime.now(timezone.utc).isoformat(),
                 })
-                n_done += 1
                 await out_queue.put(_sse_event("progress", {
                     "eval_id":         eval_id,
                     "n_done":          n_done,
+                    "n_valid":         n_valid,
                     "n_total":         len(samples),
-                    "king_mean":       king_avg_sum / n_done,
-                    "chal_mean":       chal_avg_sum / n_done,
-                    "mean_delta":      (chal_avg_sum - king_avg_sum) / n_done,
+                    "king_mean":       king_avg_sum / max(n_valid, 1),
+                    "chal_mean":       chal_avg_sum / max(n_valid, 1),
+                    "mean_delta":      (chal_avg_sum - king_avg_sum) / max(n_valid, 1),
                     "parse_failures":  parse_failures,
+                    "vllm_errors":     vllm_errors,
                     "judges":          _judges_summary(),
                     "last": {
                         "sample_idx":  rec["sample_idx"],
@@ -1200,7 +1237,7 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
         })
 
     accepted, dethrone_detail = dethrone_by_judge_dimensions(
-        judge_outcomes, min_turns=min_turns, n_done=n_done,
+        judge_outcomes, min_turns=min_turns, n_done=n_done, n_valid=n_valid,
     )
 
     verdict_record = {
@@ -1212,9 +1249,11 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
         "accepted":  accepted,
         "dethrone":  dethrone_detail,
         "n_turns":   n_done,
+        "n_valid_turns": n_valid,
+        "n_vllm_errors": vllm_errors,
         "n_turns_total": len(samples),
-        "king_mean": (king_avg_sum / n_done) if n_done else 0.0,
-        "chal_mean": (chal_avg_sum / n_done) if n_done else 0.0,
+        "king_mean": (king_avg_sum / n_valid) if n_valid else 0.0,
+        "chal_mean": (chal_avg_sum / n_valid) if n_valid else 0.0,
         "mean_delta": mean_delta,
         "lcb_at_1_minus_alpha": lcb,
         "alpha": chain_config.DUEL_ALPHA,
@@ -1247,19 +1286,30 @@ app = FastAPI(title="albedo-eval")
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    shard = Path(DATASET_SHARD_PATH)
+    dataset_dir = Path(DATASET_DIR)
+    manifest = dataset_dir / trajectory_sampler.MANIFEST_NAME
+    catalog_info: dict = {
+        "dir": str(dataset_dir),
+        "exists": dataset_dir.is_dir(),
+        "manifest_exists": manifest.exists(),
+        "pinned_manifest_sha256": chain_config.DATASET_MANIFEST_SHA256,
+    }
+    if dataset_dir.is_dir():
+        try:
+            catalog = trajectory_sampler.load_catalog(dataset_dir)
+            catalog_info.update({
+                "shards": len(catalog.shards),
+                "total_rows": catalog.total_rows,
+            })
+        except Exception as exc:
+            catalog_info["error"] = str(exc)
     return JSONResponse({
         "ok": True,
         "king": STATE.king_proc.health(),
         "challenger": STATE.chal_proc.health(),
         "eval_lock_held": STATE.eval_lock.locked(),
         "current_eval_id": STATE.current_eval_id,
-        "dataset_shard": {
-            "path": str(shard),
-            "exists": shard.exists(),
-            "size": shard.stat().st_size if shard.exists() else 0,
-            "pinned_sha256": chain_config.DATASET_SHARD_SHA256,
-        },
+        "dataset": catalog_info,
         "chain": {
             "name": chain_config.NAME,
             "judge_models": list(chain_config.JUDGE_MODELS),

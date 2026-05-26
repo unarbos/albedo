@@ -57,13 +57,13 @@ retry_initial_backoff_s = 1.5
 tie_band     = 0.01
 
 [dataset]
-# Pinned parquet shard from AlienKevin/SWE-ZERO-12M-trajectories. Validators
-# prefetch this shard with scripts/prefetch_dataset.py before starting.
-repo  = "AlienKevin/SWE-ZERO-12M-trajectories"
-shard = "data/train-00000.parquet"
-# sha256 of the prefetched parquet file, used by eval.py to refuse to start
-# if the shard on disk has drifted. Filled by scripts/prefetch_dataset.py.
-shard_sha256 = "b0a777c2c022f48c088ec485119d164f5404c77f00a7a41fbd787afdff0dddd1"
+# Full SWE-ZERO parquet corpus from HuggingFace. Prefetch once with
+# scripts/prefetch_dataset.py, then sample locally across all shards.
+repo        = "AlienKevin/SWE-ZERO-12M-trajectories"
+shard_glob  = "data/train-*.parquet"
+# sha256 of manifest.json produced by prefetch_dataset.py; eval refuses
+# to start if the on-disk manifest drifts from this pin.
+manifest_sha256 = ""
 
 [duel]
 n_samples = 32

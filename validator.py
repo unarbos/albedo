@@ -664,6 +664,9 @@ class State:
             "mean_delta": verdict.get("mean_delta", 0.0),
             "lcb": verdict.get("lcb_at_1_minus_alpha", 0.0),
             "n_turns": verdict.get("n_turns", 0),
+            "n_valid_turns": verdict.get("n_valid_turns", 0),
+            "n_vllm_errors": verdict.get("n_vllm_errors", 0),
+            "parse_failures": verdict.get("parse_failures", 0),
             "verdicts_king": verdict.get("verdicts_king", {}),
             "verdicts_chal": verdict.get("verdicts_chal", {}),
             "judges": verdict.get("judges", []),
@@ -751,7 +754,7 @@ class State:
                     "judge_model": chain_config.JUDGE_MODEL,  # primary, kept for back-compat
                     "judge_tie_band": chain_config.JUDGE_TIE_BAND,
                     "dataset_repo": chain_config.DATASET_REPO,
-                    "dataset_shard": chain_config.DATASET_SHARD,
+                    "dataset_shard_glob": chain_config.DATASET_SHARD_GLOB,
                     "king_chain_depth": getattr(chain_config, "DUEL_KING_CHAIN_DEPTH", 1),
                 },
                 "king": {
@@ -1116,7 +1119,7 @@ async def main() -> int:
             return 1
         # Sanity-fetch config so we fail early if the seed Hippius ref is bad.
         materialize_model(seed_ref, max_workers=4, config_only=True)
-        state.set_king(wallet.hotkey.ss58_address, seed_ref.repo, seed_ref.digest,
+        state.set_king("", seed_ref.repo, seed_ref.digest,
                        subtensor.block, challenge_id="seed")
 
     # Bring up eval.py king once at startup (idempotent).

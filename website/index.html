@@ -96,6 +96,12 @@ main {
   text-transform: uppercase; color: var(--color-gold);
   margin-bottom: 16px;
 }
+.hero-king a {
+  color: inherit;
+  text-decoration: none;
+  transition: filter 0.15s;
+}
+.hero-king a:hover { filter: brightness(1.15); }
 .hero-llms {
   display: inline-flex;
   align-items: center;
@@ -894,8 +900,20 @@ function kingBarScores(entry, index, chain, currentEval) {
 }
 
 function renderHero(d) {
+  const el = document.getElementById("hero-king");
+  if (!el) return;
   const king = d.king || {};
-  setText("hero-king", kingTitleName(king.reign_number));
+  const chain = d.chain || {};
+  const repo = king.model_repo || chain.seed_repo || "";
+  let reignNumber = king.reign_number;
+  if (reignNumber == null && repo) reignNumber = 0;
+  const name = kingTitleName(reignNumber);
+  const hfUrl = hfRepoUrl(repo);
+  if (hfUrl) {
+    el.innerHTML = `<a href="${hfUrl}" target="_blank" rel="noopener" title="${repo}">${name}</a>`;
+  } else {
+    el.textContent = name;
+  }
 }
 
 function fmtScore3(score) {

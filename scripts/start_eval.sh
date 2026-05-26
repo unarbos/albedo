@@ -41,10 +41,11 @@ if [[ -z "${HIPPIUS_HUB_TOKEN:-}" && ( -z "${HIPPIUS_HUB_USERNAME:-}" || -z "${H
 fi
 
 # ---------------------------------------------------------------------
-# Required: pinned dataset shard path (run scripts/prefetch_dataset.py first)
+# Required: local SWE-ZERO corpus (run scripts/prefetch_dataset.py first)
 # ---------------------------------------------------------------------
-: "${ALBEDO_DATASET_SHARD_PATH:?run scripts/prefetch_dataset.py first and export the printed path}"
-test -f "$ALBEDO_DATASET_SHARD_PATH"
+: "${ALBEDO_DATASET_DIR:?run scripts/prefetch_dataset.py first and export the printed path}"
+test -d "$ALBEDO_DATASET_DIR"
+test -f "$ALBEDO_DATASET_DIR/manifest.json" || test -n "$(find "$ALBEDO_DATASET_DIR" -name 'train-*.parquet' -print -quit)"
 
 # ---------------------------------------------------------------------
 # vLLM topology — 8x H200 default split. Change if you have a different box.

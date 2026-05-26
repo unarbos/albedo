@@ -103,8 +103,8 @@ JUDGE_DEFAULT_BASE_URL = "https://llm.chutes.ai/v1"
 
 # [dataset]
 DATASET_REPO: str = _dataset.get("repo", "")
-DATASET_SHARD: str = _dataset.get("shard", "")
-DATASET_SHARD_SHA256: str = _dataset.get("shard_sha256", "")
+DATASET_SHARD_GLOB: str = _dataset.get("shard_glob", "data/train-*.parquet")
+DATASET_MANIFEST_SHA256: str = _dataset.get("manifest_sha256", "")
 
 # [duel]
 DUEL_N_SAMPLES: int = int(_duel.get("n_samples", 32))
@@ -153,8 +153,8 @@ __all__ = [
     "JUDGE_TIE_BAND",
     "JUDGE_DEFAULT_BASE_URL",
     "DATASET_REPO",
-    "DATASET_SHARD",
-    "DATASET_SHARD_SHA256",
+    "DATASET_SHARD_GLOB",
+    "DATASET_MANIFEST_SHA256",
     "DUEL_N_SAMPLES",
     "DUEL_MAX_TURNS_PER_SAMPLE",
     "DUEL_EVAL_DELTA",

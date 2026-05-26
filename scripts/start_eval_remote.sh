@@ -28,14 +28,15 @@ if [[ -z "${HIPPIUS_HUB_TOKEN:-}" && ( -z "${HIPPIUS_HUB_USERNAME:-}" || -z "${H
   exit 1
 fi
 
-export ALBEDO_DATASET_SHARD_PATH="${ALBEDO_DATASET_SHARD_PATH:-/var/albedo/dataset/train-00000.parquet}"
-test -f "$ALBEDO_DATASET_SHARD_PATH"
+export ALBEDO_DATASET_DIR="${ALBEDO_DATASET_DIR:-/var/albedo/dataset}"
+test -d "$ALBEDO_DATASET_DIR"
+test -f "$ALBEDO_DATASET_DIR/manifest.json" || test -n "$(find "$ALBEDO_DATASET_DIR" -name 'train-*.parquet' -print -quit)"
 
 # Tune GPU assignments for your eval host. 1.7B fits on one GPU each.
 export ALBEDO_KING_GPUS="${ALBEDO_KING_GPUS:-7}"
 export ALBEDO_CHAL_GPUS="${ALBEDO_CHAL_GPUS:-6}"
 export ALBEDO_GPU_MEMORY_UTILIZATION="${ALBEDO_GPU_MEMORY_UTILIZATION:-0.35}"
-export ALBEDO_VLLM_MAX_MODEL_LEN="${ALBEDO_VLLM_MAX_MODEL_LEN:-8192}"
+export ALBEDO_VLLM_MAX_MODEL_LEN="${ALBEDO_VLLM_MAX_MODEL_LEN:-32768}"
 export ALBEDO_VLLM_DTYPE="${ALBEDO_VLLM_DTYPE:-bfloat16}"
 export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 export VLLM_USE_DEEP_GEMM="${VLLM_USE_DEEP_GEMM:-0}"
