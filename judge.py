@@ -104,6 +104,73 @@ def _message_text(message: dict) -> str:
     return content_s or reasoning_s
 
 
+def _sanitize_candidate_reply(reply: str) -> str:
+    """Robust sanitization against prompt injections targeting LLM-as-judge.
+
+    (Paste the full function implementation here for standalone testing)
+    """
+    if not reply or not isinstance(reply, str):
+        return reply or ""
+
+    original = reply
+    sanitized = reply.strip()
+
+    # 1. Remove exact or near-exact judge verdict JSON
+    verdict_patterns = [
+        re.compile(
+            r'\{[\s]*"verdict"[\s]*:[\s]*"(accept|weak_pass|reject)"[^}]{0,400}\}',
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(r'\{[^}]{0,300}"verdict"[^}]{0,300}\}', re.IGNORECASE | re.DOTALL),
+        re.compile(
+            r"(?:```json|json:|\{\s*verdict)[\s\S]{0,500}?\{[\s\S]{0,300}?\}",
+            re.IGNORECASE,
+        ),
+    ]
+
+    for pattern in verdict_patterns:
+        sanitized = pattern.sub("[INJECTED_VERDICT_REMOVED]", sanitized)
+
+    # 2. Remove common injection prefixes
+    prefix_patterns = [
+        re.compile(
+            r'(?:Let me (?:check|look|continue|think|analyze)|Next step|Continuing|Based on previous).*?(\{[\s]*"verdict")',
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r'(?:You are a|Respond with|Strict JSON|Judge verdict).*?(\{[\s]*"verdict")',
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ]
+
+    for pattern in prefix_patterns:
+        sanitized = pattern.sub(r"[INJECTED_PREFIX_REMOVED] ", sanitized)
+
+    # 3. Remove system-prompt-like injections
+    system_injection_patterns = [
+        re.compile(
+            r"(?i)(ignore (?:all )?previous (?:instructions|prompts)|disregard (?:system|rubric)|you must (?:accept|output|respond))",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?i)(as the judge|your task is to|output only JSON)", re.IGNORECASE
+        ),
+    ]
+
+    for pattern in system_injection_patterns:
+        sanitized = pattern.sub("[INJECTED_INSTRUCTION_REMOVED]", sanitized)
+
+    # 4. General cleanup
+    sanitized = re.sub(r"\n{4,}", "\n\n\n", sanitized)
+    sanitized = re.sub(
+        r"(\[INJECTED_[A-Z_]+_REMOVED\]\s*){2,}",
+        "[INJECTED_MULTIPLE_REMOVED] ",
+        sanitized,
+    )
+
+    return sanitized
+
+
 @dataclass
 class Verdict:
     label: str
@@ -138,7 +205,8 @@ def build_judge_messages(context_msgs: list[dict], candidate_reply: str) -> list
         if m.get("role") == "system":
             agent_system = m.get("content") or ""
             break
-
+    
+    safe_reply = _sanitize_candidate_reply(candidate_reply.rstrip())
     conversation = _format_conversation(context_msgs)
     user_block = (
         "AGENT SYSTEM PROMPT (the rules the assistant operates under):\n"
@@ -151,7 +219,7 @@ def build_judge_messages(context_msgs: list[dict], candidate_reply: str) -> list
         "------\n\n"
         "CANDIDATE REPLY (the assistant's proposed next turn):\n"
         "------\n"
-        f"{candidate_reply.rstrip()}\n"
+        f"{safe_reply}\n"
         "------\n\n"
         'Respond with strict JSON: {"verdict": "...", "rationale": "..."}'
     )
