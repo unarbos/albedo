@@ -1451,10 +1451,6 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
         state.record_verdict(entry, verdict)
         if verdict.get("accepted"):
             log.info("%s: ACCEPTED. crowning %s", cid, entry.get("hotkey", "?")[:16])
-        elif verdict.get("is_duplicate") or (verdict.get("error") or "").startswith("duplicate_model"):
-            log.info("%s: DUPLICATE. hotkey=%s repo=%s is a copy of %s",
-                     cid, entry.get("hotkey", "?")[:16],
-                     entry.get("model_repo", "?"), verdict.get("duplicate_of", "?"))
             try:
                 block = subtensor.block
             except Exception:
@@ -1474,6 +1470,10 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
             except Exception:
                 log.exception("post-dethrone /set_king failed; will retry on next tick")
             await maybe_set_weights(subtensor, wallet, state, force=True, reason="dethrone")
+        elif verdict.get("is_duplicate") or (verdict.get("error") or "").startswith("duplicate_model"):
+            log.info("%s: DUPLICATE. hotkey=%s repo=%s is a copy of %s",
+                     cid, entry.get("hotkey", "?")[:16],
+                     entry.get("model_repo", "?"), verdict.get("duplicate_of", "?"))
         else:
             deth = verdict.get("dethrone") or {}
             log.info("%s: REJECTED. dethrone=%s mean_delta=%.4f lcb=%.4f", cid,

@@ -130,6 +130,8 @@ EVALS_PUBLIC_BASE = os.environ.get(
     "https://us-east-1.hippius.com",
 ).rstrip("/")
 EVALS_JUDGE_RAW_MAX_CHARS = int(os.environ.get("ALBEDO_EVALS_JUDGE_RAW_MAX_CHARS", "8192"))
+# Set to 1 to wipe both state JSONs on startup (re-fingerprints everything from scratch).
+PREEVAL_CLEAR_STATE = os.environ.get("ALBEDO_PREEVAL_CLEAR_STATE", "0") not in ("", "0", "false", "False")
 
 # Bump when turn / duel_meta fields change so training exporters can branch.
 EVAL_TRACE_SCHEMA_VERSION = 1
@@ -1718,11 +1720,25 @@ async def eval_endpoint(req: EvalRequest, request: Request) -> StreamingResponse
 
 @app.on_event("startup")
 async def _startup() -> None:
-    if EVALS_S3_BUCKET and EVALS_S3_ACCESS and EVALS_S3_SECRET:
-        try:
-            _s3 = preeval._get_or_create_s3_client(
-                EVALS_S3_ENDPOINT, EVALS_S3_ACCESS, EVALS_S3_SECRET
+    if not (EVALS_S3_BUCKET and EVALS_S3_ACCESS and EVALS_S3_SECRET):
+        return
+    try:
+        _s3 = preeval._get_or_create_s3_client(
+            EVALS_S3_ENDPOINT, EVALS_S3_ACCESS, EVALS_S3_SECRET
+        )
+
+        if PREEVAL_CLEAR_STATE:
+            log.warning("ALBEDO_PREEVAL_CLEAR_STATE=1 — wiping both state JSONs on S3")
+            empty_ms = preeval._empty_models_state()
+            empty_ts = preeval._empty_tensor_state()
+            await asyncio.gather(
+                asyncio.to_thread(preeval.save_models_state, _s3, EVALS_S3_BUCKET, empty_ms),
+                asyncio.to_thread(preeval.save_tensor_state, _s3, EVALS_S3_BUCKET, empty_ts),
             )
+            STATE.models_state_cache = empty_ms
+            STATE.models_tensor_state_cache = empty_ts
+            log.info("preeval state wiped — starting fresh")
+        else:
             STATE.models_state_cache, STATE.models_tensor_state_cache = await asyncio.gather(
                 asyncio.to_thread(preeval.load_models_state, _s3, EVALS_S3_BUCKET),
                 asyncio.to_thread(preeval.load_tensor_state, _s3, EVALS_S3_BUCKET),
@@ -1730,8 +1746,25 @@ async def _startup() -> None:
             n = len(STATE.models_state_cache.get("models", {}))
             t = len(STATE.models_tensor_state_cache.get("tensors", {}))
             log.info("loaded fingerprint state from Hippius S3: %d model(s), %d tensor entry(s)", n, t)
-        except Exception:
-            log.exception("fingerprint state load at startup failed (non-fatal)")
+
+        # Fingerprint king on startup if it's already running and not yet in state.
+        king_ref_str = STATE.king_proc.model_name  # ModelRef.immutable_ref set by VLLMProcess.start()
+        king_path_str = STATE.king_proc.model_path
+        if king_ref_str and king_path_str and "@" in king_ref_str:
+            try:
+                repo, digest = king_ref_str.split("@", 1)
+                king_ref = ModelRef(repo, digest)
+            except Exception:
+                king_ref = None
+            if (
+                king_ref
+                and not king_ref.digest.startswith("hf:")
+                and king_ref.immutable_ref not in STATE.models_state_cache.get("models", {})
+            ):
+                log.info("startup: king %s not in fingerprint state — scheduling background fingerprint", king_ref_str)
+                asyncio.create_task(_fingerprint_king_if_new(king_ref, king_path_str))
+    except Exception:
+        log.exception("fingerprint state load at startup failed (non-fatal)")
 
 
 @app.on_event("shutdown")
