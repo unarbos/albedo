@@ -467,7 +467,7 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
   border: 1px solid var(--color-border);
   color: var(--color-fg-2);
 }
-.queue-status.challenging {
+.queue-status.evaluating {
   border: 1px dashed rgba(90, 200, 250, 0.45);
   color: rgba(90, 200, 250, 0.7);
 }
@@ -664,6 +664,25 @@ table.releases td.dl { text-align: right; padding-right: 4px; }
 
 .empty { font-size: 12px; color: var(--color-fg-3); padding: 20px 0; text-align: center; }
 
+/* ---------- fail reason cell ---------- */
+.fail-reason {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-fg-2);
+  word-break: break-all;
+  cursor: default;
+}
+.outcome-win  { color: var(--color-ok); font-weight: 500; }
+.outcome-lose { color: var(--color-bad); font-weight: 500; }
+.outcome-tie  { color: var(--color-fg-3); }
+
+/* ---------- re-eval status badges (fails table) ---------- */
+.reeval-done     { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+.reeval-label    { font-size: 10px; color: var(--color-ok); opacity: 0.85; }
+.reeval-fail     { color: var(--color-bad); font-size: 11px; font-family: var(--font-mono); }
+.reeval-queued   { color: var(--color-fg-2); font-size: 11px; }
+.reeval-eligible { color: var(--color-fg-3); font-size: 11px; font-style: italic; }
+
 @media (max-width: 760px) {
   main { padding: 16px 12px 60px; gap: 32px; }
   .hero { padding: 16px 12px 22px; }
@@ -680,7 +699,7 @@ table.releases td.dl { text-align: right; padding-right: 4px; }
 
 <header class="top-header">
   <div class="row">
-    <a class="brand" href="/">
+    <a class="brand" href="./">
       <img class="brand-logo" src="./favicon.svg" width="18" height="18" alt="" aria-hidden="true">
       <span>Albedo</span>
     </a>
@@ -767,6 +786,19 @@ table.releases td.dl { text-align: right; padding-right: 4px; }
   </div>
 </section>
 
+<section class="section" id="fails">
+  <div class="head">
+    <span class="label">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4.5 2.5L9 7L4.5 11.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      fails
+    </span>
+    <span class="meta" id="fails-meta"></span>
+  </div>
+  <div class="data-table-wrap" id="fails-wrap">
+    <div class="empty">no failures.</div>
+  </div>
+</section>
+
 </main>
 
 <script>
@@ -840,19 +872,30 @@ function toRoman(n) {
   return out;
 }
 
-function kingRoman(reignNumber) {
-  if (reignNumber == null) return null;
-  return toRoman(Number(reignNumber) + 1);
-}
-
 function kingTitleName(reignNumber) {
-  const roman = kingRoman(reignNumber);
+  if (reignNumber == null) return "ALBEDO";
+  const roman = toRoman(Number(reignNumber) + 1);
   return roman ? `ALBEDO-${roman}` : "ALBEDO";
 }
 
-function challengerModelName(hotkey) {
+function challengerDisplayName(hotkey) {
   if (!hotkey) return "—";
   return `ALBEDO-${hotkey.slice(0, 5).toUpperCase()}`;
+}
+
+function hubRepoUrl(repo) {
+  if (!repo) return null;
+  const parts = repo.split("/");
+  if (parts.length < 2) return "https://hub.hippius.com/models";
+  return `https://hub.hippius.com/models/${parts[0]}/${parts.slice(1).join("/")}`;
+}
+
+function modelLinkHtml(repo, digest, label) {
+  const text = label || "—";
+  const url = hubRepoUrl(repo);
+  if (!url || text === "—") return text;
+  const title = digest ? `${repo}@${digest}` : (repo || text);
+  return `<a href="${url}" target="_blank" rel="noopener" title="${title}">${text}</a>`;
 }
 
 function judgeShortName(model) {
@@ -905,15 +948,10 @@ function renderHero(d) {
   const king = d.king || {};
   const chain = d.chain || {};
   const repo = king.model_repo || chain.seed_repo || "";
+  const digest = king.king_digest || king.model_digest || chain.seed_digest || "";
   let reignNumber = king.reign_number;
   if (reignNumber == null && repo) reignNumber = 0;
-  const name = kingTitleName(reignNumber);
-  const hfUrl = hfRepoUrl(repo);
-  if (hfUrl) {
-    el.innerHTML = `<a href="${hfUrl}" target="_blank" rel="noopener" title="${repo}">${name}</a>`;
-  } else {
-    el.textContent = name;
-  }
+  el.innerHTML = modelLinkHtml(repo, digest, kingTitleName(reignNumber));
 }
 
 function fmtScore3(score) {
@@ -988,11 +1026,20 @@ function dlButton(url) {
 }
 
 function verdictBadge(h) {
+  if (h.error_code === "config_mismatch") {
+    return `<span class="verdict-badge lost">invalid</span>`;
+  }
+  if (h.error_code === "eval_infra" || h.error_code === "eval_error") {
+    return `<span class="verdict-badge error">error</span>`;
+  }
   if (h.error_code) {
     return `<span class="verdict-badge error">error</span>`;
   }
   if (h.accepted) {
     return `<span class="verdict-badge crowned">crowned</span>`;
+  }
+  if ((h.n_turns ?? 0) === 0 && !(h.judges || []).length) {
+    return `<span class="verdict-badge error">error</span>`;
   }
   return `<span class="verdict-badge lost">lost</span>`;
 }
@@ -1127,7 +1174,9 @@ function renderEvolution(kc, chain, currentEval) {
 
     const dim = e.registered ? "" : " dim";
     const current = dataIdx === 0 ? " is-current" : "";
-    const name = kingTitleName(e.reign_number);
+    const repo = e.model_repo || "";
+    const digest = e.king_digest || e.model_digest || "";
+    const name = modelLinkHtml(repo, digest, kingTitleName(e.reign_number));
     return `<div class="evo-king${dim}${current}">
       <div class="evo-towers">${towers}</div>
       <div class="evo-king-name">${name}</div>
@@ -1144,20 +1193,6 @@ function renderEvolution(kc, chain, currentEval) {
 
 const EVALS_BASE = "https://us-east-1.hippius.com/albedo/evals/";
 const SUBNET_ALPHA_DAY = 2960;
-
-function releaseModelLabel(repo) {
-  if (!repo) return "—";
-  const parts = repo.split("/");
-  const org = (parts[0] || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
-  const name = (parts[1] || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
-  const label = `ALBEDO-${org}-${name}`.replace(/--+/g, "-");
-  return label.length > 24 ? label.slice(0, 24) : label;
-}
-
-function hfRepoUrl(repo) {
-  if (!repo) return null;
-  return `https://huggingface.co/${repo}`;
-}
 
 function taoMinerUrl(netuid, hotkey) {
   if (netuid == null || !hotkey) return null;
@@ -1196,11 +1231,8 @@ function renderReleases(kc, chain, history) {
       ? `<a href="${taoUrl}" target="_blank" rel="noopener" title="${hk}">${uid}</a>`
       : uid;
     const repo = e.model_repo || "";
-    const hfUrl = hfRepoUrl(repo);
-    const modelLabel = releaseModelLabel(repo);
-    const modelCell = hfUrl
-      ? `<a href="${hfUrl}" target="_blank" rel="noopener" title="${repo}">${modelLabel}</a>`
-      : modelLabel;
+    const digest = e.king_digest || e.model_digest || "";
+    const modelCell = modelLinkHtml(repo, digest, kingTitleName(e.reign_number));
     const date = kingDateShort(e.crowned_at);
     const alpha = fmtAlphaDay(e.weight);
     const alphaCls = i === 0 && e.registered ? " earning" : (e.registered ? "" : "");
@@ -1239,36 +1271,40 @@ function renderReleases(kc, chain, history) {
 function renderQueue(queue, chain, currentEval) {
   const wrap = document.getElementById("queue-wrap");
   const netuid = chain?.netuid;
-  setText("queue-meta", `${(queue || []).length} pending`);
-  if (!queue || queue.length === 0) {
+  // The currently-evaluating entry has already been popped from state.queue
+  // by the validator; prepend it as a synthetic top row so it stays visible.
+  const pendingQueue = queue || [];
+  const hasLive = !!(currentEval?.hotkey);
+  const totalCount = pendingQueue.length + (hasLive ? 1 : 0);
+  setText("queue-meta", `${totalCount} pending`);
+  if (totalCount === 0) {
     wrap.innerHTML = '<div class="empty">empty.</div>';
     return;
   }
-  const rows = queue.slice(0, 100).map((q, i) => {
-    const isLive = currentEval?.hotkey && q.hotkey === currentEval.hotkey;
-    const queueNum = currentEval ? (isLive ? 0 : i) : (i + 1);
-    const status = isLive
-      ? `<span class="queue-status challenging">challenging</span>`
-      : `<span class="queue-status queued">queue #${queueNum || 1}</span>`;
+  const renderRow = (q, status) => {
     const uid = q.uid != null ? q.uid : "—";
     const taoUrl = taoMinerUrl(netuid, q.hotkey);
     const uidCell = taoUrl
       ? `<a href="${taoUrl}" target="_blank" rel="noopener" title="${q.hotkey}">${uid}</a>`
       : uid;
-    const repo = q.model_repo || "";
-    const hfUrl = hfRepoUrl(repo);
-    const label = challengerModelName(q.hotkey);
-    const modelCell = hfUrl
-      ? `<a href="${hfUrl}" target="_blank" rel="noopener" title="${repo}">${label}</a>`
-      : label;
-    const when = fmtWhenCell(q.queued_at);
+    // current_eval uses challenger_repo/challenger_digest; queue uses model_repo/model_digest
+    const repo   = q.model_repo   || q.challenger_repo   || "";
+    const digest = q.model_digest || q.challenger_digest || "";
+    const modelCell = modelLinkHtml(repo, digest, challengerDisplayName(q.hotkey));
+    const when = fmtWhenCell(q.queued_at || q.started_at);
     return `<tr>
       <td class="status">${status}</td>
       <td class="uid">${uidCell}</td>
       <td class="model">${modelCell}</td>
       <td class="when">${when}</td>
     </tr>`;
-  }).join("");
+  };
+  const liveRow = hasLive
+    ? renderRow(currentEval, `<span class="queue-status evaluating">evaluating</span>`)
+    : "";
+  const pendingRows = pendingQueue.slice(0, 99).map((q, i) =>
+    renderRow(q, `<span class="queue-status queued">queue #${i + 1}</span>`)
+  ).join("");
   wrap.innerHTML = `<table class="data-table queue-table">
     <colgroup>
       <col class="col-status">
@@ -1282,29 +1318,62 @@ function renderQueue(queue, chain, currentEval) {
       <th class="model">model</th>
       <th class="when">when</th>
     </tr></thead>
-    <tbody>${rows}</tbody>
+    <tbody>${liveRow}${pendingRows}</tbody>
   </table>`;
+}
+
+function isValidEval(h) {
+  return !h.error_code && (h.n_turns != null ? h.n_turns > 0 : true);
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function failReasonCell(h) {
+  if (h.error_code) {
+    const detail = h.error_detail || h.error_code;
+    const safe = escHtml(detail);
+    const truncated = safe.length > 100 ? safe.slice(0, 100) + "…" : safe;
+    return `<span class="fail-reason" title="${safe}">${truncated}</span>`;
+  }
+  if (!h.accepted && (h.judges || []).length) {
+    const parts = (h.judges).map(j => {
+      const meta = judgeMeta(j.model);
+      const outcome = j.outcome || "tie";
+      const cls = outcome === "win" ? "outcome-win" : outcome === "lose" ? "outcome-lose" : "outcome-tie";
+      return `<span class="${cls}">${meta.letter}: ${outcome}</span>`;
+    });
+    return parts.join(' <span class="sep">·</span> ');
+  }
+  return '<span class="muted-dash">—</span>';
 }
 
 function renderHistory(history, chain, king) {
   const wrap = document.getElementById("history-wrap");
   const netuid = chain?.netuid;
   const judges = (chain?.judge_models || []).map(m => judgeMeta(m));
-  setText("history-meta", `${(history || []).length} entries`);
-  if (!history || history.length === 0) {
+  const valid = (history || []).filter(isValidEval);
+  setText("history-meta", `${valid.length} entries`);
+  if (valid.length === 0) {
     wrap.innerHTML = '<div class="empty">no completed duels yet.</div>';
     return;
   }
-  const championName = king ? kingTitleName(king.reign_number) : "ALBEDO";
   const championRepo = king?.model_repo || "";
-  const championHf = hfRepoUrl(championRepo);
-  const championCell = championHf
-    ? `<a href="${championHf}" target="_blank" rel="noopener" title="${championRepo}" class="champion-link">${championName}</a>`
-    : `<span class="champion-link">${championName}</span>`;
+  const championDigest = king?.king_digest || king?.model_digest || "";
+  let championReign = king?.reign_number;
+  if (championReign == null && championRepo) championReign = 0;
+  const championCell = `<span class="champion-link">${modelLinkHtml(
+    championRepo, championDigest, kingTitleName(championReign),
+  )}</span>`;
   const judgeHead = judges.map(j =>
     `<th class="r">${j.label}</th>`
   ).join("");
-  const ordered = history.slice().reverse().slice(0, 50);
+  const ordered = valid.slice().reverse().slice(0, 50);
   const rows = ordered.map(h => {
     const byLetter = judgeByLetter(h.judges);
     const uid = h.uid != null ? h.uid : "—";
@@ -1313,11 +1382,8 @@ function renderHistory(history, chain, king) {
       ? `<a href="${taoUrl}" target="_blank" rel="noopener" title="${h.hotkey}">${uid}</a>`
       : uid;
     const repo = h.model_repo || "";
-    const hfUrl = hfRepoUrl(repo);
-    const label = challengerModelName(h.hotkey);
-    const modelCell = hfUrl
-      ? `<a href="${hfUrl}" target="_blank" rel="noopener" title="${repo}">${label}</a>`
-      : label;
+    const digest = h.model_digest || "";
+    const modelCell = modelLinkHtml(repo, digest, challengerDisplayName(h.hotkey));
     const judgeCells = judges.map(j =>
       `<td class="r">${judgeScoreCell(byLetter[j.letter])}</td>`
     ).join("");
@@ -1345,6 +1411,72 @@ function renderHistory(history, chain, king) {
   </table>`;
 }
 
+
+function isMinerFault(h) {
+  const code = h.error_code || "";
+  const detail = h.error_detail || "";
+  if (code === "no_king") return true;
+  if (code === "config_mismatch") {
+    // Infra-side: download / S3 failures → eligible for re-eval
+    if (detail.includes("cannot materialize") || detail.includes("cannot list challenger") ||
+        detail.includes("materialize_failed") || detail.includes("404")) return false;
+    // Miner-fault: missing config.json, corrupt config, arch lock, etc. → no re-eval
+    return true;
+  }
+  if (detail.includes("chal_vllm_start_failed")) return true;
+  return false;
+}
+
+function renderFails(history, chain, king, queue) {
+  const wrap = document.getElementById("fails-wrap");
+  const netuid = chain?.netuid;
+  const fails = (history || []).filter(h => !isValidEval(h));
+  setText("fails-meta", `${fails.length} entries`);
+  if (fails.length === 0) {
+    wrap.innerHTML = '<div class="empty">no failures.</div>';
+    return;
+  }
+  const championRepo = king?.model_repo || "";
+  const championDigest = king?.king_digest || king?.model_digest || "";
+  let championReign = king?.reign_number;
+  if (championReign == null && championRepo) championReign = 0;
+  const championCell = `<span class="champion-link">${modelLinkHtml(
+    championRepo, championDigest, kingTitleName(championReign),
+  )}</span>`;
+  const ordered = fails.slice().reverse().slice(0, 50);
+  const rows = ordered.map(h => {
+    const uid = h.uid != null ? h.uid : "—";
+    const taoUrl = taoMinerUrl(netuid, h.hotkey);
+    const uidCell = taoUrl
+      ? `<a href="${taoUrl}" target="_blank" rel="noopener" title="${h.hotkey}">${uid}</a>`
+      : uid;
+    const repo = h.model_repo || "";
+    const digest = h.model_digest || "";
+    const modelCell = modelLinkHtml(repo, digest, challengerDisplayName(h.hotkey));
+    return `<tr>
+      <td class="when pl">${fmtWhenCell(h.completed_at)}</td>
+      <td class="uid">${uidCell}</td>
+      <td class="model">${modelCell}</td>
+      <td>${championCell}</td>
+      <td class="center">${verdictBadge(h)}</td>
+      <td class="fail-reason-cell">${failReasonCell(h)}</td>
+      <td class="dl">${dlButton(h.evals_url)}</td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table class="data-table">
+    <thead><tr>
+      <th class="pl">when</th>
+      <th>uid</th>
+      <th>model</th>
+      <th>vs. champion</th>
+      <th class="center">verdict</th>
+      <th>fail reason</th>
+      <th class="r" aria-label="download"></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 function render(d) {
   if (!d) return;
   renderHero(d);
@@ -1352,6 +1484,7 @@ function render(d) {
   renderReleases(d.king_chain, d.chain, d.history);
   renderQueue(d.queue, d.chain, d.current_eval);
   renderHistory(d.history, d.chain, d.king);
+  renderFails(d.history, d.chain, d.king, d.queue);
 }
 
 async function fetchDashboard(buster) {
