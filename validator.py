@@ -32,7 +32,6 @@ Slimmed from teutonic:
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 import json
@@ -43,7 +42,6 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import bittensor as bt
@@ -90,11 +88,8 @@ DASHBOARD_FLUSH_MIN_INTERVAL = 5.0
 POLL_INTERVAL    = int(os.environ.get("ALBEDO_POLL_INTERVAL", "30"))
 WEIGHT_INTERVAL  = int(os.environ.get("ALBEDO_WEIGHT_INTERVAL", "300"))     # blocks
 BURN_UID         = int(os.environ.get("ALBEDO_BURN_UID", "0"))
-# SN97 owner ops: commit-reveal is off; set ALBEDO_REQUIRE_COMMIT_REVEAL=0 in ecosystem.config.js.
-REQUIRE_COMMIT_REVEAL = os.environ.get("ALBEDO_REQUIRE_COMMIT_REVEAL", "1").lower() not in (
-    "0", "false", "no",
-)
-# SN97 (owner-operated) uses plain set_weights like burn_weights_sn97.py — no CR yet.
+# Set ALBEDO_REQUIRE_COMMIT_REVEAL=0 in ecosystem.config.js to use plain
+# set_weights (owner-operated subnets that haven't enabled CR yet).
 REQUIRE_COMMIT_REVEAL = os.environ.get("ALBEDO_REQUIRE_COMMIT_REVEAL", "1").lower() not in (
     "0", "false", "no",
 )
@@ -104,6 +99,18 @@ STREAM_IDLE_WARN_S = int(os.environ.get("ALBEDO_STREAM_IDLE_WARN_S", "600"))
 STREAM_IDLE_KILL_S = int(os.environ.get("ALBEDO_STREAM_IDLE_KILL_S", "1800"))
 
 MAX_CONSECUTIVE_TICK_ERRORS = int(os.environ.get("ALBEDO_MAX_CONSECUTIVE_TICK_ERRORS", "20"))
+
+# How many hours back to scan history for our-side failures on startup, and
+# re-queue those miners for another attempt.  Set to 0 to disable.
+REEVAL_LOOKBACK_HOURS = float(os.environ.get("ALBEDO_REEVAL_LOOKBACK_HOURS", "24"))
+# Maximum number of automatic re-evals granted per miner hotkey (across all
+# paths: runtime maybe_retry AND startup lookback recovery combined).  Once a
+# hotkey reaches this count it is skipped by both paths regardless of restarts.
+MAX_REEVAL_PER_HOTKEY  = int(os.environ.get("ALBEDO_MAX_REEVAL_PER_HOTKEY", "1"))
+# Initial eval-box backoff after an unreachable error (seconds).  Doubles on
+# each consecutive failure up to EVAL_BOX_BACKOFF_MAX_S.
+EVAL_BOX_BACKOFF_S     = int(os.environ.get("ALBEDO_EVAL_BOX_BACKOFF_S", "120"))
+EVAL_BOX_BACKOFF_MAX_S = int(os.environ.get("ALBEDO_EVAL_BOX_BACKOFF_MAX_S", "1800"))
 
 REPO_PATTERN_RE = re.compile(chain_config.REPO_PATTERN)
 
@@ -131,13 +138,12 @@ def _monotonic_now() -> float:
     return time.monotonic()
 
 
-def _age_seconds(ts: str | None) -> float | None:
-    if not ts:
-        return None
+def _ts(iso: str) -> float:
+    """Parse an ISO-8601 timestamp string; return 0.0 on any error."""
     try:
-        return max(0.0, datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(ts).timestamp())
+        return datetime.fromisoformat(iso).timestamp()
     except Exception:
-        return None
+        return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +355,10 @@ def scan_reveals(subtensor, netuid: int,
         if author_hotkey != hotkey:
             log.warning("v4 author_hotkey %s != chain key %s; trusting chain",
                         author_hotkey[:16], hotkey[:16])
+        if not ref.digest.startswith("sha256:"):
+            log.warning("dropping non-Hippius reveal from %s: digest=%s (sha256: required)",
+                        hotkey[:16], ref.digest[:19])
+            continue
         if ref.immutable_ref in completed_repos:
             continue
         new.append({
@@ -361,13 +371,92 @@ def scan_reveals(subtensor, netuid: int,
     return new
 
 
-# ---------------------------------------------------------------------------
-# Server-side challenger config validation (cheap pre-eval gate)
-# ---------------------------------------------------------------------------
+def _reeval_from_file(subtensor, netuid: int, state: "State") -> int:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "to_reeval.json")
+    if not os.path.exists(path):
+        return 0
 
-# Cache of king config keyed by `<repo>@<digest>` so we don't refetch the
-# king's config.json on every challenger validation. The materialize cache
-# already protects the disk; this caches the JSON parse too.
+    try:
+        with open(path) as f:
+            hotkeys = json.load(f)
+    except Exception as exc:
+        log.warning("_reeval_from_file: could not read %s: %s", path, exc)
+        return 0
+
+    if not isinstance(hotkeys, list):
+        log.warning("_reeval_from_file: expected list in %s, got %s",
+                    path, type(hotkeys).__name__)
+        os.unlink(path)
+        return 0
+
+    target: set[str] = {h for h in hotkeys if isinstance(h, str) and h}
+    if not target:
+        log.info("_reeval_from_file: empty hotkey list — nothing to re-queue")
+        os.unlink(path)
+        return 0
+
+    log.info("_reeval_from_file: looking up chain reveals for %d hotkey(s)", len(target))
+
+    try:
+        query = subtensor.query_map(module="Commitments", name="RevealedCommitments",
+                                     params=[netuid])
+    except Exception:
+        log.exception("_reeval_from_file: query_map failed")
+        os.unlink(path)
+        return 0
+
+    reveals: dict[str, dict] = {}
+    bad = 0
+    for pair in query:
+        try:
+            hotkey_ss58, entries = _decode_commitment_pair(pair)
+        except Exception:
+            bad += 1
+            continue
+        if hotkey_ss58 not in target:
+            continue
+        if not entries:
+            continue
+        block, data = max(entries, key=lambda e: e[0])
+        try:
+            ref, author_hotkey = parse_reveal_v4(data)
+        except ValueError:
+            continue
+        if author_hotkey != hotkey_ss58:
+            continue
+        if not ref.digest.startswith("sha256:"):
+            continue
+        reveals[hotkey_ss58] = {
+            "hotkey": hotkey_ss58,
+            "block": block,
+            "model_repo": ref.repo,
+            "model_digest": ref.digest,
+        }
+
+    if bad:
+        log.warning("_reeval_from_file: skipped %d undecodable chain entries", bad)
+
+    missing = target - set(reveals)
+    if missing:
+        log.warning("_reeval_from_file: no chain reveal found for %d hotkey(s): %s",
+                    len(missing), [h[:16] for h in sorted(missing)])
+
+    n = 0
+    for rev in reveals.values():
+        cid = state.enqueue(rev, force=True)
+        if cid:
+            n += 1
+            log.info("_reeval_from_file: re-queued %s for %s", cid, rev["hotkey"][:16])
+
+    try:
+        os.unlink(path)
+        log.info("_reeval_from_file: deleted %s (%d queued)", path, n)
+    except Exception as exc:
+        log.warning("_reeval_from_file: could not delete %s: %s", path, exc)
+
+    return n
+
+
 _KING_CONFIG_CACHE: dict[str, dict] = {}
 
 
@@ -385,6 +474,13 @@ def _load_king_config(king_repo: str, king_digest: str) -> dict | None:
     except Exception:
         log.exception("could not load king config for %s@%s", king_repo, king_digest[:19])
         return None
+
+
+def _exc_no_paths(exc: Exception) -> str:
+    msg = str(exc)
+    msg = re.sub(r""":\s+['"]/[^'"]*['"]""", "", msg)
+    msg = re.sub(r"\s/(?:home|root|tmp|var|srv|opt|etc)/\S+", "", msg)
+    return msg.strip(": ").strip()
 
 
 def validate_challenger_config(model_repo: str, challenger_digest: str,
@@ -405,8 +501,10 @@ def validate_challenger_config(model_repo: str, challenger_digest: str,
         shards beyond MAX_CHALLENGER_SAFETENSORS_GB)
       - repo name not matching the chain pattern
     """
-    if not REPO_PATTERN_RE.match(model_repo):
+    if not REPO_PATTERN_RE.fullmatch(model_repo):
         return f"repo name {model_repo!r} does not match required pattern {REPO_PATTERN_RE.pattern}"
+    if not (challenger_digest or "").startswith("sha256:"):
+        return f"challenger digest must be Hippius OCI sha256:… (got {challenger_digest!r})"
 
     king_cfg = _load_king_config(king_repo, king_digest)
     if not king_cfg:
@@ -416,23 +514,41 @@ def validate_challenger_config(model_repo: str, challenger_digest: str,
         log.warning("validate_challenger_config: king cfg unavailable; skipping lock check")
         return None
 
+    # Phase 1: download / network — infra side.  Any failure here is
+    # transient (Hippius outage, bad digest, partial download).
     try:
         ref = ModelRef(model_repo, challenger_digest)
         snap = materialize_model(ref, max_workers=4, config_only=True)
-        with open(os.path.join(snap, "config.json")) as f:
+    except Exception as exc:
+        return f"cannot materialize challenger config: {_exc_no_paths(exc)}"
+
+    # Phase 2: parse config.json — miner's responsibility.
+    # FileNotFoundError means the repo has no config.json at all.
+    # JSON decode errors mean the config.json is malformed.
+    # Neither is an infra failure — do NOT grant a retry.
+    try:
+        cfg_path = os.path.join(snap, "config.json")
+        with open(cfg_path) as f:
             chall_cfg = json.load(f)
+    except FileNotFoundError:
+        return "config.json missing from challenger repo"
+    except Exception as exc:
+        return f"config.json unreadable in challenger repo: {_exc_no_paths(exc)}"
+
+    # Phase 3: list repo files — infra side (S3 manifest fetch).
+    try:
         repo_files = list_remote_files(ref)
     except Exception as exc:
-        return f"cannot materialize challenger config: {exc}"
+        return f"cannot list challenger repo files: {_exc_no_paths(exc)}"
 
-    king_arch = king_cfg.get("architectures", [])
-    chall_arch = chall_cfg.get("architectures", [])
-    if king_arch and chall_arch and king_arch != chall_arch:
-        return f"architecture mismatch: king={king_arch} challenger={chall_arch}"
+    _ARCH_SENTINEL = object()
+    king_arch = king_cfg.get("architectures", _ARCH_SENTINEL)
+    chall_arch = chall_cfg.get("architectures", _ARCH_SENTINEL)
+    if king_arch != chall_arch:
+        ka_str = king_arch if king_arch is not _ARCH_SENTINEL else "<absent>"
+        ca_str = chall_arch if chall_arch is not _ARCH_SENTINEL else "<absent>"
+        return f"architecture mismatch: king={ka_str!r} challenger={ca_str!r}"
 
-    # Per-key compare with absent-vs-absent semantics. If the king has no
-    # `rope_scaling`, the challenger must also have no `rope_scaling`;
-    # otherwise a sneaky YARN remap could pass a present/absent check.
     _SENTINEL = object()
     for key in _GENERIC_LOCK_KEYS + tuple(chain_config.EXTRA_LOCK_KEYS):
         k = king_cfg.get(key, _SENTINEL)
@@ -452,16 +568,120 @@ def validate_challenger_config(model_repo: str, challenger_digest: str,
     st_files = [f for f in repo_files if f.endswith(".safetensors")]
     if not st_files:
         return "no .safetensors files in challenger repo"
-    # Each safetensors file should be at minimum a few MB for a real model;
-    # if there are absurdly many shards, that's a smell. The actual byte-size
-    # cap (MAX_CHALLENGER_SAFETENSORS_GB) is enforced when eval.py does the
-    # full materialize — config-only fetch doesn't pull safetensors locally
-    # so we can't measure bytes here without a separate per-file manifest
-    # call. Shard-count is the cheap proxy.
     if len(st_files) > 256:
         return f"too many safetensors shards ({len(st_files)}); refusing oversized layout"
 
     return None
+
+
+def _is_infra_failure(verdict: dict) -> bool:
+    """True when the eval server aborted before a meaningful duel ran."""
+    if verdict.get("error"):
+        return True
+    n_turns = int(verdict.get("n_turns") or 0)
+    n_valid = int(verdict.get("n_valid_turns") or 0)
+    return n_turns == 0 and n_valid == 0
+
+
+def _is_miner_fault(code: str, detail: str) -> bool:
+    """True when the failure is the miner's own fault and no retry should
+    be granted. False for transient infrastructure / network errors.
+
+    Miner fault:
+      - config_mismatch (wrong arch, forbidden files, etc.) — UNLESS the
+        failure was a transient 404 / materialize fetch error.
+      - chal_vllm_start_failed — the challenger model crashed on load;
+        the weights themselves are broken.
+      - no_king — validator internal state issue; not retriable.
+
+    Infra/transient (retry OK):
+      - eval_infra, eval_error, eval_http, no_verdict, hard_timeout
+      - config_mismatch caused by a 404 or materialize_failed fetch error
+    """
+    if code == "no_king":
+        return True
+    if code == "config_mismatch":
+        d = detail or ""
+        if ("cannot materialize" in d or "cannot list challenger" in d
+                or "materialize_failed" in d or "404" in d):
+            return False
+        return True
+    if "chal_vllm_start_failed" in (detail or ""):
+        return True
+    return False
+
+
+def _recover_from_lookback(state: "State") -> int:
+    if REEVAL_LOOKBACK_HOURS <= 0:
+        return 0
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cutoff = now_ts - REEVAL_LOOKBACK_HOURS * 3600
+    king_hotkey = (state.king or {}).get("hotkey", "")
+    queued_hotkeys: set[str] = {e.get("hotkey") for e in state.queue}
+
+    by_hotkey: dict[str, list[dict]] = {}
+    for h in state.history:
+        hk = h.get("hotkey", "")
+        if hk:
+            by_hotkey.setdefault(hk, []).append(h)
+
+    requeued = 0
+    for hotkey, entries in by_hotkey.items():
+        if hotkey == king_hotkey or hotkey in queued_hotkeys:
+            continue
+        if state.retry_counts.get(hotkey, 0) >= MAX_REEVAL_PER_HOTKEY:
+            continue  # budget already consumed by a prior runtime retry
+
+        fail_entry: dict | None = None
+        fail_ts = 0.0
+        for h in reversed(entries):
+            code = h.get("error_code", "")
+            if not code:
+                continue  # valid eval, not a failure
+            if _is_miner_fault(code, h.get("error_detail", "")):
+                continue  # miner caused this — no recovery
+            cid = h.get("challenge_id", "")
+            if cid in state.recovered_ids:
+                continue  # already recovered or marked by maybe_retry
+            ft = _ts(h.get("completed_at", ""))
+            if ft < cutoff:
+                continue  # outside lookback window
+            fail_entry = h
+            fail_ts = ft
+            break  # newest-first — take the first candidate found
+
+        if fail_entry is None:
+            continue
+
+        # Check if there's already a valid eval for this hotkey recorded AFTER
+        # the failure — scan only this hotkey's entries, not all history.
+        already_evaluated = any(
+            not hh.get("error_code") and _ts(hh.get("completed_at", "")) > fail_ts
+            for hh in entries
+        )
+        if already_evaluated:
+            continue
+
+        cid = fail_entry.get("challenge_id", "")
+        requeue_entry = {
+            "challenge_id": cid,
+            "hotkey": hotkey,
+            "model_repo": fail_entry.get("model_repo", ""),
+            "model_digest": fail_entry.get("model_digest", ""),
+            "block": fail_entry.get("block", 0),
+            "queued_at": _now(),
+        }
+        state.retry_counts[hotkey] = state.retry_counts.get(hotkey, 0) + 1
+        state.recovered_ids.add(cid)
+        state.queue.append(requeue_entry)
+        queued_hotkeys.add(hotkey)
+        requeued += 1
+        log.info("lookback recovery: re-queued %s for %s (code=%s, age=%.1fh)",
+                 cid, hotkey[:16], fail_entry.get("error_code"),
+                 (now_ts - fail_ts) / 3600)
+
+    return requeued
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +717,21 @@ class State:
             "last_dashboard_flush_at": None,
             "consecutive_tick_errors": 0,
         }
+        self.infra_cooldown: dict[str, float] = {}
+        self._last_disk_warn_monotonic = 0.0
         self._last_dashboard_flush_monotonic = 0.0
+        # Tracks how many automatic retries have been granted per hotkey.
+        # Capped at 1 so a miner can never loop forever on transient errors.
+        self.retry_counts: dict[str, int] = {}
+        # Set of challenge_ids that have been re-queued via the lookback
+        # recovery scan.  Persisted so restarts don't double-recover the
+        # same failures.
+        self.recovered_ids: set[str] = set()
+        # Eval-box back-off: monotonic deadline before which we skip the
+        # queue, and consecutive-failure counter for exponential increase.
+        # NOT persisted — a validator restart is itself a recovery event.
+        self.eval_box_retry_after: float = 0.0
+        self.eval_box_consecutive_fails: int = 0
 
     def load(self) -> None:
         k = self.store.get("king/current.json")
@@ -520,6 +754,8 @@ class State:
             self.stats = st.get("stats", self.stats)
             self.counter = st.get("counter", 0)
             self.last_weight_block = st.get("last_weight_block", 0)
+            self.retry_counts = st.get("retry_counts", {})
+            self.recovered_ids = set(st.get("recovered_ids", []))
         h = self.store.get("state/dashboard_history.json")
         if h:
             self.history = h.get("history", [])
@@ -536,6 +772,8 @@ class State:
         self.store.put("state/validator_state.json", {
             "stats": self.stats, "counter": self.counter,
             "last_weight_block": self.last_weight_block,
+            "retry_counts": self.retry_counts,
+            "recovered_ids": sorted(self.recovered_ids),
             "updated_at": now,
         })
         self.store.put("state/queue.json", {"pending": self.queue, "updated_at": now})
@@ -553,11 +791,15 @@ class State:
         self.counter += 1
         return f"eval-{self.counter:04d}"
 
-    def enqueue(self, reveal: dict) -> str | None:
+    def enqueue(self, reveal: dict, *, force: bool = False) -> str | None:
         """The 1-hotkey-1-eval enforcement is HERE (plus scan_reveals).
         Both gates are required; scan_reveals filters intake but a
         validator restart can race with a re-scan, so this is the
-        belt-and-suspenders."""
+        belt-and-suspenders.
+
+        force=True bypasses the seen/completed_repos checks; used by
+        _reeval_from_file to re-queue specific hotkeys on operator request.
+        """
         repo = reveal.get("model_repo", "")
         digest = reveal.get("model_digest", "")
         model_key = f"{repo}@{digest}" if digest else repo
@@ -566,15 +808,19 @@ class State:
         if king_hotkey and hotkey == king_hotkey:
             log.info("skipping enqueue: hotkey %s is the current king", hotkey[:16])
             return None
-        if hotkey and hotkey in self.seen:
+        if not force and hotkey and hotkey in self.seen:
             log.info("skipping enqueue: hotkey %s already used its 1-eval slot "
                      "(must re-register for another shot)", hotkey[:16])
             return None
         for existing in self.queue:
+            if existing.get("hotkey") == hotkey:
+                log.info("skipping enqueue: hotkey %s already has an entry in queue "
+                         "(different model submitted while retry is pending?)", hotkey[:16])
+                return None
             if existing.get("model_repo") == repo:
                 log.info("skipping duplicate repo: %s already queued", repo)
                 return None
-        if model_key in self.completed_repos:
+        if not force and model_key in self.completed_repos:
             log.info("skipping %s: repo already evaluated", repo)
             return None
         cid = self.next_id()
@@ -591,14 +837,51 @@ class State:
         self.flush_dashboard(force=True)
         return cid
 
+    def unburn_challenge(self, entry: dict) -> None:
+        """Return a miner's 1-eval slot after an infra failure (disk, vLLM, etc.).
+
+        Only call for failures where the duel never meaningfully ran — not for
+        completed duels that lost on merit.
+        """
+        hotkey = entry.get("hotkey", "")
+        repo = entry.get("model_repo", "")
+        digest = entry.get("model_digest", "")
+        model_key = f"{repo}@{digest}" if digest else repo
+        if hotkey and hotkey in self.seen:
+            self.seen.discard(hotkey)
+            log.info("unburned hotkey %s after infra failure", hotkey[:16])
+        if model_key and model_key in self.completed_repos:
+            self.completed_repos.discard(model_key)
+            log.info("unburned repo %s after infra failure", model_key[:48])
+
+    def maybe_retry(self, entry: dict, code: str, detail: str) -> bool:
+        hotkey = entry.get("hotkey", "")
+        cid = entry.get("challenge_id", "?")
+        if _is_miner_fault(code, detail):
+            log.info("%s: no retry — miner-fault error (code=%s hotkey=%s)",
+                     cid, code, hotkey[:16] if hotkey else "?")
+            return False
+        used = self.retry_counts.get(hotkey, 0)
+        if used >= MAX_REEVAL_PER_HOTKEY:
+            log.info("%s: retry budget exhausted for %s (%d/%d, code=%s); marking final",
+                     cid, hotkey[:16] if hotkey else "?", used, MAX_REEVAL_PER_HOTKEY, code)
+            return False
+
+        self.retry_counts[hotkey] = used + 1
+        # Mark this challenge_id so _recover_from_lookback() on the next
+        # restart won't see it as an unprocessed failure and re-queue again.
+        if cid != "?":
+            self.recovered_ids.add(cid)
+        self.queue.insert(0, entry)
+        log.info("%s: retry %d/%d granted for %s (code=%s); re-queued at front",
+                 cid, used + 1, MAX_REEVAL_PER_HOTKEY, hotkey[:16] if hotkey else "?", code)
+        return True
+
     def set_king(self, hotkey: str, model_repo: str, model_digest: str,
                   block: int, challenge_id: str = "seed",
                   *, dethrone_judges: list[dict] | None = None,
                   crown_judges: list[dict] | None = None) -> None:
-        # If this is a real dethrone (not the seed install) and the new
-        # king's hotkey differs from the current king's, push the OLD
-        # king onto the front of king_chain. Re-crowning the same hotkey
-        # (e.g. per-WEIGHT_INTERVAL refresh) is a no-op for the chain.
+
         prev = self.king
         is_real_transition = (
             challenge_id != "seed"
@@ -656,6 +939,7 @@ class State:
         rec = {
             "challenge_id": entry.get("challenge_id"),
             "hotkey": entry.get("hotkey"),
+            "uid": self.uid_map.get(entry.get("hotkey")),
             "model_repo": entry.get("model_repo"),
             "model_digest": entry.get("model_digest"),
             "accepted": verdict.get("accepted", False),
@@ -689,6 +973,7 @@ class State:
         self.history.append({
             "challenge_id": entry.get("challenge_id"),
             "hotkey": entry.get("hotkey"),
+            "uid": self.uid_map.get(entry.get("hotkey")),
             "model_repo": entry.get("model_repo"),
             "model_digest": entry.get("model_digest"),
             "error_code": code,
@@ -709,10 +994,7 @@ class State:
             self.watchdog["last_dashboard_flush_at"] = _now()
             king_hk = self.king.get("hotkey") if self.king else None
 
-            # king_chain dashboard payload — current king first, then past
-            # kings, each annotated with its current weight share (or null
-            # if deregistered). The website shows this as a small table
-            # under the KING panel.
+
             eligible = _eligible_chain_hotkeys(self) if (king_hk or self.king_chain) else []
             equal_share = round(1.0 / len(eligible), 9) if eligible else 0.0
 
@@ -849,10 +1131,6 @@ async def maybe_set_weights(subtensor, wallet, state: State, *,
         return False
 
     if not resp.success:
-        # bt's internal rate-limit guard returns success=False with no
-        # message when blocks_since_last_update <= weights_rate_limit.
-        # Treat as no-op and advance last_weight_block so we don't hammer
-        # every tick. See teutonic-ref/validator.py:674-682.
         if not resp.message:
             log.info("set_weights rate-limited (no-op); advancing last_weight_block")
             state.last_weight_block = current_block
@@ -889,6 +1167,71 @@ def _compute_seed(subtensor, hotkey: str) -> bytes:
     return hashlib.blake2b(block_hash_b + hotkey.encode(), digest_size=32).digest()
 
 
+async def _eval_disk_ok(http: httpx.AsyncClient, *, queue_len: int = 0) -> tuple[bool, int, int]:
+    """Return (ok, free_bytes, min_bytes) from eval server /health.
+
+    Connection failures return ok=False so the queue is deferred instead of
+    burning through entries while the eval box / tunnel is down.
+    """
+    try:
+        r = await http.get(f"{EVAL_SERVER_URL}/health", timeout=15.0)
+        r.raise_for_status()
+        disk = r.json().get("disk") or {}
+        free_b = int(disk.get("free_bytes") or 0)
+        min_b = int(disk.get("min_required_bytes") or (6 * 1024 ** 3))
+        return free_b >= min_b, free_b, min_b
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+        log.warning(
+            "eval server unreachable; deferring queue (%d pending): %s",
+            queue_len, exc,
+        )
+        return False, 0, 0
+    except httpx.HTTPStatusError as exc:
+        log.warning("eval /health returned %s; deferring queue", exc.response.status_code)
+        return False, 0, 0
+    except Exception as exc:
+        log.warning("eval disk health check failed (proceeding): %s", exc)
+        return True, 0, 0
+
+
+async def _startup_prune_cache(http: httpx.AsyncClient, state: "State") -> None:
+
+    keep: list[dict] = []
+
+    if state.king.get("model_repo") and state.king.get("king_digest"):
+        keep.append({"repo": state.king["model_repo"], "digest": state.king["king_digest"]})
+
+    for e in state.king_chain:
+        if e.get("model_repo") and e.get("king_digest"):
+            keep.append({"repo": e["model_repo"], "digest": e["king_digest"]})
+
+    for h in state.history[-5:]:
+        if h.get("model_repo") and h.get("model_digest"):
+            keep.append({"repo": h["model_repo"], "digest": h["model_digest"]})
+
+    for q in state.queue:
+        if q.get("model_repo") and q.get("model_digest"):
+            keep.append({"repo": q["model_repo"], "digest": q["model_digest"]})
+
+    if not keep:
+        log.info("startup cache prune: no models in state, skipping")
+        return
+    try:
+        r = await http.post(
+            f"{EVAL_SERVER_URL}/prune_cache",
+            json={"keep": keep},
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        result = r.json()
+        log.info(
+            "startup cache prune: freed %.3f GB, kept %d models",
+            result.get("freed_gb", 0), result.get("kept", 0),
+        )
+    except Exception as exc:
+        log.warning("startup cache prune failed (non-fatal): %s", exc)
+
+
 async def _eval_set_king(http: httpx.AsyncClient, king: dict) -> None:
     r = await http.post(
         f"{EVAL_SERVER_URL}/set_king",
@@ -907,6 +1250,9 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
     if not king:
         log.error("%s: no king set; skipping", cid)
         state.record_failure(entry, "no_king", "validator king is empty")
+        state.current_eval = None
+        state.flush()
+        state.flush_dashboard(force=True)
         return
 
     # Cheap pre-eval gate: config-only fetch + arch/lock checks + repo
@@ -921,6 +1267,7 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
     if rejection:
         log.info("%s: rejected at config gate: %s", cid, rejection)
         state.record_failure(entry, "config_mismatch", rejection)
+        state.maybe_retry(entry, "config_mismatch", rejection)
         state.current_eval = None
         state.flush()
         state.flush_dashboard(force=True)
@@ -935,6 +1282,23 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
         "hotkey": entry.get("hotkey", ""),
         "n_samples": chain_config.DUEL_N_SAMPLES,
         "max_turns": chain_config.DUEL_MAX_TURNS_PER_SAMPLE,
+        # Keep-list for post-duel cache pruning on the eval server.
+        # Keeps kings + last 5 evaluated challengers + still-queued challengers.
+        "king_chain": [
+            {"repo": e["model_repo"], "digest": e["king_digest"]}
+            for e in state.king_chain
+            if e.get("model_repo") and e.get("king_digest")
+        ],
+        "recent_challengers": [
+            {"repo": h["model_repo"], "digest": h["model_digest"]}
+            for h in state.history[-5:]
+            if h.get("model_repo") and h.get("model_digest")
+        ],
+        "queued_challengers": [
+            {"repo": q["model_repo"], "digest": q["model_digest"]}
+            for q in state.queue          # current entry already popped before this call
+            if q.get("model_repo") and q.get("model_digest")
+        ],
     }
 
     state.current_eval = {
@@ -964,8 +1328,12 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
             if resp.status_code != 200:
                 err = await resp.aread()
                 log.error("%s: eval server %s: %s", cid, resp.status_code, err[:300])
-                state.record_failure(entry, "eval_http",
-                                      f"{resp.status_code}: {err[:300].decode(errors='ignore')}")
+                _detail = f"{resp.status_code}: {err[:300].decode(errors='ignore')}"
+                state.record_failure(entry, "eval_http", _detail)
+                state.maybe_retry(entry, "eval_http", _detail)
+                state.current_eval = None
+                state.flush()
+                state.flush_dashboard(force=True)
                 return
 
             cur_event = ""
@@ -1015,45 +1383,87 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
                     log.warning("%s: eval stream idle > %ds", cid, STREAM_IDLE_WARN_S)
 
     except Exception as exc:
+        err_str = str(exc).lower()
+        conn_err = isinstance(
+            exc, (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError)
+        ) or "connection attempts failed" in err_str or "connecterror" in err_str
+        if conn_err:
+            state.eval_box_consecutive_fails += 1
+            backoff = min(
+                EVAL_BOX_BACKOFF_S * (2 ** (state.eval_box_consecutive_fails - 1)),
+                EVAL_BOX_BACKOFF_MAX_S,
+            )
+            state.eval_box_retry_after = _monotonic_now() + backoff
+            log.warning(
+                "%s: eval unreachable (%s); re-queuing with %ds backoff "
+                "(consecutive fails: %d)",
+                cid, exc, backoff, state.eval_box_consecutive_fails,
+            )
+            state.record_failure(entry, "eval_infra", f"eval_unreachable: {exc}")
+            state.queue.insert(0, entry)
+            state.current_eval = None
+            state.flush()
+            state.flush_dashboard(force=True)
+            return
         log.exception("%s: eval failed", cid)
-        state.record_failure(entry, "eval_error", str(exc))
+        _detail = str(exc)
+        state.record_failure(entry, "eval_error", _detail)
+        state.maybe_retry(entry, "eval_error", _detail)
+        state.current_eval = None
+        state.flush()
+        state.flush_dashboard(force=True)
         return
+
+    # Reaching here means the SSE stream connected and ran — eval box is up.
+    state.eval_box_consecutive_fails = 0
+    state.eval_box_retry_after = 0.0
 
     if not verdict:
         log.error("%s: eval stream ended without verdict", cid)
         state.record_failure(entry, "no_verdict", "stream closed without verdict")
+        state.maybe_retry(entry, "no_verdict", "stream closed without verdict")
+        state.current_eval = None
+        state.flush()
+        state.flush_dashboard(force=True)
         return
 
-    state.record_verdict(entry, verdict)
+    if _is_infra_failure(verdict):
+        err = str(verdict.get("error") or "zero_turn_eval")
+        log.warning("%s: infra failure (%s)", cid, err[:120])
+        if "disk_full" in err and entry.get("hotkey"):
+            state.infra_cooldown[entry["hotkey"]] = _monotonic_now() + 300.0
+        state.record_failure(entry, "eval_infra", err)
+        state.maybe_retry(entry, "eval_infra", err)
+    else:
+        state.record_verdict(entry, verdict)
+        if verdict.get("accepted"):
+            log.info("%s: ACCEPTED. crowning %s", cid, entry.get("hotkey", "?")[:16])
+            try:
+                block = subtensor.block
+            except Exception:
+                block = 0
+            state.set_king(entry.get("hotkey", ""), entry.get("model_repo", ""),
+                           entry.get("model_digest", ""), block, challenge_id=cid,
+                           dethrone_judges=[
+                               {"model": j["model"], "king_mean": j["king_mean"], "n": j.get("n", 0)}
+                               for j in (verdict.get("judges") or [])
+                           ],
+                           crown_judges=[
+                               {"model": j["model"], "king_mean": j["chal_mean"], "n": j.get("n", 0)}
+                               for j in (verdict.get("judges") or [])
+                           ])
+            try:
+                await _eval_set_king(http, state.king)
+            except Exception:
+                log.exception("post-dethrone /set_king failed; will retry on next tick")
+            await maybe_set_weights(subtensor, wallet, state, force=True, reason="dethrone")
+        else:
+            deth = verdict.get("dethrone") or {}
+            log.info("%s: REJECTED. dethrone=%s mean_delta=%.4f lcb=%.4f", cid,
+                     deth, verdict.get("mean_delta", 0.0), verdict.get("lcb_at_1_minus_alpha", 0.0))
     state.current_eval = None
     state.flush()
     state.flush_dashboard(force=True)
-
-    if verdict.get("accepted"):
-        log.info("%s: ACCEPTED. crowning %s", cid, entry.get("hotkey", "?")[:16])
-        try:
-            block = subtensor.block
-        except Exception:
-            block = 0
-        state.set_king(entry.get("hotkey", ""), entry.get("model_repo", ""),
-                       entry.get("model_digest", ""), block, challenge_id=cid,
-                       dethrone_judges=[
-                           {"model": j["model"], "king_mean": j["king_mean"], "n": j.get("n", 0)}
-                           for j in (verdict.get("judges") or [])
-                       ],
-                       crown_judges=[
-                           {"model": j["model"], "king_mean": j["chal_mean"], "n": j.get("n", 0)}
-                           for j in (verdict.get("judges") or [])
-                       ])
-        try:
-            await _eval_set_king(http, state.king)
-        except Exception:
-            log.exception("post-dethrone /set_king failed; will retry on next tick")
-        await maybe_set_weights(subtensor, wallet, state, force=True, reason="dethrone")
-    else:
-        deth = verdict.get("dethrone") or {}
-        log.info("%s: REJECTED. dethrone=%s mean_delta=%.4f lcb=%.4f", cid,
-                 deth, verdict.get("mean_delta", 0.0), verdict.get("lcb_at_1_minus_alpha", 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -1135,6 +1545,24 @@ async def main() -> int:
             log.error("eval server unreachable on startup; aborting")
             return 3
 
+        await _startup_prune_cache(http, state)
+
+        # Re-queue miners who hit infra-side failures within the lookback window.
+        if REEVAL_LOOKBACK_HOURS > 0:
+            n_recovered = _recover_from_lookback(state)
+            if n_recovered:
+                log.info("lookback recovery: %d miner(s) re-queued "
+                         "(lookback=%.0fh)", n_recovered, REEVAL_LOOKBACK_HOURS)
+                state.flush()
+                state.flush_dashboard(force=True)
+
+        # Re-queue hotkeys listed in to_reeval.json (operator-driven, one-shot).
+        n_reeval = _reeval_from_file(subtensor, NETUID, state)
+        if n_reeval:
+            log.info("to_reeval: %d miner(s) re-queued", n_reeval)
+            state.flush()
+            state.flush_dashboard(force=True)
+
         await maybe_set_weights(subtensor, wallet, state, force=True, reason="startup")
 
         def _on_signal(sig, frame):
@@ -1152,13 +1580,54 @@ async def main() -> int:
             try:
                 state.refresh_uid_map(subtensor, NETUID)
                 reveals = scan_reveals(subtensor, NETUID, state.completed_repos, state.seen)
+                now_mono = _monotonic_now()
                 for rev in reveals:
+                    hk = rev.get("hotkey", "")
+                    if hk and now_mono < state.infra_cooldown.get(hk, 0):
+                        continue
                     cid = state.enqueue(rev)
                     if cid:
                         log.info("queued %s from %s", cid, rev["hotkey"][:16])
 
                 while state.queue:
+                    _loop_mono = _monotonic_now()
+                    # Honour eval-box backoff (set after eval_unreachable).
+                    if _loop_mono < state.eval_box_retry_after:
+                        remaining = int(state.eval_box_retry_after - _loop_mono)
+                        if _loop_mono - state._last_disk_warn_monotonic > 60:
+                            state._last_disk_warn_monotonic = _loop_mono
+                            log.warning(
+                                "eval box in backoff — %ds remaining "
+                                "(consecutive fails: %d); deferring queue (%d pending)",
+                                remaining, state.eval_box_consecutive_fails, len(state.queue),
+                            )
+                        break
+                    disk_ok, free_b, min_b = await _eval_disk_ok(
+                        http, queue_len=len(state.queue),
+                    )
+                    if not disk_ok:
+                        if _loop_mono - state._last_disk_warn_monotonic > 60:
+                            state._last_disk_warn_monotonic = _loop_mono
+                            log.warning(
+                                "eval disk low (%d bytes free, need %d); "
+                                "deferring queue (%d pending)",
+                                free_b, min_b, len(state.queue),
+                            )
+                        break
                     entry = state.queue.pop(0)
+                    # Pre-populate current_eval before flush_dashboard so the
+                    # queue section never shows a gap between "popped" and "in
+                    # flight". process_challenge overwrites this with full details.
+                    state.current_eval = {
+                        "challenge_id":    entry.get("challenge_id"),
+                        "challenger_repo": entry.get("model_repo", ""),
+                        "challenger_digest": entry.get("model_digest", ""),
+                        "hotkey":          entry.get("hotkey", ""),
+                        "uid":             state.uid_map.get(entry.get("hotkey", "")),
+                        "queued_at":       entry.get("queued_at"),
+                        "started_at":      _now(),
+                        "phase":           "starting",
+                    }
                     state.flush()
                     state.flush_dashboard(force=True)
 
@@ -1170,8 +1639,9 @@ async def main() -> int:
                     except asyncio.TimeoutError:
                         log.error("%s: hard wall-clock timeout (%ds)",
                                   entry.get("challenge_id"), TICK_RESTART_AFTER)
-                        state.record_failure(entry, "hard_timeout",
-                                              f"exceeded {TICK_RESTART_AFTER}s")
+                        _detail = f"exceeded {TICK_RESTART_AFTER}s"
+                        state.record_failure(entry, "hard_timeout", _detail)
+                        state.maybe_retry(entry, "hard_timeout", _detail)
                         state.current_eval = None
                         state.flush()
                         state.flush_dashboard(force=True)
