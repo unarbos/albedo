@@ -285,11 +285,14 @@ def _load_default_chat_template() -> str:
 
 
 def ensure_chat_template(model_dir: str | os.PathLike[str]) -> bool:
-    """Inject the king-chain Qwen3 chat template when a snapshot lacks one.
+    """Enforce the canonical Qwen3 chat template on every model snapshot.
 
-    ricdomolm/mini-coder-1.7b (and miner forks) ship tokenizer files without
-    `chat_template`, which makes vLLM 0.21+ return 400 on every completion.
-    Returns True when tokenizer_config.json was updated.
+    Always overwrites whatever chat_template the miner shipped — a custom
+    template is an injection attack surface (it controls how every vLLM turn
+    is formatted, can inject hidden system prompts or verdict JSON, etc.).
+
+    Returns True when tokenizer_config.json was written.
+    Returns False when tokenizer_config.json is absent (nothing to do).
     """
     root = Path(model_dir)
     cfg_path = root / "tokenizer_config.json"
@@ -297,14 +300,18 @@ def ensure_chat_template(model_dir: str | os.PathLike[str]) -> bool:
         return False
 
     cfg = json.loads(cfg_path.read_text())
-    if (cfg.get("chat_template") or "").strip():
-        return False
-
     template = _load_default_chat_template()
+    existing = (cfg.get("chat_template") or "").strip()
+    if existing and existing == template.strip():
+        return False  # already canonical — skip the write
+
+    if existing and existing != template.strip():
+        log.warning("overwriting non-canonical chat_template in %s "
+                    "(miner-supplied templates are not allowed)", root)
     cfg["chat_template"] = template
     cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
     (root / "chat_template.jinja").write_text(template)
-    log.info("injected chat template into %s", root)
+    log.info("enforced canonical chat template in %s", root)
     return True
 
 
