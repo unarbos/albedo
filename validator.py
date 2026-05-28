@@ -1640,6 +1640,7 @@ async def main() -> int:
                         log.error("%s: hard wall-clock timeout (%ds)",
                                   entry.get("challenge_id"), TICK_RESTART_AFTER)
                         _detail = f"exceeded {TICK_RESTART_AFTER}s"
+                        state.unburn_challenge(entry)
                         state.record_failure(entry, "hard_timeout", _detail)
                         state.maybe_retry(entry, "hard_timeout", _detail)
                         state.current_eval = None
