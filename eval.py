@@ -1336,6 +1336,26 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
         judge_outcomes, min_turns=min_turns, n_done=n_done, n_valid=n_valid,
     )
 
+    # Ensemble LCB gate: even when per-judge mean deltas pass, require the
+    # ensemble lower confidence bound at gate_alpha to be positive. This blocks
+    # noise-driven verdicts where the mean looks good but statistical confidence
+    # is insufficient. gate_alpha (default 0.05) is softer than the diagnostic
+    # alpha (0.001) so genuine improvements of ~5-7% pass at n_samples=64.
+    gate_alpha = chain_config.DUEL_GATE_ALPHA
+    _, gate_lcb, _ = paired_bootstrap_lcb(
+        per_turn_ensemble_deltas,
+        resamples=chain_config.DUEL_BOOTSTRAP_RESAMPLES,
+        alpha=gate_alpha,
+        rng_seed=seed,
+    )
+    if accepted and gate_lcb <= 0:
+        log.warning(
+            "dethrone blocked: per-judge means passed but ensemble gate_lcb=%.4f <= 0 "
+            "(gate_alpha=%.3f) — statistical confidence insufficient",
+            gate_lcb, gate_alpha,
+        )
+        accepted = False
+
     verdict_record = {
         "type":      "verdict",
         "schema_version": EVAL_TRACE_SCHEMA_VERSION,
@@ -1353,7 +1373,8 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
         "mean_delta": mean_delta,
         "lcb_at_1_minus_alpha": lcb,
         "alpha": chain_config.DUEL_ALPHA,
-        "eval_delta": chain_config.DUEL_EVAL_DELTA,
+        "gate_lcb": gate_lcb,
+        "gate_alpha": gate_alpha,
         "se": se,
         "parse_failures": parse_failures,
         "judges": judges_final,

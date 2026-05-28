@@ -109,8 +109,8 @@ DATASET_MANIFEST_SHA256: str = _dataset.get("manifest_sha256", "")
 # [duel]
 DUEL_N_SAMPLES: int = int(_duel.get("n_samples", 32))
 DUEL_MAX_TURNS_PER_SAMPLE: int = int(_duel.get("max_turns_per_sample", 10))
-DUEL_EVAL_DELTA: float = float(_duel.get("eval_delta", 0.02))
 DUEL_ALPHA: float = float(_duel.get("alpha", 0.001))
+DUEL_GATE_ALPHA: float = float(_duel.get("gate_alpha", 0.05))
 DUEL_BOOTSTRAP_RESAMPLES: int = int(_duel.get("bootstrap_resamples", 10000))
 DUEL_GEN_TEMPERATURE: float = float(_duel.get("gen_temperature", 1.0))
 DUEL_GEN_MAX_TOKENS: int = int(_duel.get("gen_max_tokens", 1024))
@@ -157,8 +157,8 @@ __all__ = [
     "DATASET_MANIFEST_SHA256",
     "DUEL_N_SAMPLES",
     "DUEL_MAX_TURNS_PER_SAMPLE",
-    "DUEL_EVAL_DELTA",
     "DUEL_ALPHA",
+    "DUEL_GATE_ALPHA",
     "DUEL_BOOTSTRAP_RESAMPLES",
     "DUEL_GEN_TEMPERATURE",
     "DUEL_GEN_MAX_TOKENS",

@@ -68,10 +68,10 @@ manifest_sha256 = "982a92bd85d122d287b15f2ddb4e2050b9e345fb3921aa9a63382c7af022b
 [duel]
 n_samples = 64
 max_turns_per_sample = 10
-# Legacy knob kept in verdict JSON for dashboards; dethrone is per-judge
-# (match-and-exceed one dimension), not ensemble LCB >= eval_delta.
-eval_delta = 0.02
-alpha = 0.001          # one-sided LCB confidence
+# Dethrone: wins>=1 AND loses==0 across judge dimensions, plus ensemble
+# LCB at gate_alpha must be > 0 (see gate_alpha below).
+alpha = 0.001          # one-sided LCB for reporting/diagnostics
+gate_alpha = 0.05      # softer alpha used as the statistical gate
 bootstrap_resamples = 10000
 # Per-side completion budget. The trajectory dataset was generated at T=1.0
 # with 32k context cap; matching it keeps the comparison fair.
