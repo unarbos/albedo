@@ -49,7 +49,14 @@ from pydantic import BaseModel, Field
 import chain_config
 import judge as judge_mod
 import trajectory_sampler
-from model_store import ModelRef, ensure_chat_template, materialize_model
+from model_store import (
+    MODEL_CACHE_DIR,
+    ModelRef,
+    disk_free_bytes,
+    ensure_chat_template,
+    materialize_model,
+    prune_model_cache,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,6 +95,11 @@ VLLM_PROMPT_TOKEN_BUDGET = max(
 )
 # Reject duels where too many turns fail vLLM generation (unfair comparison).
 MIN_VALID_TURN_FRAC = float(os.environ.get("ALBEDO_MIN_VALID_TURN_FRAC", "0.8"))
+# Headroom for one challenger snapshot (~3.5 GB) + vLLM temp files.
+MIN_DISK_BYTES = int(os.environ.get("ALBEDO_MIN_DISK_BYTES", str(6 * 1024**3)))
+# Overlay `/tmp` on the eval box is often full (teutonic data). Triton JIT and
+# vLLM torch.compile write temp files there unless redirected to /root.
+TMP_DIR = os.environ.get("ALBEDO_TMP_DIR", "/root/albedo/tmp")
 
 DATASET_DIR = os.environ.get("ALBEDO_DATASET_DIR", "/var/albedo/dataset")
 
@@ -120,6 +132,65 @@ EVALS_JUDGE_RAW_MAX_CHARS = int(os.environ.get("ALBEDO_EVALS_JUDGE_RAW_MAX_CHARS
 
 # Bump when turn / duel_meta fields change so training exporters can branch.
 EVAL_TRACE_SCHEMA_VERSION = 1
+
+
+def _all_keep_refs(req: "EvalRequest") -> list[ModelRef]:
+    """Full model cache keep-set: current king + past kings + 5 recent
+    evaluated challengers + any still-queued challengers."""
+    refs: list[ModelRef] = []
+    for entry in [req.king] + req.king_chain + req.recent_challengers + req.queued_challengers:
+        if not entry:
+            continue
+        repo   = entry.get("repo") or entry.get("model_repo", "")
+        digest = entry.get("digest") or entry.get("king_digest", "")
+        if repo and digest:
+            try:
+                refs.append(ModelRef(repo, digest))
+            except Exception:
+                pass
+    return refs
+
+
+def _ensure_disk_for_duel(
+    king_ref: ModelRef,
+    chal_ref: ModelRef,
+    keep_refs: list[ModelRef] | None = None,
+) -> None:
+    """Prune stale caches then verify free space before downloading weights."""
+    from model_store import ensure_disk_bytes
+
+    Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
+    for path in (MODEL_CACHE_DIR, TMP_DIR):
+        if disk_free_bytes(path) >= MIN_DISK_BYTES:
+            continue
+        if path == MODEL_CACHE_DIR:
+            keep = list(keep_refs) if keep_refs else [king_ref]
+            freed = prune_model_cache(*keep)
+            log.warning(
+                "low disk before duel (need %d bytes); pruned %.2f GB keeping %d models",
+                MIN_DISK_BYTES,
+                freed / 1e9,
+                len(keep),
+            )
+        ensure_disk_bytes(MIN_DISK_BYTES, path)
+
+
+async def _post_duel_cache_cleanup(
+    king_ref: ModelRef,
+    keep_refs: list[ModelRef] | None = None,
+) -> None:
+    """Drop stale models after each duel; kings + recent challengers + queue stay cached."""
+    try:
+        keep = list(keep_refs) if keep_refs else [king_ref]
+        freed = await asyncio.to_thread(prune_model_cache, *keep)
+        if freed:
+            log.info(
+                "post-duel cache prune freed %.2f GB (kept %d models)",
+                freed / 1e9,
+                len(keep),
+            )
+    except Exception:
+        log.exception("post-duel cache prune failed (non-fatal)")
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +454,10 @@ class VLLMProcess:
         env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
         env["VLLM_USE_DEEP_GEMM"] = "0"
         env["VLLM_MOE_USE_DEEP_GEMM"] = "0"
+        Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
+        env["TMPDIR"] = TMP_DIR
+        env["TRITON_CACHE_DIR"] = os.path.join(TMP_DIR, "triton_cache")
+        env.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.join(TMP_DIR, "torchinductor"))
 
         n_gpus = max(1, len([g for g in self.gpus.split(",") if g.strip()]))
         cmd = [
@@ -692,13 +767,16 @@ def dethrone_by_judge_dimensions(
 # ---------------------------------------------------------------------------
 
 class EvalRequest(BaseModel):
-    king:              dict           # {"repo": str, "digest": str}
-    challenger:        dict
-    seed_hex:          str            # hex-encoded seed bytes (e.g. blake2b(blockhash||hotkey))
-    eval_id:           str
-    hotkey:            str | None = None
-    n_samples:         int | None = None
-    max_turns:         int | None = None
+    king:                 dict           # {"repo": str, "digest": str}
+    challenger:           dict
+    seed_hex:             str            # hex-encoded seed bytes (e.g. blake2b(blockhash||hotkey))
+    eval_id:              str
+    hotkey:               str | None = None
+    n_samples:            int | None = None
+    max_turns:            int | None = None
+    king_chain:           list[dict] = []   # past kings [{"repo":…, "digest":…}]
+    recent_challengers:   list[dict] = []   # last 5 evaluated [{"repo":…, "digest":…}]
+    queued_challengers:   list[dict] = []   # still in queue (not yet evaluated)
 
 
 class SetKingRequest(BaseModel):
@@ -929,12 +1007,18 @@ async def run_duel(req: EvalRequest) -> AsyncIterator[bytes]:
         # least try once.
         if not flushed_ref[0]:
             await _safe_flush_sink(sink, flushed_ref)
+        try:
+            king_ref = ModelRef(req.king["repo"], req.king["digest"])
+            await _post_duel_cache_cleanup(king_ref, _all_keep_refs(req))
+        except Exception:
+            log.exception("post-duel cache cleanup failed (non-fatal)")
 
 
 async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
                            flushed_ref: list[bool], seed: bytes,
                            n_samples: int, max_turns: int) -> AsyncIterator[bytes]:
     eval_id = req.eval_id
+    king_ref = ModelRef(req.king["repo"], req.king["digest"])
     yield _sse_event("phase", {"eval_id": eval_id, "phase": "materialize_challenger"})
 
     # 1. Materialize challenger (idempotent if already cached).
@@ -943,6 +1027,13 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
     except ValueError as exc:
         yield _sse_event("verdict", {"eval_id": eval_id, "accepted": False,
                                      "error": f"invalid_challenger_ref: {exc}"})
+        return
+    try:
+        await asyncio.to_thread(_ensure_disk_for_duel, king_ref, chal_ref, _all_keep_refs(req))
+    except OSError as exc:
+        log.error("disk check failed before materialize: %s", exc)
+        yield _sse_event("verdict", {"eval_id": eval_id, "accepted": False,
+                                     "error": f"disk_full: {exc}"})
         return
     try:
         chal_dir = await asyncio.to_thread(
@@ -969,6 +1060,11 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
         await STATE.chal_proc.start(chal_dir, chal_ref.immutable_ref)
     except Exception as exc:
         log.exception("challenger vllm failed to start")
+        try:
+            keep = _all_keep_refs(req)
+            await asyncio.to_thread(prune_model_cache, *keep)
+        except Exception:
+            log.exception("cache prune after chal vllm fail (non-fatal)")
         yield _sse_event("verdict", {"eval_id": eval_id, "accepted": False,
                                      "error": f"chal_vllm_start_failed: {exc}"})
         return
@@ -1309,6 +1405,13 @@ async def health() -> JSONResponse:
         "challenger": STATE.chal_proc.health(),
         "eval_lock_held": STATE.eval_lock.locked(),
         "current_eval_id": STATE.current_eval_id,
+        "disk": {
+            "cache_dir": MODEL_CACHE_DIR,
+            "free_bytes": disk_free_bytes(MODEL_CACHE_DIR),
+            "tmp_dir": TMP_DIR,
+            "tmp_free_bytes": disk_free_bytes(TMP_DIR),
+            "min_required_bytes": MIN_DISK_BYTES,
+        },
         "dataset": catalog_info,
         "chain": {
             "name": chain_config.NAME,
@@ -1338,6 +1441,34 @@ async def set_king(req: SetKingRequest) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(500, f"king_vllm_start_failed: {exc}")
     return JSONResponse({"status": "ok", "king": ref.immutable_ref})
+
+
+class PruneCacheRequest(BaseModel):
+    keep: list[dict] = []   # [{"repo": str, "digest": str}, ...]
+
+
+@app.post("/prune_cache")
+async def prune_cache_endpoint(req: PruneCacheRequest) -> JSONResponse:
+    """Prune the model cache keeping only the listed model refs.
+    Called by the validator on startup to remove stale weights from prior runs.
+    Only fully-downloaded repos (with .safetensors) are deleted; config-only
+    snapshots are left intact regardless of the keep list."""
+    keep_refs: list[ModelRef] = []
+    for entry in req.keep:
+        try:
+            keep_refs.append(ModelRef(entry["repo"], entry["digest"]))
+        except Exception:
+            pass
+    freed = await asyncio.to_thread(prune_model_cache, *keep_refs)
+    log.info(
+        "startup cache prune via /prune_cache: freed %.2f GB, kept %d models",
+        freed / 1e9, len(keep_refs),
+    )
+    return JSONResponse({
+        "freed_bytes": freed,
+        "freed_gb": round(freed / 1e9, 3),
+        "kept": len(keep_refs),
+    })
 
 
 @app.post("/eval")
