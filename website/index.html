@@ -1026,6 +1026,12 @@ function dlButton(url) {
 }
 
 function verdictBadge(h) {
+  if (h.is_injection) {
+    return `<span class="verdict-badge lost">invalid</span>`;
+  }
+  if (h.is_duplicate) {
+    return `<span class="verdict-badge lost">invalid</span>`;
+  }
   if (h.error_code === "config_mismatch") {
     return `<span class="verdict-badge lost">invalid</span>`;
   }
@@ -1335,11 +1341,26 @@ function escHtml(s) {
 }
 
 function failReasonCell(h) {
+  if (h.is_injection) {
+    const detail = h.error_detail ? escHtml(h.error_detail) : "";
+    const label = detail
+      ? `injection attempt: <span class="fail-reason" title="${detail}">${detail.length > 80 ? detail.slice(0, 80) + "…" : detail}</span>`
+      : "injection attempt";
+    return `<span class="outcome-lose">⚠ ${label}</span>`;
+  }
   if (h.error_code) {
     const detail = h.error_detail || h.error_code;
     const safe = escHtml(detail);
     const truncated = safe.length > 100 ? safe.slice(0, 100) + "…" : safe;
     return `<span class="fail-reason" title="${safe}">${truncated}</span>`;
+  }
+  if (h.is_duplicate) {
+    const dupOf = h.duplicate_of ? escHtml(h.duplicate_of) : "";
+    const origBlock = h.duplicate_of_commit_block ? ` · original block ${h.duplicate_of_commit_block}` : "";
+    const label = dupOf
+      ? `duplicate of <span class="fail-reason" title="${dupOf}">${dupOf.length > 60 ? dupOf.slice(0, 60) + "…" : dupOf}</span>${origBlock}`
+      : "duplicate model";
+    return `<span class="outcome-lose">⚠ ${label}</span>`;
   }
   if (!h.accepted && (h.judges || []).length) {
     const parts = (h.judges).map(j => {
