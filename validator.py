@@ -853,6 +853,7 @@ class State:
         if model_key and model_key in self.completed_repos:
             self.completed_repos.discard(model_key)
             log.info("unburned repo %s after infra failure", model_key[:48])
+        self.flush()
 
     def maybe_retry(self, entry: dict, code: str, detail: str) -> bool:
         hotkey = entry.get("hotkey", "")
