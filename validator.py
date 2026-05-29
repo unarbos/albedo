@@ -1683,6 +1683,10 @@ async def main() -> int:
                         state.seen.add(hk)
                     log.warning("recorded identity_mismatch for %s (claimed author %s) — hotkey burned",
                                 rev["hotkey"][:16], spoof_author[:16])
+                if spoofed:
+                    # Persist the seen-set update to S3 immediately so a validator
+                    # restart cannot re-admit a spoofed hotkey before the next enqueue.
+                    state.flush()
                 now_mono = _monotonic_now()
                 for rev in reveals:
                     hk = rev.get("hotkey", "")
