@@ -1518,6 +1518,7 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
                                for j in (verdict.get("judges") or [])
                            ],
                            crown_judges=[
+                               # king_mean here stores the NEW king's score (challenger's score at coronation)
                                {"model": j["model"], "king_mean": j["chal_mean"], "n": j.get("n", 0)}
                                for j in (verdict.get("judges") or [])
                            ])
@@ -1675,7 +1676,12 @@ async def main() -> int:
                         f"author_hotkey in payload ({spoof_author[:16]}…) "
                         f"does not match chain key ({rev['hotkey'][:16]}…)",
                     )
-                    log.warning("recorded identity_mismatch for %s (claimed author %s)",
+                    # Burn the spoofed hotkey so the same miner cannot spam
+                    # spoofed reveals on every 30s poll cycle indefinitely.
+                    hk = rev.get("hotkey", "")
+                    if hk:
+                        state.seen.add(hk)
+                    log.warning("recorded identity_mismatch for %s (claimed author %s) — hotkey burned",
                                 rev["hotkey"][:16], spoof_author[:16])
                 now_mono = _monotonic_now()
                 for rev in reveals:
