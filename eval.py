@@ -51,6 +51,7 @@ from pydantic import BaseModel, Field, field_validator
 import chain_config
 import judge as judge_mod
 import preeval
+import preeval_judge
 import trajectory_sampler
 from model_store import (
     MODEL_CACHE_DIR,
@@ -1285,7 +1286,73 @@ async def _run_duel_inner(req: EvalRequest, sink: "DatasetSink",
                                      "error": f"chal_vllm_start_failed: {exc}"})
         return
 
-    # 3. Sample fixtures.
+    # 3. Injection probe — ask the live challenger model for one random reply
+    #    and check all judges for injection patterns before committing GPU time.
+    yield _sse_event("phase", {"eval_id": eval_id, "phase": "injection_probe"})
+    try:
+        probe_result = await preeval_judge.probe_injection(
+            chal_base_url=STATE.chal_proc.base_url,
+            chal_model_name=chal_ref.immutable_ref,
+            dataset_dir=DATASET_DIR,
+            judge_models=list(chain_config.JUDGE_MODELS),
+            eval_id=eval_id,
+            n_probes=3,
+            gen_max_tokens=chain_config.DUEL_GEN_MAX_TOKENS,
+            gen_temperature=chain_config.DUEL_GEN_TEMPERATURE,
+        )
+    except Exception as exc:
+        log.warning("%s: injection probe failed (non-fatal, proceeding): %s", eval_id, exc)
+        probe_result = None
+
+    if probe_result is not None and probe_result.is_injection:
+        log.warning("%s: %s", eval_id, probe_result.reason)
+        await STATE.chal_proc.stop()
+
+        # Persist the fingerprint as "invalid" so future re-submissions of the
+        # same model are rejected instantly at the fingerprint gate without
+        # running the full vLLM probe again.
+        if _chal_fp is not None and _models_state is not None and _tensor_state is not None:
+            try:
+                _inj_state, _inj_tensor_state = preeval.add_fingerprint_to_state(
+                    _models_state,
+                    _tensor_state,
+                    chal_ref.immutable_ref,
+                    _chal_fp,
+                    hotkey=req.hotkey,
+                    verdict="invalid",
+                    repo=chal_ref.repo,
+                    digest=chal_ref.digest,
+                    commit_block=req.challenger.get("commit_block") or preeval._UNKNOWN_BLOCK,
+                )
+                await asyncio.to_thread(
+                    preeval.save_models_state, _s3, EVALS_S3_BUCKET, _inj_state
+                )
+                await asyncio.to_thread(
+                    preeval.save_tensor_state, _s3, EVALS_S3_BUCKET, _inj_tensor_state
+                )
+                STATE.models_state_cache = _inj_state
+                STATE.models_tensor_state_cache = _inj_tensor_state
+                log.info("%s: injection fingerprint saved as invalid: %s",
+                         eval_id, chal_ref.immutable_ref)
+            except Exception:
+                log.exception("%s: failed to save injection fingerprint (non-fatal)", eval_id)
+
+        try:
+            keep = _all_keep_refs(req)
+            await asyncio.to_thread(prune_model_cache, *keep)
+        except Exception:
+            log.exception("cache prune after injection probe fail (non-fatal)")
+
+        yield _sse_event("verdict", {
+            "eval_id":       eval_id,
+            "accepted":      False,
+            "is_injection":  True,
+            "error":         f"chal_injection_detected: {probe_result.reason}",
+            "probe_details": probe_result.probe_details,
+        })
+        return
+
+    # 4. Sample fixtures.
     yield _sse_event("phase", {"eval_id": eval_id, "phase": "sample_fixtures"})
     try:
         samples = trajectory_sampler.sample(
