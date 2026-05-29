@@ -836,9 +836,9 @@ def dethrone_by_judge_dimensions(
     ties = sum(1 for o in judge_outcomes if o == "tie")
     loses = sum(1 for o in judge_outcomes if o == "lose")
     min_valid = max(min_turns, int(n_done * MIN_VALID_TURN_FRAC))
+    # min_valid = max(min_turns, ...) so n_valid >= min_valid subsumes n_valid >= min_turns
     accepted = (
-        n_valid >= min_turns
-        and n_valid >= min_valid
+        n_valid >= min_valid
         and wins >= 1
         and loses == 0
     )
@@ -1875,6 +1875,7 @@ async def _startup() -> None:
             if (
                 king_ref
                 and not king_ref.digest.startswith("hf:")
+                and STATE.models_state_cache is not None
                 and king_ref.immutable_ref not in STATE.models_state_cache.get("models", {})
             ):
                 log.info("startup: king %s not in fingerprint state — scheduling background fingerprint", king_ref_str)
