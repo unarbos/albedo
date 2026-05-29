@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+<title>ALBEDO — Kings</title>
+<link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --color-bg:            #1c1c1c;
+  --color-bg-deep:       #181818;
+  --color-surface:       #212121;
+  --color-border:        rgba(255,255,255,0.06);
+  --color-border-subtle: rgba(255,255,255,0.04);
+  --color-border-hover:  rgba(255,255,255,0.10);
+  --color-fg:            #e5e5e5;
+  --color-fg-2:          #a1a1a1;
+  --color-fg-3:          rgba(229,229,229,0.45);
+  --color-fg-4:          rgba(229,229,229,0.25);
+  --color-ok:            #44ff9a;
+  --color-gold:          #f3c449;
+  --color-gold-dim:      rgba(243,196,73,0.10);
+  --color-gold-glow:     rgba(243,196,73,0.35);
+  --color-accent:        #5ac8fa;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--color-bg); color: var(--color-fg); }
+body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+a, a:visited { color: var(--color-fg); text-decoration: none; }
+a:hover { color: var(--color-fg); }
+
+/* ---------- header ---------- */
+.top-header {
+  position: sticky; top: 0; z-index: 30;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+.top-header .row {
+  max-width: 1080px; margin: 0 auto; height: 48px; padding: 0 20px;
+  display: flex; align-items: center; gap: 16px;
+}
+.top-header .brand {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; font-size: 13px;
+}
+.breadcrumb {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--color-fg-3); letter-spacing: 0.06em;
+}
+.breadcrumb .sep { color: var(--color-fg-4); margin: 0 2px; }
+
+/* ---------- layout ---------- */
+main {
+  max-width: 1080px; margin: 0 auto; padding: 40px 20px 80px;
+  display: flex; flex-direction: column; gap: 32px;
+}
+
+/* ---------- page heading ---------- */
+.page-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-fg);
+}
+.page-head-title {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.2em;
+}
+.page-head-meta {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--color-fg-3); letter-spacing: 0.10em; text-transform: uppercase;
+}
+
+/* ---------- kings table ---------- */
+.kings-wrap {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.kings-wrap::-webkit-scrollbar { height: 4px; }
+.kings-wrap::-webkit-scrollbar-thumb { background: var(--color-border-hover); }
+
+table.kings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+table.kings-table thead tr th {
+  background: var(--color-bg);
+}
+table.kings-table th {
+  font-size: 10px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--color-fg-3);
+  text-align: left;
+  padding: 8px 16px 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+table.kings-table th:first-child { padding-left: 4px; }
+table.kings-table th.r { text-align: right; padding-right: 4px; }
+
+table.kings-table tbody tr {
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background 0.15s;
+}
+table.kings-table tbody tr:hover { background: rgba(255,255,255,0.025); }
+table.kings-table tbody tr.is-current { background: var(--color-gold-dim); }
+table.kings-table tbody tr.is-current:hover { background: rgba(243,196,73,0.14); }
+
+table.kings-table td {
+  padding: 10px 16px 10px 0;
+  vertical-align: top;
+  color: var(--color-fg-2);
+}
+table.kings-table td:first-child { padding-left: 4px; }
+
+/* era column */
+td.col-era {
+  width: 130px;
+}
+.era-name {
+  font-size: 13px; font-weight: 500;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-fg-2);
+}
+tr.is-current .era-name { color: var(--color-gold); filter: drop-shadow(0 0 6px var(--color-gold-glow)); }
+.era-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  font-size: 9px; letter-spacing: 0.10em; text-transform: uppercase;
+  border-radius: 2px;
+}
+.era-badge.current {
+  background: rgba(243,196,73,0.12);
+  border: 1px solid rgba(243,196,73,0.3);
+  color: rgba(243,196,73,0.9);
+}
+.era-badge.past {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-fg-3);
+}
+
+/* uid + hotkey column */
+td.col-uid { width: 110px; }
+.uid-val {
+  font-size: 12px;
+  color: var(--color-fg-2);
+}
+.uid-val a { color: inherit; transition: color 0.15s; }
+.uid-val a:hover { color: var(--color-fg); }
+tr.is-current .uid-val a { color: var(--color-gold); }
+.hotkey-val {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--color-fg-3);
+  letter-spacing: 0.02em;
+  overflow: hidden; text-overflow: ellipsis; max-width: 100px;
+}
+.hotkey-val a { color: inherit; transition: color 0.15s; }
+.hotkey-val a:hover { color: var(--color-fg-2); }
+
+/* model column */
+td.col-model { width: 42%; min-width: 200px; white-space: normal; }
+.model-repo a {
+  font-size: 12px; color: var(--color-fg);
+  transition: color 0.15s;
+}
+.model-repo a:hover { color: var(--color-gold); }
+tr.is-current .model-repo a { color: var(--color-gold); }
+.model-digest {
+  margin-top: 3px;
+  font-size: 10px; color: var(--color-fg-3);
+}
+.model-digest a { color: inherit; transition: color 0.15s; }
+.model-digest a:hover { color: var(--color-fg-2); }
+
+/* judges column */
+td.col-judges { width: 1%; white-space: nowrap; }
+.judges-row { display: flex; gap: 6px; flex-wrap: nowrap; }
+.judge-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  color: var(--color-fg-3);
+}
+.judge-pill .jl { font-weight: 600; color: var(--color-fg-2); }
+tr.is-current .judge-pill { border-color: rgba(243,196,73,0.2); color: rgba(243,196,73,0.6); }
+tr.is-current .judge-pill .jl { color: var(--color-gold); }
+
+/* crowned column */
+td.col-date { text-align: right; padding-right: 4px; width: 160px; }
+.date-abs { font-size: 11px; color: var(--color-fg-2); }
+tr.is-current .date-abs { color: var(--color-gold); }
+.date-rel { margin-top: 3px; font-size: 10px; color: var(--color-fg-3); }
+
+.era-inferred {
+  font-size: 11px; color: var(--color-fg-3);
+  margin-right: 2px; vertical-align: middle;
+}
+
+/* empty / notice */
+.empty { font-family: var(--font-mono); font-size: 12px; color: var(--color-fg-3); padding: 40px 0; text-align: center; }
+.notice {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--color-fg-4); letter-spacing: 0.06em; text-align: center;
+}
+
+@media (max-width: 640px) {
+  td.col-judges { display: none; }
+  th.col-judges { display: none; }
+  td.col-model { min-width: 140px; }
+}
+</style>
+</head>
+<body>
+
+<header class="top-header">
+  <div class="row">
+    <a class="brand" href="./">
+      <img src="./favicon.svg" width="18" height="18" alt="" aria-hidden="true">
+      <span>Albedo</span>
+    </a>
+    <nav class="breadcrumb">
+      <span class="sep">/</span>
+      <span>kings</span>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="page-head">
+    <span class="page-head-title">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <path d="M4.5 2.5L9 7L4.5 11.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      kings
+    </span>
+    <span class="page-head-meta" id="kings-meta"></span>
+  </div>
+
+  <div class="kings-wrap">
+    <div class="empty" id="kings-empty">loading…</div>
+    <table class="kings-table" id="kings-table" hidden>
+      <thead>
+        <tr>
+          <th>era</th>
+          <th class="col-uid">uid</th>
+          <th>model</th>
+          <th class="col-judges">judges</th>
+          <th class="r">crowned</th>
+        </tr>
+      </thead>
+      <tbody id="kings-tbody"></tbody>
+    </table>
+  </div>
+
+  <p class="notice" id="kings-notice"></p>
+</main>
+
+<script>
+const POLL_MS = 8000;
+const NETUID  = 97;
+
+const DATA_ENDPOINTS = [
+  "dashboard.json",
+  "https://us-east-1.hippius.com/albedo/dashboard.json",
+  "https://eu-central-1.hippius.com/albedo/dashboard.json",
+  "https://s3.hippius.com/albedo/dashboard.json",
+];
+
+const JUDGE_META = {
+  "deepseek-ai/DeepSeek-V3.2-TEE":          { letter: "D" },
+  "Qwen/Qwen3-235B-A22B-Thinking-2507":     { letter: "Q" },
+  "moonshotai/Kimi-K2.6-TEE":               { letter: "K" },
+};
+function judgeLetter(model) {
+  return (JUDGE_META[model] || {}).letter || (model || "?").charAt(0).toUpperCase();
+}
+
+function toRoman(n) {
+  const vals = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
+  const syms = ["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"];
+  let out = "";
+  for (let i = 0; i < vals.length; i++) while (n >= vals[i]) { out += syms[i]; n -= vals[i]; }
+  return out;
+}
+function kingTitle(reignNumber) {
+  if (reignNumber == null) return "ALBEDO-?";
+  const r = toRoman(Number(reignNumber) + 1);
+  return r ? `ALBEDO-${r}` : "ALBEDO-?";
+}
+
+function hubUrl(repo) {
+  if (!repo) return null;
+  const p = repo.split("/");
+  return p.length >= 2 ? `https://hub.hippius.com/models/${p[0]}/${p.slice(1).join("/")}` : null;
+}
+function taoUrl(hotkey) {
+  if (!hotkey) return null;
+  return `https://taomarketcap.com/subnets/${NETUID}/miners?query=${encodeURIComponent(hotkey)}`;
+}
+
+function shortDigest(d) {
+  if (!d) return "—";
+  if (d.startsWith("sha256:")) return "sha256:" + d.slice(7, 19) + "…";
+  if (d.startsWith("hf:"))     return "hf:" + d.slice(3, 15) + "…";
+  return d.slice(0, 16) + "…";
+}
+function shortHotkey(hk) {
+  if (!hk) return "—";
+  return hk.slice(0, 8) + "…" + hk.slice(-4);
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+  } catch { return iso; }
+}
+function fmtRelative(iso) {
+  if (!iso) return "";
+  try {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 0) return "just now";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 48) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  } catch { return ""; }
+}
+
+function escHtml(s) {
+  return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+/* Build unified kings list from king_chain (rich) + history accepted (older). */
+function buildKingsList(d) {
+  const chain   = d.king_chain || [];
+  const history = d.history || [];
+
+  const kings = [];
+  const seenIds = new Set();
+
+  // 1. All king_chain entries — richest data, newest first.
+  chain.forEach(k => {
+    seenIds.add(k.challenge_id);
+    kings.push({ ...k, _rich: true, _inferred: false });
+  });
+
+  // 2. history entries with accepted=true that are NOT already from chain.
+  history
+    .filter(h => h.accepted && !seenIds.has(h.challenge_id))
+    .forEach(h => {
+      seenIds.add(h.challenge_id);
+      kings.push({
+        challenge_id:  h.challenge_id,
+        hotkey:        h.hotkey,
+        uid:           h.uid ?? null,
+        model_repo:    h.model_repo,
+        king_digest:   h.model_digest,
+        crowned_at:    h.completed_at,
+        crowned_block: null,
+        reign_number:  null,
+        weight:        null,
+        registered:    null,
+        judges:        h.judges || [],
+        _rich:         false,
+        _inferred:     false,
+      });
+    });
+
+  // Sort newest first by crowned_at.
+  kings.sort((a, b) => {
+    const ta = a.crowned_at ? new Date(a.crowned_at).getTime() : 0;
+    const tb = b.crowned_at ? new Date(b.crowned_at).getTime() : 0;
+    return tb - ta;
+  });
+
+  // Infer reign numbers only for partial entries that sit chronologically
+  // OLDER than the oldest king_chain entry (no interleaving ambiguity).
+  const chainTimes = chain.map(k => k.crowned_at ? new Date(k.crowned_at).getTime() : Infinity);
+  const oldestChainMs = chainTimes.length ? Math.min(...chainTimes) : Infinity;
+  const knownMin = chain.reduce((mn, k) =>
+    k.reign_number != null && k.reign_number < mn ? k.reign_number : mn, Infinity);
+  if (knownMin !== Infinity) {
+    let counter = knownMin - 1;
+    for (let i = 0; i < kings.length; i++) {
+      const k = kings[i];
+      if (k.reign_number != null) continue;
+      const kt = k.crowned_at ? new Date(k.crowned_at).getTime() : 0;
+      if (kt < oldestChainMs && counter >= 0) {
+        kings[i] = { ...kings[i], reign_number: counter, _inferred: true };
+        counter--;
+      }
+      // Entries that interleave with chain timestamps are left as null.
+    }
+  }
+
+  return kings;
+}
+
+function renderRow(k, isFirst) {
+  const isCurrent = isFirst;
+  const title   = kingTitle(k.reign_number);
+  const repo    = k.model_repo || "";
+  const digest  = k.king_digest || k.model_digest || "";
+  const hkUrl   = taoUrl(k.hotkey);
+  const mdlUrl  = hubUrl(repo);
+
+  // Era cell
+  const badgeCls   = isCurrent ? "current" : "past";
+  const badgeLabel = isCurrent ? "current"  : "past";
+  const inferredNote = k._inferred
+    ? `<span class="era-inferred" title="reign number inferred from position">~</span>` : "";
+  const eraHtml = `
+    <td class="col-era">
+      <div class="era-name">${inferredNote}${escHtml(title)}</div>
+      <span class="era-badge ${badgeCls}">${badgeLabel}</span>
+    </td>`;
+
+  // UID + hotkey cell
+  const uid = k.uid != null ? k.uid : "—";
+  const uidInner = hkUrl
+    ? `<a href="${escHtml(hkUrl)}" target="_blank" rel="noopener" title="${escHtml(k.hotkey||"")}">${uid}</a>`
+    : uid;
+  const hotkeyInner = k.hotkey
+    ? (hkUrl
+        ? `<a href="${escHtml(hkUrl)}" target="_blank" rel="noopener" title="${escHtml(k.hotkey)}">${shortHotkey(k.hotkey)}</a>`
+        : shortHotkey(k.hotkey))
+    : "—";
+  const uidHtml = `
+    <td class="col-uid">
+      <div class="uid-val">${uidInner}</div>
+      <div class="hotkey-val">${hotkeyInner}</div>
+    </td>`;
+
+  // Model cell
+  const repoHtml = mdlUrl
+    ? `<a href="${escHtml(mdlUrl)}" target="_blank" rel="noopener">${escHtml(repo || "—")}</a>`
+    : escHtml(repo || "—");
+  const digestHtml = mdlUrl
+    ? `<a href="${escHtml(mdlUrl)}" target="_blank" rel="noopener" title="${escHtml(digest)}">${shortDigest(digest)}</a>`
+    : shortDigest(digest);
+  const modelHtml = `
+    <td class="col-model">
+      <div class="model-repo">${repoHtml}</div>
+      <div class="model-digest">${digestHtml}</div>
+    </td>`;
+
+  // Judges cell
+  const judgesHtml = `
+    <td class="col-judges">
+      <div class="judges-row">
+        ${(k.judges || []).map(j => {
+          const score = j.king_mean != null ? (j.king_mean * 100).toFixed(1) + "%" : "—";
+          return `<span class="judge-pill" title="${escHtml(j.model)}">
+            <span class="jl">${judgeLetter(j.model)}</span>${score}
+          </span>`;
+        }).join("")}
+      </div>
+    </td>`;
+
+  // Date cell
+  const dateHtml = `
+    <td class="col-date">
+      <div class="date-abs">${fmtDate(k.crowned_at)}</div>
+      <div class="date-rel">${fmtRelative(k.crowned_at)}</div>
+    </td>`;
+
+  const rowCls = isCurrent ? " class=\"is-current\"" : "";
+  return `<tr${rowCls}>${eraHtml}${uidHtml}${modelHtml}${judgesHtml}${dateHtml}</tr>`;
+}
+
+const BITTENSOR_BLOCK_TIME_S = 12;
+
+function applyDisplayStartBlock(d) {
+  const startBlock = d.chain?.display_start_block;
+  if (!startBlock || startBlock <= 0) return d;
+  const ref = d.king || (d.king_chain || [])[0];
+  const refBlock = ref?.crowned_block;
+  const refAt    = ref?.crowned_at;
+  if (!refBlock || !refAt) return d;
+  const refMs    = new Date(refAt).getTime();
+  const cutoffMs = refMs - (refBlock - startBlock) * BITTENSOR_BLOCK_TIME_S * 1000;
+  return {
+    ...d,
+    king_chain: (d.king_chain || []).filter(k =>
+      (k.crowned_block != null ? k.crowned_block >= startBlock : true) ||
+      (k.crowned_at ? new Date(k.crowned_at).getTime() >= cutoffMs : true)
+    ),
+    history: (d.history || []).filter(h =>
+      !h.completed_at || new Date(h.completed_at).getTime() >= cutoffMs
+    ),
+    _cutoff: { block: startBlock, ms: cutoffMs },
+  };
+}
+
+function render(d) {
+  const fd     = applyDisplayStartBlock(d);
+  const kings  = buildKingsList(fd);
+  const empty  = document.getElementById("kings-empty");
+  const table  = document.getElementById("kings-table");
+  const tbody  = document.getElementById("kings-tbody");
+  const meta   = document.getElementById("kings-meta");
+  const notice = document.getElementById("kings-notice");
+
+  if (!kings.length) {
+    empty.textContent = "no kings yet.";
+    empty.hidden = false;
+    table.hidden = true;
+    return;
+  }
+
+  meta.textContent = `${kings.length} king${kings.length !== 1 ? "s" : ""}`;
+
+  tbody.innerHTML = kings.map((k, i) => renderRow(k, i === 0)).join("");
+
+  empty.hidden = true;
+  table.hidden = false;
+
+  // Notice about data availability
+  const inferredCount = kings.filter(k => k._inferred).length;
+  if (inferredCount) {
+    notice.textContent = `~ reign numbers on ${inferredCount} older ${inferredCount === 1 ? "entry" : "entries"} are inferred from position — block and UID unavailable for those`;
+  } else {
+    notice.textContent = "";
+  }
+}
+
+let DATA_URL = null;
+async function fetchDashboard() {
+  const urls = DATA_URL ? [DATA_URL, ...DATA_ENDPOINTS.filter(u => u !== DATA_URL)] : [...DATA_ENDPOINTS];
+  for (const url of urls) {
+    try {
+      const r = await fetch(url + "?t=" + Date.now(), { cache: "no-store" });
+      if (!r.ok) continue;
+      const data = await r.json();
+      if (url !== "dashboard.json") DATA_URL = url;
+      return data;
+    } catch {}
+  }
+  return null;
+}
+
+async function poll() {
+  const data = await fetchDashboard();
+  if (data) render(data);
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

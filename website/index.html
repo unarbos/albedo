@@ -704,6 +704,7 @@ table.releases td.dl { text-align: right; padding-right: 4px; }
       <span>Albedo</span>
     </a>
     <div class="links">
+      <a href="./kings.html" aria-label="Kings" title="Kings" style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;width:auto;padding:0 8px;color:var(--color-fg-3);">kings</a>
       <a href="https://github.com/unarbos/albedo" target="_blank" rel="noopener" aria-label="GitHub" title="GitHub">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.4 7.86 10.93.58.1.79-.25.79-.55v-1.96c-3.2.7-3.88-1.54-3.88-1.54-.52-1.32-1.27-1.68-1.27-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.7 1.25 3.36.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.18 1.18.92-.26 1.91-.39 2.89-.4.98.01 1.97.14 2.89.4 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.24 2.75.12 3.04.74.8 1.18 1.83 1.18 3.08 0 4.4-2.7 5.36-5.27 5.65.41.36.78 1.06.78 2.13v3.16c0 .31.21.66.79.55C20.21 21.4 23.5 17.08 23.5 12 23.5 5.65 18.35.5 12 .5z"/></svg>
       </a>
@@ -1025,11 +1026,44 @@ function dlButton(url) {
   return `<a class="data-dl" href="${url}" target="_blank" rel="noopener" aria-label="download rollouts">${DL_ICON}</a>`;
 }
 
+const FAIL_DL_STORE = {};
+let _failDlSeq = 0;
+
+function failDlButton(h) {
+  const key = "fdl" + (_failDlSeq++);
+  FAIL_DL_STORE[key] = h;
+  return `<button type="button" class="data-dl" data-fdl="${key}" aria-label="download fail JSON">${DL_ICON}</button>`;
+}
+
+document.addEventListener("click", e => {
+  const btn = e.target.closest("[data-fdl]");
+  if (!btn) return;
+  const h = FAIL_DL_STORE[btn.dataset.fdl];
+  if (!h) return;
+  const blob = new Blob([JSON.stringify(h, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const name = (h.hotkey || "fail").slice(0, 8);
+  const ts = (h.completed_at || "").replace(/[:.]/g, "-").slice(0, 19);
+  a.href = url;
+  a.download = `fail-${name}-${ts}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+function isDuplicateEntry(h) {
+  return h.is_duplicate || (h.error_detail || "").startsWith("duplicate_model");
+}
+
+function isInjectionEntry(h) {
+  return h.is_injection || (h.error_detail || "").includes("chal_injection_detected");
+}
+
 function verdictBadge(h) {
-  if (h.is_injection) {
+  if (isInjectionEntry(h)) {
     return `<span class="verdict-badge lost">invalid</span>`;
   }
-  if (h.is_duplicate) {
+  if (isDuplicateEntry(h)) {
     return `<span class="verdict-badge lost">invalid</span>`;
   }
   if (h.error_code === "config_mismatch") {
@@ -1341,11 +1375,11 @@ function escHtml(s) {
 }
 
 function failReasonCell(h) {
-  if (h.is_injection) {
-    const detail = h.error_detail ? escHtml(h.error_detail) : "";
-    const label = detail
-      ? `injection attempt: <span class="fail-reason" title="${detail}">${detail.length > 80 ? detail.slice(0, 80) + "…" : detail}</span>`
-      : "injection attempt";
+  if (isInjectionEntry(h)) {
+    const raw = h.error_detail || "";
+    const stripped = raw.replace(/^chal_injection_detected:\s*/i, "");
+    const safe = escHtml(stripped || "injection attempt detected");
+    const label = `injection: <span class="fail-reason" title="${safe}">${safe.length > 80 ? safe.slice(0, 80) + "…" : safe}</span>`;
     return `<span class="outcome-lose">⚠ ${label}</span>`;
   }
   if (h.error_code) {
@@ -1354,11 +1388,20 @@ function failReasonCell(h) {
     const truncated = safe.length > 100 ? safe.slice(0, 100) + "…" : safe;
     return `<span class="fail-reason" title="${safe}">${truncated}</span>`;
   }
-  if (h.is_duplicate) {
-    const dupOf = h.duplicate_of ? escHtml(h.duplicate_of) : "";
+  if (isDuplicateEntry(h)) {
+    let dupOf = h.duplicate_of || "";
+    if (!dupOf) {
+      const detail = h.error_detail || "";
+      if (detail.startsWith("duplicate_model:")) {
+        dupOf = detail.slice("duplicate_model:".length).trim().replace(/^too similar to\s*/i, "");
+      } else if (detail.startsWith("duplicate_model")) {
+        dupOf = detail.slice("duplicate_model".length).trim().replace(/^[\s:]+/, "").replace(/^too similar to\s*/i, "");
+      }
+    }
+    const safedup = escHtml(dupOf);
     const origBlock = h.duplicate_of_commit_block ? ` · original block ${h.duplicate_of_commit_block}` : "";
-    const label = dupOf
-      ? `duplicate of <span class="fail-reason" title="${dupOf}">${dupOf.length > 60 ? dupOf.slice(0, 60) + "…" : dupOf}</span>${origBlock}`
+    const label = safedup
+      ? `duplicate of <span class="fail-reason" title="${safedup}">${safedup.length > 60 ? safedup.slice(0, 60) + "…" : safedup}</span>${origBlock}`
       : "duplicate model";
     return `<span class="outcome-lose">⚠ ${label}</span>`;
   }
@@ -1445,6 +1488,8 @@ function isMinerFault(h) {
     return true;
   }
   if (detail.includes("chal_vllm_start_failed")) return true;
+  if (detail.includes("chal_injection_detected")) return true;
+  if (detail.startsWith("duplicate_model")) return true;
   return false;
 }
 
@@ -1481,6 +1526,7 @@ function renderFails(history, chain, king, queue) {
       <td>${championCell}</td>
       <td class="center">${verdictBadge(h)}</td>
       <td class="fail-reason-cell">${failReasonCell(h)}</td>
+      <td class="dl">${failDlButton(h)}</td>
       <td class="dl">${dlButton(h.evals_url)}</td>
     </tr>`;
   }).join("");
@@ -1492,26 +1538,70 @@ function renderFails(history, chain, king, queue) {
       <th>vs. champion</th>
       <th class="center">verdict</th>
       <th>fail reason</th>
-      <th class="r" aria-label="download"></th>
+      <th class="r" aria-label="download JSON" title="download fail JSON">JSON</th>
+      <th class="r" aria-label="download rollouts" title="download rollouts"></th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
 
+const BITTENSOR_BLOCK_TIME_S = 12;
+
+function applyDisplayStartBlock(d) {
+  const startBlock = d.chain?.display_start_block;
+  if (!startBlock || startBlock <= 0) return d;
+
+  // Use the king's crowned_block + crowned_at as a reference to estimate
+  // the ISO timestamp corresponding to startBlock.
+  const ref = d.king || (d.king_chain || [])[0];
+  const refBlock = ref?.crowned_block;
+  const refAt    = ref?.crowned_at;
+  if (!refBlock || !refAt) return d;
+
+  const refMs     = new Date(refAt).getTime();
+  const diffBlocks = refBlock - startBlock;
+  const cutoffMs  = refMs - diffBlocks * BITTENSOR_BLOCK_TIME_S * 1000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+
+  function afterCutoff(iso) {
+    if (!iso) return true;
+    return new Date(iso).getTime() >= cutoffMs;
+  }
+  function blockAfterCutoff(block) {
+    if (block == null) return true; // no block info → keep
+    return block >= startBlock;
+  }
+
+  return {
+    ...d,
+    history:    (d.history    || []).filter(h => afterCutoff(h.completed_at)),
+    king_chain: (d.king_chain || []).filter(k => blockAfterCutoff(k.crowned_block) || afterCutoff(k.crowned_at)),
+    queue:      (d.queue      || []).filter(q => afterCutoff(q.queued_at) || afterCutoff(q.started_at)),
+    // Attach cutoff metadata so sections can surface it.
+    _cutoff: { block: startBlock, iso: cutoffIso },
+  };
+}
+
 function render(d) {
   if (!d) return;
-  renderHero(d);
-  renderEvolution(d.king_chain, d.chain, d.current_eval);
-  renderReleases(d.king_chain, d.chain, d.history);
-  renderQueue(d.queue, d.chain, d.current_eval);
-  renderHistory(d.history, d.chain, d.king);
-  renderFails(d.history, d.chain, d.king, d.queue);
+  const fd = applyDisplayStartBlock(d);
+  renderHero(fd);
+  renderEvolution(fd.king_chain, fd.chain, fd.current_eval);
+  renderReleases(fd.king_chain, fd.chain, fd.history);
+  renderQueue(fd.queue, fd.chain, fd.current_eval);
+  renderHistory(fd.history, fd.chain, fd.king);
+  renderFails(fd.history, fd.chain, fd.king, fd.queue);
 }
 
 async function fetchDashboard(buster) {
+  // Always try local dashboard.json first — it may carry injected config
+  // (e.g. display_start_block) that remote endpoints won't have.
+  const seen = new Set();
   const urls = [];
-  if (DATA_URL) urls.push(DATA_URL);
-  for (const u of DATA_ENDPOINTS) if (!urls.includes(u)) urls.push(u);
+  const add = u => { if (!seen.has(u)) { seen.add(u); urls.push(u); } };
+  add("dashboard.json");
+  if (DATA_URL) add(DATA_URL);
+  DATA_ENDPOINTS.forEach(add);
   for (const url of urls) {
     try {
       const r = await fetch(url + "?t=" + buster, { cache: "no-store" });
