@@ -1056,7 +1056,10 @@ function isDuplicateEntry(h) {
 }
 
 function isInjectionEntry(h) {
-  return h.is_injection || (h.error_detail || "").includes("chal_injection_detected");
+  return h.is_injection
+    || (h.error_detail || "").includes("chal_injection_detected")
+    || h.error_code === "identity_mismatch"
+    || h.error_code === "not_registered";
 }
 
 function verdictBadge(h) {
@@ -1377,9 +1380,20 @@ function escHtml(s) {
 function failReasonCell(h) {
   if (isInjectionEntry(h)) {
     const raw = h.error_detail || "";
-    const stripped = raw.replace(/^chal_injection_detected:\s*/i, "");
-    const safe = escHtml(stripped || "injection attempt detected");
-    const label = `injection: <span class="fail-reason" title="${safe}">${safe.length > 80 ? safe.slice(0, 80) + "…" : safe}</span>`;
+    let display = raw
+      .replace(/^chal_injection_detected:\s*/i, "")
+      .replace(/^identity_mismatch:\s*/i, "")
+      .replace(/^not_registered:\s*/i, "");
+    if (!display) {
+      if (h.error_code === "identity_mismatch") display = "spoofed identity: payload hotkey does not match chain key";
+      else if (h.error_code === "not_registered") display = "hotkey not registered on metagraph at eval time";
+      else display = "injection attempt detected";
+    }
+    const safe = escHtml(display);
+    const prefix = h.error_code === "identity_mismatch" ? "spoofed identity"
+      : h.error_code === "not_registered" ? "not registered"
+      : "injection";
+    const label = `${prefix}: <span class="fail-reason" title="${safe}">${safe.length > 80 ? safe.slice(0, 80) + "…" : safe}</span>`;
     return `<span class="outcome-lose">⚠ ${label}</span>`;
   }
   if (h.error_code) {
@@ -1489,6 +1503,8 @@ function isMinerFault(h) {
   }
   if (detail.includes("chal_vllm_start_failed")) return true;
   if (detail.includes("chal_injection_detected")) return true;
+  if (code === "identity_mismatch") return true;
+  if (code === "not_registered") return true;
   if (detail.startsWith("duplicate_model")) return true;
   return false;
 }

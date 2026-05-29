@@ -12,7 +12,7 @@ Single async process; one outstanding duel at a time. Loop:
     record verdict, maybe crown new king
         ↓ (on crown: POST /set_king to eval, set_weights on chain)
 
-Ported from `teutonic-ref/validator.py`. Load-bearing patterns kept:
+    Load-bearing patterns kept:
     - `_decode_commitment_pair` for v4 reveal decoding (bt 10.3 substrate
       returns raw bytes, not hex; one bad legacy row must not poison the
       scan).
@@ -25,10 +25,6 @@ Ported from `teutonic-ref/validator.py`. Load-bearing patterns kept:
     - Dashboard dual-write (Hippius first, R2 fallback, 60s cooldown).
     - Dashboard MUST NOT raise into the main loop.
 
-Slimmed from teutonic:
-    - Single king at 100% (no rolling N-king split in v1; add later).
-    - No TaoMarketCap fetch in v1.
-    - No re-eval / replenish (re-eval is permanently off in teutonic too).
 """
 from __future__ import annotations
 
@@ -112,9 +108,6 @@ MAX_REEVAL_PER_HOTKEY  = int(os.environ.get("ALBEDO_MAX_REEVAL_PER_HOTKEY", "1")
 EVAL_BOX_BACKOFF_S     = int(os.environ.get("ALBEDO_EVAL_BOX_BACKOFF_S", "120"))
 EVAL_BOX_BACKOFF_MAX_S = int(os.environ.get("ALBEDO_EVAL_BOX_BACKOFF_MAX_S", "1800"))
 
-# When set, the dashboard hides all history/king-chain entries from before
-# this block.  Useful to exclude noisy pre-genesis or test-phase data.
-# Set to 0 (default) to show everything.
 DISPLAY_START_BLOCK = int(os.environ.get("ALBEDO_DISPLAY_START_BLOCK", "0"))
 
 REPO_PATTERN_RE = re.compile(chain_config.REPO_PATTERN)
@@ -321,8 +314,13 @@ def _decode_commitment_pair(pair: Any) -> tuple[str, list[tuple[int, str]]]:
 
 
 def scan_reveals(subtensor, netuid: int,
-                  completed_repos: set[str], seen_hotkeys: set[str]) -> list[dict]:
-    """Pull v4 reveals; return latest per hotkey not previously enqueued."""
+                  completed_repos: set[str], seen_hotkeys: set[str],
+                  *, rejected_out: list | None = None) -> list[dict]:
+    """Pull v4 reveals; return latest per hotkey not previously enqueued.
+
+    If `rejected_out` is provided, entries dropped for identity mismatch are
+    appended to it so the caller can record them as dashboard failures.
+    """
     try:
         query = subtensor.query_map(module="Commitments", name="RevealedCommitments",
                                      params=[netuid])
@@ -358,8 +356,17 @@ def scan_reveals(subtensor, netuid: int,
                         hotkey[:16], block, legacy_king[:19])
             continue
         if author_hotkey != hotkey:
-            log.warning("v4 author_hotkey %s != chain key %s; trusting chain",
-                        author_hotkey[:16], hotkey[:16])
+            log.warning("dropping reveal from %s: author_hotkey %s != chain key (spoofed identity)",
+                        hotkey[:16], author_hotkey[:16])
+            if rejected_out is not None:
+                rejected_out.append({
+                    "hotkey": hotkey,
+                    "block": block,
+                    "model_repo": ref.repo,
+                    "model_digest": ref.digest,
+                    "_spoof_author": author_hotkey,
+                })
+            continue
         if not ref.digest.startswith("sha256:"):
             log.warning("dropping non-Hippius reveal from %s: digest=%s (sha256: required)",
                         hotkey[:16], ref.digest[:19])
@@ -614,6 +621,10 @@ def _is_miner_fault(code: str, detail: str) -> bool:
     if "chal_vllm_start_failed" in (detail or ""):
         return True
     if "chal_injection_detected" in (detail or ""):
+        return True
+    if code == "identity_mismatch":
+        return True
+    if code == "not_registered":
         return True
     return False
 
@@ -1010,6 +1021,10 @@ class State:
             (code == "config_mismatch" and any(m in detail_s for m in _CONFIG_INJECTION_MARKERS))
             # eval.py found .albedo_injection_detected sentinel after ensure_chat_template.
             or "chal_injection_detected" in detail_s
+            # Reveal payload claimed a different identity than the chain key.
+            or code == "identity_mismatch"
+            # Hotkey was not registered on the metagraph at eval dispatch time.
+            or code == "not_registered"
         )
         self.history.append({
             "challenge_id": entry.get("challenge_id"),
@@ -1293,7 +1308,19 @@ async def _eval_set_king(http: httpx.AsyncClient, king: dict) -> None:
 async def process_challenge(state: State, http: httpx.AsyncClient,
                              entry: dict, subtensor, wallet) -> None:
     cid = entry["challenge_id"]
+    hotkey = entry.get("hotkey", "")
     challenger = {"repo": entry["model_repo"], "digest": entry["model_digest"], "commit_block": entry.get("block") or -1}
+
+    if hotkey and hotkey not in state.uid_map:
+        log.warning("%s: hotkey %s not in metagraph (unregistered); dropping",
+                    cid, hotkey[:16])
+        state.record_failure(entry, "not_registered",
+                             f"hotkey {hotkey[:16]}… is not registered on subnet {NETUID}")
+        state.current_eval = None
+        state.flush()
+        state.flush_dashboard(force=True)
+        return
+
     king = state.king
     if not king:
         log.error("%s: no king set; skipping", cid)
@@ -1556,7 +1583,9 @@ async def main() -> int:
             "index.html", html_bytes, "text/html; charset=utf-8",
             cache_control="no-cache, must-revalidate",
         )
-        favicon_path = os.path.join(os.path.dirname(html_path), "favicon.svg")
+        website_dir = os.path.dirname(html_path)
+
+        favicon_path = os.path.join(website_dir, "favicon.svg")
         if os.path.exists(favicon_path):
             with open(favicon_path, "rb") as f:
                 favicon_bytes = f.read()
@@ -1564,6 +1593,17 @@ async def main() -> int:
                 "favicon.svg", favicon_bytes, "image/svg+xml",
                 cache_control="no-cache, must-revalidate",
             )
+
+        kings_path = os.path.join(website_dir, "kings.html")
+        if os.path.exists(kings_path):
+            with open(kings_path, "rb") as f:
+                kings_bytes = f.read()
+            kings_bytes = kings_bytes.replace(b"__BUILD_ID__", build_id.encode())
+            store.put_dashboard_raw(
+                "kings.html", kings_bytes, "text/html; charset=utf-8",
+                cache_control="no-cache, must-revalidate",
+            )
+
         log.info("uploaded website (build=%s)", build_id)
     state.flush_dashboard(force=True)
 
@@ -1625,7 +1665,18 @@ async def main() -> int:
         while True:
             try:
                 state.refresh_uid_map(subtensor, NETUID)
-                reveals = scan_reveals(subtensor, NETUID, state.completed_repos, state.seen)
+                spoofed: list[dict] = []
+                reveals = scan_reveals(subtensor, NETUID, state.completed_repos, state.seen,
+                                       rejected_out=spoofed)
+                for rev in spoofed:
+                    spoof_author = rev.pop("_spoof_author", "unknown")
+                    state.record_failure(
+                        rev, "identity_mismatch",
+                        f"author_hotkey in payload ({spoof_author[:16]}…) "
+                        f"does not match chain key ({rev['hotkey'][:16]}…)",
+                    )
+                    log.warning("recorded identity_mismatch for %s (claimed author %s)",
+                                rev["hotkey"][:16], spoof_author[:16])
                 now_mono = _monotonic_now()
                 for rev in reveals:
                     hk = rev.get("hotkey", "")
