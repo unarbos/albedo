@@ -750,9 +750,24 @@ class State:
         q = self.store.get("state/queue.json")
         if q:
             self.queue = q.get("pending", [])
-        s = self.store.get("state/seen_hotkeys.json")
+        # Retry seen_hotkeys load — an S3 blip here causes the first scan_reveals()
+        # to run with no hotkey filter, letting burned miners re-enter. Three attempts
+        # with a short sleep before accepting an empty result.
+        s = None
+        for _attempt in range(3):
+            s = self.store.get("state/seen_hotkeys.json")
+            if s is not None:
+                break
+            log.warning("seen_hotkeys.json read returned None (attempt %d/3) — retrying", _attempt + 1)
+            time.sleep(2)
         if s:
             self.seen = set(s.get("hotkeys", []))
+        elif self.king or self.queue:
+            log.error(
+                "CRITICAL: seen_hotkeys.json failed to load from S3 after 3 attempts "
+                "while king/queue state exists — burned hotkeys are unprotected on this startup. "
+                "Delay the first scan or restart the validator."
+            )
         cr = self.store.get("state/completed_repos.json")
         if cr:
             self.completed_repos = set(cr.get("repos", []))
