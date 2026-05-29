@@ -112,6 +112,11 @@ MAX_REEVAL_PER_HOTKEY  = int(os.environ.get("ALBEDO_MAX_REEVAL_PER_HOTKEY", "1")
 EVAL_BOX_BACKOFF_S     = int(os.environ.get("ALBEDO_EVAL_BOX_BACKOFF_S", "120"))
 EVAL_BOX_BACKOFF_MAX_S = int(os.environ.get("ALBEDO_EVAL_BOX_BACKOFF_MAX_S", "1800"))
 
+# When set, the dashboard hides all history/king-chain entries from before
+# this block.  Useful to exclude noisy pre-genesis or test-phase data.
+# Set to 0 (default) to show everything.
+DISPLAY_START_BLOCK = int(os.environ.get("ALBEDO_DISPLAY_START_BLOCK", "0"))
+
 REPO_PATTERN_RE = re.compile(chain_config.REPO_PATTERN)
 
 # Per-arch generic lock — preserved across all Albedo chains. The
@@ -608,6 +613,8 @@ def _is_miner_fault(code: str, detail: str) -> bool:
         return True
     if "chal_vllm_start_failed" in (detail or ""):
         return True
+    if "chal_injection_detected" in (detail or ""):
+        return True
     return False
 
 
@@ -980,10 +987,14 @@ class State:
             self.stats["rejected"] += 1
 
     def record_failure(self, entry: dict, code: str, detail: str) -> None:
-        _INJECTION_MARKERS = ("auto_map", ".py files", "chat_template")
+        # Markers caught at the config gate (code == config_mismatch).
+        _CONFIG_INJECTION_MARKERS = ("auto_map", ".py files", "chat_template")
+        detail_s = detail or ""
         is_injection = (
-            code == "config_mismatch"
-            and any(m in (detail or "") for m in _INJECTION_MARKERS)
+            # Pre-eval config gate flagged a forbidden construct.
+            (code == "config_mismatch" and any(m in detail_s for m in _CONFIG_INJECTION_MARKERS))
+            # eval.py found .albedo_injection_detected sentinel after ensure_chat_template.
+            or "chal_injection_detected" in detail_s
         )
         self.history.append({
             "challenge_id": entry.get("challenge_id"),
@@ -1058,6 +1069,8 @@ class State:
                     "dataset_repo": chain_config.DATASET_REPO,
                     "dataset_shard_glob": chain_config.DATASET_SHARD_GLOB,
                     "king_chain_depth": getattr(chain_config, "DUEL_KING_CHAIN_DEPTH", 1),
+                    "netuid": NETUID,
+                    **({"display_start_block": DISPLAY_START_BLOCK} if DISPLAY_START_BLOCK > 0 else {}),
                 },
                 "king": {
                     **self.king,

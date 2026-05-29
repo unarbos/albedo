@@ -441,17 +441,34 @@ class VLLMProcess:
     proc: subprocess.Popen | None = None
     started_at: float = 0.0
     base_url: str = ""
+    _log_path: "Path | None" = None
 
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
+
+    def _tail_log(self, n_bytes: int = 3000) -> str:
+        """Return the last n_bytes of the vllm log, decoded as UTF-8."""
+        try:
+            lp = self._log_path
+            if not lp or not lp.exists():
+                return ""
+            with open(lp, "rb") as f:
+                size = f.seek(0, 2)
+                f.seek(max(0, size - n_bytes))
+                return f.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
 
     async def _wait_ready(self, timeout_s: int) -> None:
         deadline = time.monotonic() + timeout_s
         async with httpx.AsyncClient(timeout=10.0) as client:
             while time.monotonic() < deadline:
                 if not self.is_alive():
+                    tail = self._tail_log()
+                    tail_suffix = f" | log: {tail}" if tail else ""
                     raise RuntimeError(
-                        f"{self.role} vllm exited during startup (rc={self.proc.returncode})"
+                        f"{self.role} vllm exited during startup"
+                        f" (rc={self.proc.returncode}){tail_suffix}"
                     )
                 try:
                     r = await client.get(f"{self.base_url}/v1/models")
@@ -474,6 +491,17 @@ class VLLMProcess:
         self.base_url = f"http://127.0.0.1:{self.port}"
 
         await asyncio.to_thread(ensure_chat_template, model_path)
+
+        # ensure_chat_template writes this sentinel when it finds a non-canonical
+        # chat template or other injection vector in the model files. Abort here
+        # instead of running the duel on potentially sanitised-but-tampered weights.
+        sentinel = Path(model_path) / ".albedo_injection_detected"
+        if sentinel.exists():
+            try:
+                detail = sentinel.read_text().strip()
+            except Exception:
+                detail = "injection attempt detected in model files"
+            raise RuntimeError(f"chal_injection_detected: {detail}")
 
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = self.gpus
@@ -502,7 +530,8 @@ class VLLMProcess:
         log_dir = Path("/var/albedo/logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         self._log_path = log_dir / f"vllm_{self.role}.log"
-        self._log_file = open(self._log_path, "ab")
+        # Truncate log at start so _tail_log only returns output from this run.
+        self._log_file = open(self._log_path, "wb")
         self.proc = subprocess.Popen(
             cmd,
             env=env,
