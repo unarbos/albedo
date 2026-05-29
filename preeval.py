@@ -375,6 +375,8 @@ def add_fingerprint_to_state(
 
     Returns (updated_state, updated_tensor_state).
     """
+    # Thread-safety: this function is only called while STATE.eval_lock is held
+    # in eval.py (single duel at a time), so no concurrent mutation is possible.
     state.setdefault("models", {})[ref_key] = {
         "repo": repo,
         "digest": digest,
