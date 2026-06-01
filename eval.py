@@ -28,6 +28,7 @@ import gzip
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -870,8 +871,8 @@ class EvalRequest(BaseModel):
     seed_hex:             str            # hex-encoded seed bytes (e.g. blake2b(blockhash||hotkey))
     eval_id:              str
     hotkey:               str | None = None
-    n_samples:            int | None = Field(None, ge=1)
-    max_turns:            int | None = Field(None, ge=1)
+    n_samples:            int | None = Field(None, ge=1, le=512)
+    max_turns:            int | None = Field(None, ge=1, le=100)
     king_chain:           list[dict] = []   # past kings [{"repo":…, "digest":…}]
     recent_challengers:   list[dict] = []   # last 5 evaluated [{"repo":…, "digest":…}]
     queued_challengers:   list[dict] = []   # still in queue (not yet evaluated)
@@ -1018,10 +1019,17 @@ async def _score_one_turn(
                 "chal_raw_truncated": chal_raw_trunc,
                 "parse_ok": k_v.parse_ok and c_v.parse_ok,
             })
-            king_sum += k_v.score
-            chal_sum += c_v.score
+            k_score = k_v.score if math.isfinite(k_v.score) else 0.0
+            c_score = c_v.score if math.isfinite(c_v.score) else 0.0
+            if not math.isfinite(k_v.score) or not math.isfinite(c_v.score):
+                log.warning("judge %s returned non-finite score (king=%.4g chal=%.4g) — clamped to 0.0",
+                            jm, k_v.score, c_v.score)
+            king_sum += k_score
+            chal_sum += c_score
             if not (k_v.parse_ok and c_v.parse_ok):
                 any_parse_fail = True
+                log.warning("judge %s parse failure on turn (king_ok=%s chal_ok=%s) — scored as reject (0.0)",
+                            jm, k_v.parse_ok, c_v.parse_ok)
 
         n = max(1, len(judge_models))
         king_avg = king_sum / n
@@ -1843,6 +1851,12 @@ async def set_king(req: SetKingRequest) -> JSONResponse:
         king_dir = await asyncio.to_thread(materialize_model, ref, None, 16)
     except Exception as exc:
         raise HTTPException(500, f"materialize_failed: {exc}")
+
+    # Check AFTER the materialize await — this is the only yield point before
+    # proc.start, so checking here closes the TOCTOU window between the
+    # idempotency check above and the actual vLLM restart below.
+    if STATE.eval_lock.locked():
+        raise HTTPException(409, "eval in progress — retry after current duel completes")
 
     # materialize_model injects chat_template; restart vLLM if it was missing
     # (otherwise /set_king noop leaves a broken king running).
