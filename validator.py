@@ -774,10 +774,10 @@ class State:
         if s:
             self.seen = set(s.get("hotkeys", []))
         elif self.king or self.queue:
-            log.error(
-                "CRITICAL: seen_hotkeys.json failed to load from S3 after 3 attempts "
-                "while king/queue state exists — burned hotkeys are unprotected on this startup. "
-                "Delay the first scan or restart the validator."
+            raise RuntimeError(
+                "seen_hotkeys.json failed to load from S3 after 3 attempts while king/queue "
+                "state exists. Starting with an empty seen-set would allow burned miners to "
+                "re-enter. Restart the validator once S3 is healthy."
             )
         cr = self.store.get("state/completed_repos.json")
         if cr:
@@ -1135,11 +1135,15 @@ class State:
 # set_weights
 # ---------------------------------------------------------------------------
 
-def _eligible_chain_hotkeys(state: State) -> list[str]:
+def _eligible_chain_hotkeys(state: State, uid_map: dict | None = None) -> list[str]:
     """Ordered list (current king first) of hotkeys that should receive
     emission this tick — registered on the metagraph and capped at
     DUEL_KING_CHAIN_DEPTH. Deduped by hotkey; deregistered hotkeys are
-    silently dropped so the live splits renormalize."""
+    silently dropped so the live splits renormalize.
+
+    Pass an explicit uid_map snapshot to avoid TOCTOU races in async callers."""
+    if uid_map is None:
+        uid_map = state.uid_map
     out: list[str] = []
     cap = chain_config.DUEL_KING_CHAIN_DEPTH
     king_hk = (state.king or {}).get("hotkey", "")
@@ -1151,7 +1155,7 @@ def _eligible_chain_hotkeys(state: State) -> list[str]:
             out.append(hk)
         if len(out) >= cap:
             break
-    return [hk for hk in out[:cap] if hk in state.uid_map]
+    return [hk for hk in out[:cap] if hk in uid_map]
 
 
 async def maybe_set_weights(subtensor, wallet, state: State, *,
@@ -1164,9 +1168,12 @@ async def maybe_set_weights(subtensor, wallet, state: State, *,
     if not force and current_block - state.last_weight_block < WEIGHT_INTERVAL:
         return False
 
-    eligible = _eligible_chain_hotkeys(state)
+    # Snapshot uid_map before the first await so the mapping cannot change
+    # mid-function if refresh_uid_map is called concurrently.
+    uid_map = dict(state.uid_map)
+    eligible = _eligible_chain_hotkeys(state, uid_map)
     if eligible:
-        target_uids = [int(state.uid_map[hk]) for hk in eligible]
+        target_uids = [int(uid_map[hk]) for hk in eligible]
         share = round(1.0 / len(eligible), 9)
         weights_list = [share] * len(eligible)
         log_target = (
@@ -1210,14 +1217,15 @@ async def maybe_set_weights(subtensor, wallet, state: State, *,
 # Duel dispatch (talks to eval.py SSE)
 # ---------------------------------------------------------------------------
 
-def _compute_seed(subtensor, hotkey: str) -> bytes:
+def _compute_seed(subtensor, hotkey: str, reveal_block: int | None = None) -> bytes:
     """seed = blake2b(block_hash_at_reveal_height || hotkey).
 
-    bt's block_hash call can flake; fall back to a deterministic mix of
-    current block + hotkey so the fixture set is still determined and
-    miner-verifiable without depending on an exact historical hash."""
+    Uses the block at which the miner committed their reveal so the seed is
+    stable and reproducible regardless of when the eval is actually processed.
+    Falls back to current block if reveal_block is not available, and then to
+    a time-bucketed value if the chain call itself fails."""
     try:
-        block = subtensor.block
+        block = reveal_block if reveal_block is not None else subtensor.block
         block_hash = subtensor.substrate.get_block_hash(block)
         if isinstance(block_hash, str) and block_hash.startswith("0x"):
             block_hash_b = bytes.fromhex(block_hash[2:])
@@ -1347,7 +1355,7 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
         state.flush_dashboard(force=True)
         return
 
-    seed = _compute_seed(subtensor, entry.get("hotkey", ""))
+    seed = _compute_seed(subtensor, entry.get("hotkey", ""), reveal_block=entry.get("block"))
     req_body = {
         "king": {"repo": king["model_repo"], "digest": king["king_digest"]},
         "challenger": challenger,
@@ -1497,47 +1505,48 @@ async def process_challenge(state: State, http: httpx.AsyncClient,
         state.flush_dashboard(force=True)
         return
 
-    if _is_infra_failure(verdict):
-        err = str(verdict.get("error") or "zero_turn_eval")
-        log.warning("%s: infra failure (%s)", cid, err[:120])
-        if "disk_full" in err and entry.get("hotkey"):
-            state.infra_cooldown[entry["hotkey"]] = _monotonic_now() + 300.0
-        state.record_failure(entry, "eval_infra", err)
-    else:
-        state.record_verdict(entry, verdict)
-        if verdict.get("accepted"):
-            log.info("%s: ACCEPTED. crowning %s", cid, entry.get("hotkey", "?")[:16])
-            try:
-                block = subtensor.block
-            except Exception:
-                block = 0
-            state.set_king(entry.get("hotkey", ""), entry.get("model_repo", ""),
-                           entry.get("model_digest", ""), block, challenge_id=cid,
-                           dethrone_judges=[
-                               {"model": j["model"], "king_mean": j["king_mean"], "n": j.get("n", 0)}
-                               for j in (verdict.get("judges") or [])
-                           ],
-                           crown_judges=[
-                               # king_mean here stores the NEW king's score (challenger's score at coronation)
-                               {"model": j["model"], "king_mean": j["chal_mean"], "n": j.get("n", 0)}
-                               for j in (verdict.get("judges") or [])
-                           ])
-            try:
-                await _eval_set_king(http, state.king)
-            except Exception:
-                log.exception("post-dethrone /set_king failed; will retry on next tick")
-            await maybe_set_weights(subtensor, wallet, state, force=True, reason="dethrone")
-        elif verdict.get("is_duplicate") or (verdict.get("error") or "").startswith("duplicate_model"):
-            log.info("%s: DUPLICATE. hotkey=%s repo=%s is a copy of %s",
-                     cid, entry.get("hotkey", "?")[:16],
-                     entry.get("model_repo", "?"), verdict.get("duplicate_of", "?"))
+    try:
+        if _is_infra_failure(verdict):
+            err = str(verdict.get("error") or "zero_turn_eval")
+            log.warning("%s: infra failure (%s)", cid, err[:120])
+            if "disk_full" in err and entry.get("hotkey"):
+                state.infra_cooldown[entry["hotkey"]] = _monotonic_now() + 300.0
+            state.record_failure(entry, "eval_infra", err)
         else:
-            deth = verdict.get("dethrone") or {}
-            log.info("%s: REJECTED. dethrone=%s mean_delta=%.4f lcb=%.4f", cid,
-                     deth, verdict.get("mean_delta", 0.0), verdict.get("lcb_at_1_minus_alpha", 0.0))
-    state.current_eval = None
-    state.flush()
-    state.flush_dashboard(force=True)
+            state.record_verdict(entry, verdict)
+            if verdict.get("accepted"):
+                log.info("%s: ACCEPTED. crowning %s", cid, entry.get("hotkey", "?")[:16])
+                try:
+                    block = subtensor.block
+                except Exception:
+                    block = 0
+                state.set_king(entry.get("hotkey", ""), entry.get("model_repo", ""),
+                               entry.get("model_digest", ""), block, challenge_id=cid,
+                               dethrone_judges=[
+                                   {"model": j["model"], "king_mean": j["king_mean"], "n": j.get("n", 0)}
+                                   for j in (verdict.get("judges") or [])
+                               ],
+                               crown_judges=[
+                                   {"model": j["model"], "chal_mean_at_coronation": j["chal_mean"], "n": j.get("n", 0)}
+                                   for j in (verdict.get("judges") or [])
+                               ])
+                try:
+                    await _eval_set_king(http, state.king)
+                except Exception:
+                    log.exception("post-dethrone /set_king failed; will retry on next tick")
+                await maybe_set_weights(subtensor, wallet, state, force=True, reason="dethrone")
+            elif verdict.get("is_duplicate") or (verdict.get("error") or "").startswith("duplicate_model"):
+                log.info("%s: DUPLICATE. hotkey=%s repo=%s is a copy of %s",
+                         cid, entry.get("hotkey", "?")[:16],
+                         entry.get("model_repo", "?"), verdict.get("duplicate_of", "?"))
+            else:
+                deth = verdict.get("dethrone") or {}
+                log.info("%s: REJECTED. dethrone=%s mean_delta=%.4f lcb=%.4f", cid,
+                         deth, verdict.get("mean_delta", 0.0), verdict.get("lcb_at_1_minus_alpha", 0.0))
+    finally:
+        state.current_eval = None
+        state.flush()
+        state.flush_dashboard(force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1621,16 +1630,38 @@ async def main() -> int:
 
     # Bring up eval.py king once at startup (idempotent).
     async with httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0)) as http:
-        for attempt in range(3):
+        # 409 means the eval server is up but mid-duel (validator restarted during
+        # an eval). Keep separate counters: real failures abort after 3; 409s retry
+        # for up to 30 minutes so the duel can finish before we set the king.
+        _fail_n = 0
+        _busy_n = 0
+        while True:
             try:
                 await _eval_set_king(http, state.king)
                 break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 409:
+                    _busy_n += 1
+                    if _busy_n > 60:  # 60 × 30 s = 30 min ceiling
+                        log.error("startup: eval has been running for >30 min; aborting")
+                        return 3
+                    log.info("startup /set_king: eval in progress (poll %d/60), waiting 30 s …",
+                             _busy_n)
+                    await asyncio.sleep(30.0)
+                else:
+                    _fail_n += 1
+                    if _fail_n >= 3:
+                        log.error("eval server unreachable on startup; aborting")
+                        return 3
+                    log.warning("startup /set_king attempt %d failed: %s", _fail_n, exc)
+                    await asyncio.sleep(10.0)
             except Exception as exc:
-                log.warning("startup /set_king attempt %d failed: %s", attempt + 1, exc)
+                _fail_n += 1
+                if _fail_n >= 3:
+                    log.error("eval server unreachable on startup; aborting")
+                    return 3
+                log.warning("startup /set_king attempt %d failed: %s", _fail_n, exc)
                 await asyncio.sleep(10.0)
-        else:
-            log.error("eval server unreachable on startup; aborting")
-            return 3
 
         await _startup_prune_cache(http, state)
 
