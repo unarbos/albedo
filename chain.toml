@@ -1,6 +1,6 @@
 [chain]
 name         = "Albedo"
-seed_repo    = "unarbos/albedo-qwen3-4b-genesis"
+seed_repo    = "teutonic/albedo-qwen3-4b-genesis"
 # Challengers must be named albedo-qwen3-4b-<suffix> under any Hippius namespace.
 repo_pattern = "^[^/]+/albedo-qwen3-4b-.+$"
 
@@ -25,7 +25,7 @@ extra_lock_keys = [
 #   --hf-model Qwen/Qwen3-4B --repo unarbos/albedo-qwen3-4b-genesis
 # Then paste the returned sha256: digest below.
 tokenizer_repo = "Qwen/Qwen3-4B"
-seed_digest    = ""   # REQUIRED before first start — run seed_genesis.py
+seed_digest    = "sha256:3368b0c79b619ed90dc5610c20073cf02c3a93275ebc0c5b94a9d332fea6f606"
 
 [judge]
 models = [

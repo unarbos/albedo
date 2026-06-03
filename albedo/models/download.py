@@ -1,7 +1,6 @@
 """albedo.models.download — fetch model snapshots from Hippius Hub."""
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -33,16 +32,8 @@ def _cache_dir(ref: ModelRef) -> Path:
     return resolved
 
 
-def _hub() -> "hippius_hub.HippiusHub":  # type: ignore[name-defined]  # noqa: F821
-    """Lazy-import and construct a HippiusHub client."""
-    try:
-        import hippius_hub  # type: ignore[import]
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "hippius_hub is not installed; run: pip install hippius-hub"
-        ) from exc
-    token = os.environ.get(_HUB_TOKEN_ENV)
-    return hippius_hub.HippiusHub(token=token)
+def _token() -> str | None:
+    return os.environ.get(_HUB_TOKEN_ENV)
 
 
 def materialize_model(
@@ -57,6 +48,13 @@ def materialize_model(
     Idempotent: skips download if config.json already exists. After a full
     download, injects the canonical chat template and scrubs tokenizer_config.
     """
+    try:
+        import hippius_hub  # type: ignore[import]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "hippius_hub is not installed; run: pip install hippius-hub"
+        ) from exc
+
     dest = Path(local_dir) if local_dir else _cache_dir(ref)
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -66,13 +64,13 @@ def materialize_model(
 
     log.info("materialize_model: downloading %s → %s", ref.immutable_ref, dest)
 
-    hub = _hub()
-    hub.download_model(
-        repo=ref.repo,
+    hippius_hub.snapshot_download(
+        ref.repo,
         revision=ref.digest,
         local_dir=str(dest),
         max_workers=max_workers,
         allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else None,
+        token=_token(),
     )
 
     if not config_only:
@@ -84,8 +82,13 @@ def materialize_model(
 
 def list_remote_files(ref: ModelRef) -> list[str]:
     """Return filenames present in the Hippius repo at ref."""
-    hub = _hub()
-    return hub.list_files(repo=ref.repo, revision=ref.digest)
+    try:
+        import hippius_hub  # type: ignore[import]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "hippius_hub is not installed; run: pip install hippius-hub"
+        ) from exc
+    return hippius_hub.list_repo_files(ref.repo, revision=ref.digest, token=_token())
 
 
 def prune_model_cache(*keep_refs: ModelRef) -> int:

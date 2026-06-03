@@ -88,8 +88,10 @@ def main() -> int:
 
     if args.token:
         os.environ["HIPPIUS_HUB_TOKEN"] = args.token
-    if not os.environ.get("HIPPIUS_HUB_TOKEN"):
-        sys.exit("Set HIPPIUS_HUB_TOKEN or pass --token")
+    has_token    = bool(os.environ.get("HIPPIUS_HUB_TOKEN"))
+    has_userpass = bool(os.environ.get("HIPPIUS_HUB_USERNAME") and os.environ.get("HIPPIUS_HUB_PASSWORD"))
+    if not has_token and not has_userpass:
+        sys.exit("Set HIPPIUS_HUB_TOKEN or HIPPIUS_HUB_USERNAME + HIPPIUS_HUB_PASSWORD (or pass --token)")
 
     if args.local_dir:
         local_dir = args.local_dir
