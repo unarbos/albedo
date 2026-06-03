@@ -180,19 +180,10 @@ async def _main_loop(subtensor, wallet, state: State, http: httpx.AsyncClient) -
                 king_hotkeys.add(state.king.hotkey)
             king_hotkeys.update(e.hotkey for e in state.king_chain if e.hotkey)
 
-            rejected_reveals: list[dict] = []
             new_entries = scan_reveals(
                 subtensor, NETUID, state.completed_repos, state.seen,
                 king_hotkeys=king_hotkeys,
-                rejected_out=rejected_reveals,
             )
-
-            for spoofed in rejected_reveals:
-                hk = spoofed.get("hotkey", "")
-                state.record_failure({"eval_id": None, "hotkey": hk}, "spoof_rejected",
-                    f"author={spoofed.get('author_hotkey')} != chain={hk}")
-                state.seen.add(hk)
-                state.flush()
 
             for entry in new_entries:
                 hk = entry.get("hotkey", "")

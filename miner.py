@@ -147,7 +147,7 @@ def main() -> int:
     ref = upload_model_folder(chal_dir, repo=repo, revision=suffix)
     log.info("uploaded: %s", ref.immutable_ref)
 
-    payload = build_reveal_v4(ref, my_hotkey)
+    payload = build_reveal_v4(ref)
     log.info("submitting reveal …")
     result = subtensor.set_reveal_commitment(
         wallet=wallet, netuid=NETUID, data=payload,

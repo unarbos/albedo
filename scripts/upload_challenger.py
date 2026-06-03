@@ -81,7 +81,7 @@ def main() -> int:
     print(f"   Repo:   {args.repo}")
     print(f"   Digest: {digest}")
 
-    reveal = build_reveal_v4(args.repo, digest, args.hotkey)
+    reveal = build_reveal_v4(args.repo, digest)
 
     print(f"\n{'═'*64}")
     print("REVEAL STRING — submit this on-chain:")

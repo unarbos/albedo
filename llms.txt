@@ -269,7 +269,7 @@ The script prints the reveal string. Submit it:
 import bittensor as bt
 wallet    = bt.Wallet(name="default", hotkey="default")
 subtensor = bt.Subtensor(network="finney")
-result    = subtensor.commit(wallet, 97, "v4|youruser/albedo-qwen3-4b-v1|sha256:...|5GcD3...")
+result    = subtensor.commit(wallet, 97, "v4|youruser/albedo-qwen3-4b-v1|sha256:...")
 print("Committed:", result)
 ```
 
@@ -447,7 +447,7 @@ Clears: `king/current.json`, `state/king_chain.json`, `state/seen_hotkeys.json`,
 
 ## Key API contracts
 
-**Reveal format:** `v4|{repo}|{digest}|{author_hotkey_ss58}`
+**Reveal format:** `v4|{repo}|{digest}`
 
 **EvalRequest body (POST /eval):**
 ```json

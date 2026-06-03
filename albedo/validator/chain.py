@@ -49,7 +49,6 @@ def scan_reveals(
     seen: set[str],
     *,
     king_hotkeys: set[str] = frozenset(),
-    rejected_out: list[dict] | None = None,
 ) -> list[dict]:
     """Query on-chain commitments and return new v4 entries.
 
@@ -58,7 +57,7 @@ def scan_reveals(
     (payload hotkey != chain hotkey) are appended to rejected_out.
     """
     results: list[dict] = []
-    n_total = n_seen = n_king = n_completed = n_non_v4 = n_invalid = n_spoofed = 0
+    n_total = n_seen = n_king = n_completed = n_non_v4 = n_invalid = 0
 
     log.info("chain scan: querying on-chain commitments for netuid=%d", netuid)
 
@@ -102,27 +101,10 @@ def scan_reveals(
             continue
 
         try:
-            ref, author_hotkey = parse_reveal_v4(data)
+            ref = parse_reveal_v4(data)
         except ValueError as exc:
             log.debug("chain scan: skip (parse error) hotkey=%s: %s", chain_hotkey, exc)
             n_invalid += 1
-            continue
-
-        if author_hotkey != chain_hotkey:
-            log.warning(
-                "chain scan: SPOOFED reveal — chain=%s author=%s repo=%s",
-                chain_hotkey, author_hotkey, ref.repo,
-            )
-            spoofed: dict = {
-                "hotkey":        chain_hotkey,
-                "author_hotkey": author_hotkey,
-                "block":         reveal_block,
-                "model_repo":    ref.repo,
-                "model_digest":  ref.digest,
-            }
-            if rejected_out is not None:
-                rejected_out.append(spoofed)
-            n_spoofed += 1
             continue
 
         if ref.repo in completed_repos:
@@ -143,7 +125,7 @@ def scan_reveals(
         )
 
     log.info(
-        "chain scan: done — total=%d  new=%d  seen=%d  king=%d  completed=%d  non_v4=%d  spoofed=%d  invalid=%d",
-        n_total, len(results), n_seen, n_king, n_completed, n_non_v4, n_spoofed, n_invalid,
+        "chain scan: done — total=%d  new=%d  seen=%d  king=%d  completed=%d  non_v4=%d  invalid=%d",
+        n_total, len(results), n_seen, n_king, n_completed, n_non_v4, n_invalid,
     )
     return results
