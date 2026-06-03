@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from albedo.config import DUEL_KING_CHAIN_DEPTH
+from albedo.config import DISPLAY_START_BLOCK, DUEL_KING_CHAIN_DEPTH
 from albedo.storage.store import ObjectStore
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ class KingEntry:
             "model_repo":      self.model_repo,
             "model_digest":    self.model_digest,
             "block":           self.block,
+            "crowned_block":   self.block,   # alias used by dashboard JS filter
             "challenge_id":    self.challenge_id,
             "dethrone_judges": self.dethrone_judges,
             "crown_judges":    self.crown_judges,
@@ -210,6 +211,9 @@ class State:
 
     def _build_dashboard_payload(self) -> dict:
         return {
+            "chain": {
+                "display_start_block": DISPLAY_START_BLOCK,
+            },
             "king":         self.king.to_dict() if self.king else None,
             "king_chain":   [e.to_dict() for e in self.king_chain],
             "queue_len":    len(self.queue),

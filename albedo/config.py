@@ -28,6 +28,9 @@ NAME:           str = _c.get("name", "Albedo")
 SEED_REPO:      str = _c.get("seed_repo", "")
 SEED_NAMESPACE: str = SEED_REPO.split("/")[0] if "/" in SEED_REPO else ""
 REPO_PATTERN:   str = _c.get("repo_pattern", rf"^[^/]+/{re.escape(NAME)}-.+$")
+DISPLAY_START_BLOCK: int = int(
+    os.environ.get("ALBEDO_DISPLAY_START_BLOCK") or _c.get("display_start_block", 0)
+)
 # Arch lock
 ARCH_MODULE:      str            = _a.get("module", "")
 EXTRA_LOCK_KEYS:  tuple[str,...] = tuple(_a.get("extra_lock_keys", []))

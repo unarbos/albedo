@@ -195,10 +195,13 @@ async def _main_loop(subtensor, wallet, state: State, http: httpx.AsyncClient) -
 
             for entry in new_entries:
                 hk = entry.get("hotkey", "")
+                repo = entry.get("model_repo", "")
                 state.seen.add(hk)
                 if eid := state.enqueue(entry):
-                    log.info("_main_loop: enqueued %s for %s", eid, hk)
+                    log.info("QUEUED  %s — hotkey=%s  repo=%s  block=%s",
+                             eid, hk, repo, entry.get("block"))
                 else:
+                    log.info("queue skip (already pending) — hotkey=%s  repo=%s", hk, repo)
                     # Hotkey already queued/in-eval; flush seen update that enqueue skipped.
                     state.flush()
 
@@ -211,6 +214,10 @@ async def _main_loop(subtensor, wallet, state: State, http: httpx.AsyncClient) -
                         break
                     entry = state.queue.pop(0)
                     hk = entry.get("hotkey", "")
+                    log.info(
+                        "DISPATCH %s — hotkey=%s  repo=%s  queue_remaining=%d",
+                        entry.get("eval_id"), hk, entry.get("model_repo"), len(state.queue),
+                    )
                     try:
                         outcome = await asyncio.wait_for(
                             process_challenge(state, http, subtensor, wallet, entry, EVAL_URL),

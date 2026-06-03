@@ -72,6 +72,9 @@ module.exports = {
         ALBEDO_MAX_REEVAL_PER_HOTKEY: env("ALBEDO_MAX_REEVAL_PER_HOTKEY", "1"),
         ALBEDO_EVAL_BOX_BACKOFF_S: env("ALBEDO_EVAL_BOX_BACKOFF_S", "120"),
         ALBEDO_EVAL_BOX_BACKOFF_MAX_S: env("ALBEDO_EVAL_BOX_BACKOFF_MAX_S", "1800"),
+        // Dashboard display cutoff — kings crowned before this block are hidden.
+        // Set to the first block of the current competition. 0 = show all.
+        ALBEDO_DISPLAY_START_BLOCK: env("ALBEDO_DISPLAY_START_BLOCK", "8326394"),
       },
     },
   ],

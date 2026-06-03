@@ -165,15 +165,21 @@ async def process_challenge(
     model_digest = entry.get("model_digest", "")
     eval_id = entry.get("eval_id", "")
 
+    log.info(
+        "EVAL START  %s — hotkey=%s  repo=%s",
+        eval_id, hotkey, model_repo,
+    )
+
     state.current_eval = entry
     state.flush_dashboard()
 
     king = state.king
     if king is None:
-        log.warning("process_challenge: no king — skipping %s", hotkey)
+        log.warning("EVAL %s — no king set, skipping hotkey=%s", eval_id, hotkey)
         state.close_eval()
         return "skip"
 
+    log.info("EVAL %s — admission check: repo=%s  king=%s", eval_id, model_repo, king.model_repo)
     rejection = validate_challenger_config(
         model_repo=model_repo,
         challenger_digest=model_digest,
@@ -182,17 +188,20 @@ async def process_challenge(
     )
     if rejection is not None:
         if is_miner_fault("admission_rejected", rejection):
-            log.info("process_challenge: admission rejected (terminal) %s — %s", hotkey, rejection)
+            log.info("EVAL %s — ADMISSION REJECTED (terminal)  hotkey=%s  reason=%s",
+                     eval_id, hotkey, rejection)
             state.record_failure(entry, "admission_rejected", rejection)
             state.close_eval()
             return "miner_fault"
-        log.warning("process_challenge: admission transient failure, retrying %s — %s",
-                    hotkey, rejection)
+        log.warning("EVAL %s — admission transient failure, retrying  hotkey=%s  reason=%s",
+                    eval_id, hotkey, rejection)
         state.record_failure(entry, "infra_failure", rejection)
         state.unburn(entry)
         state.close_eval()
         return "infra"
 
+    log.info("EVAL %s — admission passed, dispatching to GPU  hotkey=%s  repo=%s  vs king=%s",
+             eval_id, hotkey, model_repo, king.model_repo)
     seed = _compute_seed(subtensor, hotkey, entry.get("block"))
     eval_payload = {
         # Field names must match EvalRequest in eval_server/endpoints.py exactly.
@@ -251,13 +260,25 @@ async def process_challenge(
         accepted   = bool(verdict.get("accepted", False))
         mean_delta = float(verdict.get("mean_delta", 0.0))
         gate_lcb   = float(verdict.get("gate_lcb", 0.0))
+        chal_score = float(verdict.get("challenger_score", 0.0))
+        king_score = float(verdict.get("king_score", 0.0))
         log.info(
-            "process_challenge: accepted=%s  delta=%.4f  lcb=%.4f  eval_id=%s  hotkey=%s",
-            accepted, mean_delta, gate_lcb, eval_id, hotkey,
+            "EVAL %s — VERDICT: %s  hotkey=%s  repo=%s  "
+            "score=%.2f vs %.2f  delta=%.4f  lcb=%.4f",
+            eval_id,
+            "ACCEPTED ✓" if accepted else "REJECTED ✗",
+            hotkey, model_repo,
+            chal_score, king_score,
+            mean_delta, gate_lcb,
         )
 
         if accepted:
             state.record_verdict(entry, verdict)
+            log.info(
+                "EVAL %s — NEW KING: hotkey=%s  repo=%s  dethroned=%s",
+                eval_id, hotkey, model_repo,
+                king.model_repo if king else "none",
+            )
             # Stream emits "judges" (dim outcomes map) and "dethrone" (detail dict),
             # not "dethrone_judges"/"crown_judges" — pass the raw judge data through.
             state.set_king(

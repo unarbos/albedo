@@ -3,6 +3,9 @@ name         = "Albedo"
 seed_repo    = "teutonic/albedo-qwen3-4b-genesis"
 # Challengers must be named albedo-qwen3-4b-<suffix> under any Hippius namespace.
 repo_pattern = "^[^/]+/albedo-qwen3-4b-.+$"
+# Dashboard only: hide kings crowned before this block. 0 = show all.
+# Override at runtime with ALBEDO_DISPLAY_START_BLOCK env var.
+display_start_block = 8326394
 
 [arch]
 module = "archs.qwen3"

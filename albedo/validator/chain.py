@@ -58,47 +58,59 @@ def scan_reveals(
     (payload hotkey != chain hotkey) are appended to rejected_out.
     """
     results: list[dict] = []
+    n_total = n_seen = n_king = n_completed = n_non_v4 = n_invalid = n_spoofed = 0
+
+    log.info("chain scan: querying on-chain commitments for netuid=%d", netuid)
 
     try:
         raw_commitments = subtensor.get_all_commitments(netuid=netuid)
     except Exception as exc:
-        log.warning("scan_reveals: get_all_commitments failed: %s", exc)
+        log.warning("chain scan: get_all_commitments failed: %s", exc)
         return results
 
     for pair in raw_commitments:
         try:
             chain_hotkey, block_entries = _decode_commitment_pair(pair)
         except Exception as exc:
-            log.debug("scan_reveals: decode failed for pair: %s", exc)
+            log.debug("chain scan: decode failed for pair: %s", exc)
+            n_invalid += 1
             continue
 
+        n_total += 1
+
         if chain_hotkey in seen:
-            log.debug("scan_reveals: skipping already-seen hotkey %s", chain_hotkey)
+            log.debug("chain scan: skip (already seen) hotkey=%s", chain_hotkey)
+            n_seen += 1
             continue
 
         if chain_hotkey in king_hotkeys:
-            log.debug("scan_reveals: skipping king/chain hotkey %s", chain_hotkey)
+            log.debug("chain scan: skip (king/chain) hotkey=%s", chain_hotkey)
+            n_king += 1
             continue
 
         if not block_entries:
+            n_invalid += 1
             continue
+
         # Use the most-recent entry for this hotkey
         block_entries_sorted = sorted(block_entries, key=lambda t: t[0], reverse=True)
         reveal_block, data = block_entries_sorted[0]
 
         if not data.startswith("v4|"):
-            log.debug("scan_reveals: skipping non-v4 commitment from %s", chain_hotkey)
+            log.debug("chain scan: skip (non-v4) hotkey=%s", chain_hotkey)
+            n_non_v4 += 1
             continue
 
         try:
             ref, author_hotkey = parse_reveal_v4(data)
         except ValueError as exc:
-            log.debug("scan_reveals: parse_reveal_v4 failed for %s: %s", chain_hotkey, exc)
+            log.debug("chain scan: skip (parse error) hotkey=%s: %s", chain_hotkey, exc)
+            n_invalid += 1
             continue
 
         if author_hotkey != chain_hotkey:
             log.warning(
-                "scan_reveals: spoofed reveal — chain_hotkey=%s author=%s repo=%s",
+                "chain scan: SPOOFED reveal — chain=%s author=%s repo=%s",
                 chain_hotkey, author_hotkey, ref.repo,
             )
             spoofed: dict = {
@@ -110,10 +122,12 @@ def scan_reveals(
             }
             if rejected_out is not None:
                 rejected_out.append(spoofed)
+            n_spoofed += 1
             continue
 
         if ref.repo in completed_repos:
-            log.debug("scan_reveals: skipping completed repo %s", ref.repo)
+            log.debug("chain scan: skip (already evaluated) repo=%s hotkey=%s", ref.repo, chain_hotkey)
+            n_completed += 1
             continue
 
         entry: dict = {
@@ -124,8 +138,12 @@ def scan_reveals(
         }
         results.append(entry)
         log.info(
-            "scan_reveals: new entry hotkey=%s repo=%s block=%d",
+            "chain scan: NEW COMMIT — hotkey=%s  repo=%s  block=%d",
             chain_hotkey, ref.repo, reveal_block,
         )
 
+    log.info(
+        "chain scan: done — total=%d  new=%d  seen=%d  king=%d  completed=%d  non_v4=%d  spoofed=%d  invalid=%d",
+        n_total, len(results), n_seen, n_king, n_completed, n_non_v4, n_spoofed, n_invalid,
+    )
     return results
