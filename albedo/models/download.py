@@ -96,7 +96,10 @@ def prune_model_cache(*keep_refs: ModelRef) -> int:
     keep_paths: set[Path] = {_cache_dir(r) for r in keep_refs}
     cache_root = Path(_CACHE_ROOT)
 
-    if not cache_root.exists():
+    try:
+        if not cache_root.exists():
+            return 0
+    except OSError:
         return 0
 
     freed = 0

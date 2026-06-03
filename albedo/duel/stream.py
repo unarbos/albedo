@@ -163,7 +163,7 @@ async def run_duel(
         result: TurnResult | None = await coro
         if result is None:
             vllm_errors += 1
-            # score_turn raised an unhandled exception — infra failure, not the challenger's fault.
+            chal_vllm_errors += 1
             continue
         if result.vllm_error:
             vllm_errors += 1

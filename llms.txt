@@ -14,7 +14,7 @@
 ```
 ├── albedo/                      ← main package (all shared logic)
 │   ├── config.py                    Single source of truth — reads chain.toml at import time
-│   ├── stats.py                     Pure math: paired_bootstrap_lcb, aggregate_duel
+│   ├── stats.py                     Pure math: paired_bootstrap_lcb, dethrone_by_judge_dimensions
 │   │
 │   ├── storage/
 │   │   ├── r2.py                    R2 (Cloudflare) client — validator-private state
@@ -46,10 +46,8 @@
 │   ├── validator/
 │   │   ├── chain.py                 scan_reveals — decode v4 on-chain commitments
 │   │   ├── admission.py             validate_challenger_config — 9 checks before GPU duel
-│   │   ├── faults.py                is_infra_failure / is_miner_fault — classify eval failures
 │   │   ├── weights.py               maybe_set_weights — emission split with uid_map snapshot
 │   │   ├── challenge.py             process_challenge — one challenger end-to-end
-│   │   ├── website.py               upload_website — push dashboard HTML to Hippius
 │   │   └── loop.py                  main(), _startup(), _main_loop()
 │   │
 │   └── eval_server/
@@ -130,7 +128,7 @@ gen_temperature      = 1.0
 gen_max_tokens       = 1024
 gen_max_model_len    = 32768
 king_chain_depth     = 5            # rolling payout: current + 4 past kings
-win_margin           = 2.0          # challenger must beat king by ≥2 point (0–100 scale)
+win_margin           = 1.0          # challenger must beat king by ≥1 point (0–100 scale)
 
 [preeval]
 similarity_threshold = 0.95         # cosine sim ≥ this → duplicate rejection
@@ -305,8 +303,8 @@ chain scan (every ~20s)
     → validate_challenger_config() (9 checks — repo pattern, sha256, arch, locks, no .py, etc.)
     → _compute_seed(reveal_block)  ← uses commit block, not current block
     → POST /eval  (SSE stream)
-    →   eval server: check_fingerprint (cosine sim ≥ 0.95 → duplicate)
     →   eval server: probe_injection (N=3, separate seed)
+    →   eval server: check_fingerprint (cosine sim ≥ 0.95 → duplicate)
     →   eval server: run_duel (64 turns × up to 10 turns × 3 judges)
     →   eval server: stage-1 gate (wins ≥ 1, losses = 0)
     →   eval server: stage-2 gate (bootstrap LCB > 0 at α=0.05)
@@ -342,9 +340,8 @@ POST /eval (EvalRequest)
          for each turn (up to max_parallel=8 concurrent):
            score_turn(): generate king+chal simultaneously, score all judges simultaneously
            vllm_error turns → excluded from delta calculation (not unfairly penalised)
-         aggregate_duel(): metric-first mean → per-judge score → challenger_score vs king_score
-         gate-1: (challenger_score - king_score) >= win_margin (2.0 points, 0–100 scale)
-         gate-2: paired_bootstrap_lcb() LCB > 0 at gate_alpha=0.05
+         stage-1: dethrone_by_judge_dimensions()
+         stage-2: paired_bootstrap_lcb() at gate_alpha=0.05
        emit verdict SSE
        add challenger fingerprint (background task)
        sink.flush() → publish trace to S3
@@ -365,15 +362,13 @@ POST /set_king ({"king": {"repo": ..., "digest": ...}})
 
 | Error | Retries | Backoff | Notes |
 |---|---|---|---|
-| 429 rate-limited | **indefinite** | `1.5 × 4^min(n,4)` capped at `max_429_wait_s=60s` | Respects `Retry-After`; each sleep extends the deadline so 429 waits never consume the time budget |
+| 429 rate-limited | up to 10 | `1.5 × 4^min(n,4)` capped at `max_429_wait_s=60s` | Respects `Retry-After` header |
 | 5xx / network | up to `retry_max=3` | `1.5 × 2^attempt` | |
 | 4xx (not 429) | 0 | — | Permanent — raised immediately |
 
-**Hard deadline** (`call_timeout_s=300s`): applies only to non-429 failures. If the non-429
-retry budget runs out, `pairwise_judge()` returns a `parse_failure` MetricVerdict
-(score=0.0, parse_ok=False) so the duel turn continues rather than stalling.
-Probe calls (`probe()`) catch all exceptions including `DeadlineExceeded` and retry
-indefinitely — a probe always completes with a definitive True/False answer.
+**Hard deadline** (`call_timeout_s=300s`): if the total retry sequence exceeds 5 minutes,
+`score()` returns a `parse_failure` Verdict (score=0.0, parse_ok=False) instead of blocking
+the duel. Probe calls (`probe()`) propagate `DeadlineExceeded` so the turn is marked untested.
 
 **Jitter**: 0–500ms random pre-call sleep staggers simultaneous king + challenger
 requests to the same judge, halving rate-limit pressure.
@@ -468,24 +463,16 @@ Clears: `king/current.json`, `state/king_chain.json`, `state/seen_hotkeys.json`,
 **Verdict SSE event (event: verdict):**
 ```json
 {
-  "eval_id":          "eval-000042",
-  "accepted":         true,
-  "n_done":           64,
-  "n_valid":          61,
-  "vllm_errors":      3,
-  "challenger_score": 56.2,
-  "king_score":       43.8,
-  "winner":           "challenger",
-  "by_judge":         {"deepseek-ai/DeepSeek-V3.2-TEE": 57.4, "Qwen/Qwen3-235B-A22B-Thinking-2507": 55.1, ...},
-  "by_metric":        {"correctness": 55.1, "grounding": 57.0, "progress": 56.8, "protocol": 55.9, "efficiency": 56.2},
-  "win_margin":       2.0,
-  "margin_ok":        true,
-  "mean_delta":       0.062,
-  "lcb":              0.031,
-  "se":               0.018,
-  "gate_alpha":       0.05,
-  "gate_lcb":         true,
-  "judge_models":     ["deepseek-ai/DeepSeek-V3.2-TEE", ...]
+  "eval_id":         "eval-000042",
+  "accepted":        true,
+  "is_duplicate":    false,
+  "mean_delta":      0.092,
+  "gate_lcb":        0.031,
+  "n_done":          64,
+  "n_valid":         61,
+  "vllm_errors":     3,
+  "judges":          {"deepseek-ai/DeepSeek-V3.2-TEE": "win", ...},
+  "dethrone":        {"rule": "match_exceed_one_dimension", "n_wins": 3, ...}
 }
 ```
 

@@ -111,7 +111,8 @@ async def _startup(subtensor, wallet, state: State, http: httpx.AsyncClient) -> 
         poll_409 = conn_fails = 0
         while True:
             try:
-                resp = await http.post(url, json=state.king.to_dict(), timeout=30.0)
+                body = {"king": {"repo": state.king.model_repo, "digest": state.king.model_digest}}
+                resp = await http.post(url, json=body, timeout=30.0)
                 # 409 = eval in progress; keep waiting. Other HTTP errors are fatal.
                 if resp.status_code == 409:
                     poll_409 += 1
@@ -259,8 +260,8 @@ async def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s — %(message)s")
     bt = _bittensor()
-    subtensor = bt.subtensor(network=NETWORK)
-    wallet = bt.wallet(name=WALLET_NAME, hotkey=WALLET_HOTKEY)
+    subtensor = bt.Subtensor(network=NETWORK)
+    wallet = bt.Wallet(name=WALLET_NAME, hotkey=WALLET_HOTKEY)
 
     cr_code = _check_commit_reveal(subtensor)
     if cr_code:

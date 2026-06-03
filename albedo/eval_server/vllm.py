@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import time
 
 import httpx
@@ -44,7 +45,7 @@ class VLLMProcess:
         await asyncio.to_thread(self.stop)
 
         cmd = [
-            "python", "-m", "vllm.entrypoints.openai.api_server",
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
             "--model", model_dir,
             "--port", str(self._port),
             "--max-model-len", str(DUEL_GEN_MAX_LEN),
