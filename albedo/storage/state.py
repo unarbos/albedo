@@ -5,9 +5,21 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
-from albedo.config import DISPLAY_START_BLOCK, DUEL_KING_CHAIN_DEPTH
+from albedo.config import (
+    DATASET_REPO,
+    DATASET_SHARD_GLOB,
+    DISPLAY_START_BLOCK,
+    DUEL_KING_CHAIN_DEPTH,
+    JUDGE_MODEL,
+    JUDGE_MODELS,
+    JUDGE_TIE_BAND,
+    NAME,
+    SEED_DIGEST,
+    SEED_REPO,
+)
 from albedo.storage.store import ObjectStore
 
 log = logging.getLogger(__name__)
@@ -31,9 +43,27 @@ _SEEN_LOAD_RETRIES    = 3
 _DASHBOARD_MIN_PERIOD = 5.0   # seconds between flush_dashboard calls
 _HISTORY_MAX_LEN      = int(os.environ.get("ALBEDO_HISTORY_MAX_LEN", "500"))
 
+# Matches loop.py — NETUID lives in the env, not albedo.config.
+NETUID = int(os.environ.get("ALBEDO_NETUID", "0"))
+
 
 def _now_ts() -> float:
     return time.time()
+
+
+def _iso(ts: float | None) -> str | None:
+    """Render a UNIX-seconds timestamp as an ISO-8601 string for the dashboard JS.
+
+    The website parses every time field with `new Date(v)`, which treats a bare
+    number as milliseconds — so float seconds render as 1970. Emitting ISO strings
+    fixes all date displays without changing the numeric values stored internally.
+    """
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except (ValueError, OSError, TypeError):
+        return None
 
 @dataclass
 class KingEntry:
@@ -108,7 +138,7 @@ class State:
         self.watchdog:          float = 0.0
 
         self.history: list[dict]     = []
-        self.stats:   dict[str, Any] = {}
+        self.stats:   dict[str, Any] = {"queued": 0, "accepted": 0, "rejected": 0, "failed": 0}
 
         self.uid_map:     dict[str, int] = {}
         self.coldkey_for: dict[str, str] = {}
@@ -150,6 +180,7 @@ class State:
         self.counter       = int(counters.get("counter", 0))
         self.retry_counts  = {str(k): int(v) for k, v in counters.get("retry_counts", {}).items()}
         self.recovered_ids = set(counters.get("recovered_ids", []))
+        self.stats.update(counters.get("stats", {}))
 
         self.history = self._store.get(_KEY_HISTORY) or []
 
@@ -191,6 +222,7 @@ class State:
             "counter":       self.counter,
             "retry_counts":  self.retry_counts,
             "recovered_ids": sorted(self.recovered_ids),
+            "stats":         self.stats,
         })
         ok &= self._store.put(_KEY_HISTORY, self.history)
         if not ok:
@@ -209,20 +241,94 @@ class State:
             self._last_dashboard_flush = now
         return ok
 
+    def _chain_entry(self, e: KingEntry, reign: int, eligible: list[str], share: float) -> dict:
+        """One king_chain row in the shape the website JS expects.
+
+        weight/weight_share is None for deregistered hotkeys so the site can dim the
+        row instead of falsely promising emission. reign_number drives the era label.
+        """
+        hk = e.hotkey
+        registered = hk in self.uid_map
+        earning = registered and hk in eligible
+        d = e.to_dict()
+        d.update({
+            "uid":          self.uid_map.get(hk),
+            "coldkey":      self.coldkey_for.get(hk, ""),
+            "registered":   registered,
+            "reign_number": reign,
+            "crowned_at":   _iso(e.crowned_at),
+            "weight":       share if earning else None,
+            "weight_share": share if earning else None,
+            "judges":       e.crown_judges or [],
+        })
+        return d
+
     def _build_dashboard_payload(self) -> dict:
+        eligible = self.eligible_hotkeys()
+        share = round(1.0 / len(eligible), 9) if eligible else 0.0
+
+        king_hk = self.king.hotkey if self.king else None
+        # Current king is the highest reign; earlier king_chain entries count down.
+        king_reign = len(self.king_chain)
+
+        king_payload = None
+        if self.king is not None:
+            king_payload = self._chain_entry(self.king, king_reign, eligible, share)
+
+        king_chain_payload = [
+            self._chain_entry(e, king_reign - 1 - i, eligible, share)
+            for i, e in enumerate(self.king_chain)
+        ]
+
+        queue_payload = [
+            {
+                "challenge_id": q.get("eval_id"),
+                "hotkey":       q.get("hotkey"),
+                "uid":          self.uid_map.get(q.get("hotkey", "")),
+                "coldkey":      self.coldkey_for.get(q.get("hotkey", ""), ""),
+                "model_repo":   q.get("model_repo"),
+                "model_digest": q.get("model_digest"),
+                "queued_at":    _iso(q.get("enqueued_at")),
+                "block":        q.get("block"),
+            }
+            for q in self.queue
+        ]
+
+        current_eval_payload = None
+        if self.current_eval is not None:
+            ce = self.current_eval
+            current_eval_payload = {
+                **ce,
+                "challenge_id": ce.get("eval_id"),
+                "uid":          self.uid_map.get(ce.get("hotkey", "")),
+                "queued_at":    _iso(ce.get("enqueued_at")),
+            }
+
         return {
+            "updated_at": _iso(_now_ts()),
             "chain": {
+                "name":               NAME,
+                "seed_repo":          SEED_REPO,
+                "seed_digest":        SEED_DIGEST,
+                "judge_models":       list(JUDGE_MODELS),
+                "judge_model":        JUDGE_MODEL,
+                "judge_tie_band":     JUDGE_TIE_BAND,
+                "dataset_repo":       DATASET_REPO,
+                "dataset_shard_glob": DATASET_SHARD_GLOB,
+                "king_chain_depth":   DUEL_KING_CHAIN_DEPTH,
+                "netuid":             NETUID,
                 "display_start_block": DISPLAY_START_BLOCK,
             },
-            "king":         self.king.to_dict() if self.king else None,
-            "king_chain":   [e.to_dict() for e in self.king_chain],
+            "king":         king_payload,
+            "king_chain":   king_chain_payload,
+            "queue":        queue_payload,
             "queue_len":    len(self.queue),
             "seen_count":   len(self.seen),
             "counter":      self.counter,
-            "current_eval": self.current_eval,  # live in-progress duel (None when idle)
+            "current_eval": current_eval_payload,  # live in-progress duel (None when idle)
             "stats":        self.stats,
             "history":      self.history[:50],  # cap to avoid huge payloads
-            "ts":           _now_ts(),
+            "ts":           _iso(_now_ts()),
         }
 
     def close_eval(self) -> None:
@@ -245,6 +351,9 @@ class State:
         """Crown a new king, update king_chain, and persist."""
         old_king  = self.king
         old_chain = list(self.king_chain)
+        # block is None for current-format (dict) commitments — coerce so KingEntry's
+        # int validator never aborts a crown.
+        block = int(block) if isinstance(block, int) else 0
         entry = KingEntry(
             hotkey=hotkey,
             model_repo=model_repo,
@@ -293,24 +402,73 @@ class State:
         eval_id = f"eval-{self.counter:06d}"
         entry   = {**reveal, "eval_id": eval_id, "enqueued_at": _now_ts()}
         self.queue.append(entry)
+        self.stats["queued"] = self.stats.get("queued", 0) + 1
         self.flush()
         log.info("Enqueued %s for %s", eval_id, hotkey)
         return eval_id
 
     def record_verdict(self, entry: dict, verdict: dict) -> None:
-        """Append a verdict record to history and persist."""
+        """Append a flat verdict record to history and persist.
+
+        The record is flattened into the shape the dashboard JS reads directly
+        (`accepted`, `judges`, `n_turns`, `completed_at`, ...). The new eval-server
+        verdict carries only the challenger's per-judge share in `by_judge`; the king
+        side is its complement, since challenger_score + king_score ≈ 100.
+        """
+        hotkey = entry.get("hotkey")
+        # Snapshot the champion this challenger faced (self.king is still the old king
+        # here — set_king runs after record_verdict in the crown path).
+        king = self.king
+        by_judge = verdict.get("by_judge") or {}
+        judges = []
+        for model, score in by_judge.items():
+            try:
+                s = float(score)
+            except (TypeError, ValueError):
+                continue
+            judges.append({
+                "model":     model,
+                "chal_mean": s / 100.0,
+                "king_mean": (100.0 - s) / 100.0,
+                "outcome":   "win" if s > 50 else ("lose" if s < 50 else "tie"),
+            })
+
+        ts = _now_ts()
         record = {
-            "type":       "verdict",
-            "eval_id":    entry.get("eval_id"),
-            "hotkey":     entry.get("hotkey"),
-            "model_repo": entry.get("model_repo", ""),
-            "verdict":    verdict,
-            "ts":         _now_ts(),
+            "type":         "verdict",
+            "eval_id":      entry.get("eval_id"),
+            "hotkey":       hotkey,
+            "uid":          self.uid_map.get(hotkey),
+            "model_repo":   entry.get("model_repo", ""),
+            "model_digest": entry.get("model_digest", ""),
+            "accepted":     bool(verdict.get("accepted", False)),
+            "judges":       judges,
+            "n_turns":      verdict.get("n_valid", verdict.get("n_done", 0)),
+            "n_valid_turns": verdict.get("n_valid", 0),
+            "n_vllm_errors": verdict.get("vllm_errors", 0),
+            "chal_mean":    float(verdict.get("challenger_score", 0.0)) / 100.0,
+            "king_mean":    float(verdict.get("king_score", 0.0)) / 100.0,
+            "mean_delta":   verdict.get("mean_delta", 0.0),
+            "lcb":          verdict.get("gate_lcb", verdict.get("lcb", 0.0)),
+            "winner":       verdict.get("winner"),
+            # Champion-of-record for the "vs. champion" column.
+            "king_hotkey":       king.hotkey if king else None,
+            "king_model_repo":   king.model_repo if king else None,
+            "king_model_digest": king.model_digest if king else None,
+            "king_reign_number": len(self.king_chain) if king else None,
+            "completed_at": _iso(ts),    # ISO for the dashboard JS
+            "ts":           ts,          # numeric epoch — startup recovery compares it
+            # Full verdict retained for the detail page.
+            "verdict":      verdict,
         }
         self.history.insert(0, record)
         if len(self.history) > _HISTORY_MAX_LEN:
             self.history = self.history[:_HISTORY_MAX_LEN]
         self.completed_repos.add(entry.get("model_repo", ""))
+        if record["accepted"]:
+            self.stats["accepted"] = self.stats.get("accepted", 0) + 1
+        else:
+            self.stats["rejected"] = self.stats.get("rejected", 0) + 1
         self.flush()
 
     def record_failure(self, entry: dict, code: str, detail: str) -> None:
@@ -318,20 +476,43 @@ class State:
 
         Stores model_repo/digest/block so lookback recovery can rebuild a re-queue entry.
         """
+        detail_s = detail or ""
+        _injection_markers = ("auto_map", ".py files", "chat_template")
+        is_injection = (
+            (code == "config_mismatch" and any(m in detail_s for m in _injection_markers))
+            or "chal_injection_detected" in detail_s
+            or code in ("identity_mismatch", "not_registered")
+        )
+        is_duplicate = code == "duplicate_model" or detail_s.startswith(("duplicate_model", "too similar to"))
+        hotkey = entry.get("hotkey")
+        ts = _now_ts()
         record = {
             "type":         "failure",
             "eval_id":      entry.get("eval_id"),
-            "hotkey":       entry.get("hotkey"),
+            "hotkey":       hotkey,
+            "uid":          self.uid_map.get(hotkey),
             "model_repo":   entry.get("model_repo", ""),
             "model_digest": entry.get("model_digest", ""),
             "block":        entry.get("block"),
             "code":         code,
             "detail":       detail,
-            "ts":           _now_ts(),
+            # Aliases the dashboard JS reads first (error_code/error_detail).
+            "error_code":   code,
+            "error_detail": detail,
+            "is_injection": is_injection,
+            "is_duplicate": is_duplicate,
+            "completed_at": _iso(ts),    # ISO for the dashboard JS
+            "ts":           ts,          # numeric epoch — startup recovery compares it
         }
         self.history.insert(0, record)
         if len(self.history) > _HISTORY_MAX_LEN:
             self.history = self.history[:_HISTORY_MAX_LEN]
+        if is_injection:
+            self.stats["injection_attempts"] = self.stats.get("injection_attempts", 0) + 1
+        elif is_duplicate:
+            self.stats["duplicates"] = self.stats.get("duplicates", 0) + 1
+        else:
+            self.stats["failed"] = self.stats.get("failed", 0) + 1
         self.flush()
 
     def unburn(self, entry: dict) -> bool:
