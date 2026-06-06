@@ -53,15 +53,6 @@ export function taoMinerUrl(netuid, hotkey) {
   return `https://taomarketcap.com/subnets/${netuid}/miners?query=${encodeURIComponent(hotkey)}`;
 }
 
-export function evalsUrlForEntry(entry, history) {
-  const cid = entry.challenge_id;
-  if (cid && cid !== "seed") {
-    const h = (history || []).find(x => x.challenge_id === cid);
-    if (h?.evals_url) return h.evals_url;
-  }
-  return EVALS_BASE;
-}
-
 // Eval-artifact directory URL for a history entry. The backend doesn't emit
 // eval_dir_url/evals_url, so derive it from eval_id + completed_at, which map
 // 1:1 to the S3 layout: <EVALS_BASE>/<YYYY-MM-DD>/<NNN>/{scores.json,...}.

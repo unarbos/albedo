@@ -1,9 +1,58 @@
 import { fmtScore3 } from "./format.js";
 import { judgeMeta, kingTitleName, modelLinkHtml } from "./model.js";
 import { kingDateShort } from "./format.js";
+import { EVALS_BASE } from "./config.js";
 
 let evoJudgeFilter = "all";
 let evoRenderCtx = null;
+
+// Older kings' crowning verdicts scroll out of the live history window, so the
+// backend-derived `entry.judges` is empty for them. Recover their scores from the
+// persistent S3 eval bundle (scores.json has the same `by_judge` percentages).
+const _crownCache   = new Map();   // challenge_id -> judges[] | null (null = no bundle)
+const _crownPending = new Set();
+
+function _judgesFromScores(s) {
+  const bj = s?.by_judge;
+  if (!bj) return null;
+  const n = s.n_valid ?? 0;
+  return Object.entries(bj).map(([model, pct]) => {
+    const chal = Number(pct) / 100;
+    return { model, chal_mean: chal, king_mean: 1 - chal, n };
+  });
+}
+
+function _crownScoresUrls(entry) {
+  const m = String(entry.challenge_id || "").match(/(\d+)\s*$/);
+  const day = String(entry.crowned_at || entry.completed_at || "").slice(0, 10);
+  if (!m || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return [];
+  const dir = String(parseInt(m[1], 10)).padStart(3, "0");
+  // Evals that finished just after midnight are stored under the day they ran,
+  // so also try the previous day if the crowning-day path 404s.
+  const prev = new Date(day + "T00:00:00Z");
+  prev.setUTCDate(prev.getUTCDate() - 1);
+  const prevDay = prev.toISOString().slice(0, 10);
+  return [`${EVALS_BASE}${day}/${dir}/scores.json`, `${EVALS_BASE}${prevDay}/${dir}/scores.json`];
+}
+
+async function _fetchCrownScores(entry, onReady) {
+  const cid = entry.challenge_id;
+  if (!cid || cid === "seed" || cid === "genesis") return;
+  if (_crownCache.has(cid) || _crownPending.has(cid)) return;
+  _crownPending.add(cid);
+  let judges = null;
+  for (const url of _crownScoresUrls(entry)) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) continue;
+      judges = _judgesFromScores(await r.json());
+      if (judges) break;
+    } catch { /* try next */ }
+  }
+  _crownCache.set(cid, judges);   // cache null too, so we don't refetch missing bundles
+  _crownPending.delete(cid);
+  if (judges && typeof onReady === "function") onReady();
+}
 
 export function kingBarScores(entry, index, chain, currentEval) {
   if (index === 0 && currentEval?.judges?.length) {
@@ -15,8 +64,11 @@ export function kingBarScores(entry, index, chain, currentEval) {
       live:       true,
     }));
   }
-  if (entry.judges?.length) {
-    return entry.judges.map(j => ({
+  // Prefer history-derived judges; fall back to scores recovered from the S3 bundle.
+  const judges = (entry.judges?.length ? entry.judges : null)
+              || _crownCache.get(entry.challenge_id) || null;
+  if (judges?.length) {
+    return judges.map(j => ({
       model:      j.model,
       score:      j.king_mean,
       chal_score: j.chal_mean,
@@ -104,6 +156,13 @@ export function renderEvolution(kc, chain, currentEval) {
     document.getElementById("evolution-filters").hidden = true;
     return;
   }
+  // Recover crowning scores for older kings whose verdict left the history window,
+  // then re-render once each bundle resolves.
+  const reRender = () => { if (evoRenderCtx) renderEvolution(evoRenderCtx.kc, evoRenderCtx.chain, evoRenderCtx.currentEval); };
+  kc.forEach(e => {
+    const hasObjs = Array.isArray(e.judges) && e.judges.length && typeof e.judges[0] === "object";
+    if (!hasObjs && e.challenge_id && !_crownCache.has(e.challenge_id)) _fetchCrownScores(e, reRender);
+  });
   const judges = judgeColumns(kc, chain, currentEval);
   const ordered = kc.slice().reverse();
 
@@ -121,12 +180,13 @@ export function renderEvolution(kc, chain, currentEval) {
     const digest = e.king_digest || e.model_digest || "";
     const name = modelLinkHtml(repo, digest, kingTitleName(e.reign_number));
 
-    // Final score: mean chal and king across all judges for this king's crowning battle.
-    const judgeEntries = e.judges || [];
-    let finalHtml = "";
-    if (judgeEntries.length) {
-      const avgChal = judgeEntries.reduce((s, j) => s + (j.chal_mean || 0), 0) / judgeEntries.length;
-      const avgKing = judgeEntries.reduce((s, j) => s + (j.king_mean || 0), 0) / judgeEntries.length;
+    // Final score: mean chal / king across judges, from the same resolved scores the
+    // bars use (history or S3-recovered) — shown for every king, not just the current one.
+    const scored = scores.filter(s => s.chal_score != null && s.score != null);
+    let finalHtml;
+    if (scored.length) {
+      const avgChal = scored.reduce((a, s) => a + s.chal_score, 0) / scored.length;
+      const avgKing = scored.reduce((a, s) => a + s.score, 0) / scored.length;
       const cPct = (avgChal * 100).toFixed(1);
       const kPct = (avgKing * 100).toFixed(1);
       const winCls  = avgChal > 0.5 ? " win"  : avgChal < 0.5 ? " lose" : "";
@@ -136,6 +196,9 @@ export function renderEvolution(kc, chain, currentEval) {
         <span class="evo-final-sep"> / </span>
         <span class="evo-final-king${loseCls}">${kPct}</span>
       </div>`;
+    } else {
+      // Placeholder keeps the column height identical (e.g. base model) so all bars align.
+      finalHtml = `<div class="evo-king-final"><span class="evo-final-sep">—</span></div>`;
     }
 
     return `<div class="evo-king${dim}${current}">

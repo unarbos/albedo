@@ -1,5 +1,5 @@
 import { setText, fmtWhenCell, fmtAlphaDay, kingDateShort } from "./format.js";
-import { kingTitleName, challengerDisplayName, modelLinkHtml, taoMinerUrl, evalsUrlForEntry, evalDirUrl } from "./model.js";
+import { kingTitleName, challengerDisplayName, modelLinkHtml, taoMinerUrl, evalDirUrl } from "./model.js";
 import { isValidEval, verdictBadge, judgeScoreCell, judgeByLetter, failReasonCell } from "./data.js";
 import { dlButton, failDlButton, DL_ICON } from "./download.js";
 import { renderEvolution } from "./evolution.js";
@@ -41,11 +41,19 @@ function renderReleases(kc, chain, history) {
     const date = kingDateShort(e.crowned_at);
     const alpha = fmtAlphaDay(e.weight);
     const alphaCls = i === 0 && e.registered ? " earning" : (e.registered ? "" : "");
-    const dlUrl = evalsUrlForEntry(e, history);
-    const dlBtn = dlUrl
-      ? `<a class="releases-dl" href="${dlUrl}" target="_blank" rel="noopener" aria-label="download rollouts" title="rollouts">`
+    // King eval download = the ZIP bundle of the crowning duel that put this king
+    // on the throne. Prefer the history entry (exact date); fall back to the king's
+    // own challenge_id + crowned_at so ALL kings work, not just the one still in the
+    // truncated history. Genesis/base model (no numeric challenge_id) has none.
+    const kingEval = (history || []).find(
+      x => x.accepted && (x.eval_id === e.challenge_id || x.challenge_id === e.challenge_id)
+    );
+    const dlDir = evalDirUrl(kingEval)
+      || evalDirUrl({ eval_id: e.challenge_id, completed_at: e.crowned_at });
+    const dlBtn = dlDir
+      ? `<button type="button" class="releases-dl" data-zip-dir="${dlDir.replace(/"/g, "&quot;")}" aria-label="download eval ZIP" title="download eval ZIP">`
       : `<button type="button" class="releases-dl" disabled aria-label="download rollouts">`;
-    const dlEnd = dlUrl ? `</a>` : `</button>`;
+    const dlEnd = `</button>`;
     const dlIcon = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
       <path d="M6 1.5v8M2.5 6L6 9.5 9.5 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="M2 11h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
