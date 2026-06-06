@@ -35,10 +35,13 @@ _MAX_PARALLEL_TURNS = int(os.environ.get("ALBEDO_MAX_PARALLEL_TURNS", "8"))
 _MODEL_DOWNLOAD_TIMEOUT = float(os.environ.get("ALBEDO_MODEL_DOWNLOAD_TIMEOUT", "3600"))
 
 
-async def _add_and_persist(key: str, model_dir: str) -> None:
-    """Fingerprint a model into shared state and persist the state to S3 (best-effort)."""
+async def _add_and_persist(key: str, model_dir: str, hotkey: str = "") -> None:
+    """Fingerprint a model into shared state and persist the state to S3 (best-effort).
+
+    hotkey is recorded so a miner is never flagged as a duplicate of their own model.
+    """
     try:
-        await asyncio.to_thread(add_fingerprint, key, model_dir, STATE.fingerprints)
+        await asyncio.to_thread(add_fingerprint, key, model_dir, STATE.fingerprints, hotkey)
         await asyncio.to_thread(save_fingerprints, STATE.fingerprints)
     except Exception:
         log.warning("fingerprint add/persist failed for %r", key, exc_info=True)
@@ -195,6 +198,9 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 king_hotkey=req.king.get("repo", "") if req.king else "",
             )
             try:
+                # Keepalive: these pre-duel phases emit no 'start'/'turn' events, so feed the
+                # validator's idle timer (it resets on any line) while we materialise + probe.
+                yield _sse("phase", {"eval_id": req.eval_id, "phase": "materialize"})
                 # Gate 1: materialise challenger and start vLLM
                 try:
                     chal_dir = await asyncio.wait_for(
@@ -213,7 +219,7 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
 
                 # Gate 2: near-duplicate fingerprint check
                 is_dup, dup_key = await asyncio.to_thread(
-                    check_fingerprint, chal_dir, STATE.fingerprints
+                    check_fingerprint, chal_dir, STATE.fingerprints, None, hotkey
                 )
                 if is_dup:
                     log.warning("challenger %s is near-duplicate of %s",
@@ -226,6 +232,7 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                     return
 
                 # Gate 3: injection probe — probe seed is distinct from duel seed
+                yield _sse("phase", {"eval_id": req.eval_id, "phase": "probe"})
                 probe = await probe_injection(
                     challenger_url=f"http://localhost:{CHAL_PORT}",
                     eval_id=req.eval_id,
@@ -265,8 +272,8 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 ):
                     yield chunk
 
-                # Store + persist challenger fingerprint for future dup checks
-                asyncio.create_task(_add_and_persist(chal_ref.immutable_ref, chal_dir))
+                # Store + persist challenger fingerprint (with its hotkey) for future dup checks
+                asyncio.create_task(_add_and_persist(chal_ref.immutable_ref, chal_dir, hotkey))
 
             finally:
                 STATE.current_eval_id = None
@@ -299,6 +306,25 @@ async def prune_cache(body: dict) -> JSONResponse:
     async with STATE.eval_lock:
         freed = await asyncio.to_thread(prune_model_cache, *keep_refs)
     return JSONResponse({"ok": True, "freed_bytes": freed})
+
+
+@app.post("/reset_fingerprints")
+async def reset_fingerprints() -> JSONResponse:
+    """Clear all near-duplicate fingerprint state (in-memory + persisted).
+
+    Called by the validator's competition reset so a fresh replay re-fingerprints from
+    scratch — otherwise every re-queued model false-matches its own prior fingerprint.
+    """
+    if STATE.eval_lock.locked():
+        return JSONResponse({"ok": False, "error": "eval in progress"}, status_code=409)
+    n = len(STATE.fingerprints)
+    STATE.fingerprints.clear()
+    try:
+        await asyncio.to_thread(save_fingerprints, {})
+    except Exception:
+        log.warning("reset_fingerprints: persist clear failed", exc_info=True)
+    log.warning("reset_fingerprints: cleared %d fingerprints", n)
+    return JSONResponse({"ok": True, "cleared": n})
 
 
 def main() -> None:
