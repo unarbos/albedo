@@ -97,11 +97,9 @@ def check_fingerprint(
     challenger_dir: str,
     stored: dict[str, dict],
     threshold: float | None = None,
+    hotkey: str = "",
 ) -> tuple[bool, str]:
-    """Return (is_duplicate, matched_key) for the challenger against stored fingerprints.
 
-    Fails open: computation errors are logged and treated as not-duplicate.
-    """
     if threshold is None:
         threshold = PREEVAL_SIM_THRESHOLD
 
@@ -116,6 +114,10 @@ def check_fingerprint(
         return False, ""
 
     for key, fp in stored.items():
+        if hotkey and fp.get("hotkey") == hotkey:
+            # Same miner's own prior model — not a duplicate of itself.
+            logger.debug("fingerprint: skipping same-hotkey entry %r (hotkey=%s)", key, hotkey)
+            continue
         sim = similarity(challenger_fp, fp)
         logger.debug("fingerprint similarity challenger vs %r: %.6f (threshold %.4f)", key, sim, threshold)
         if sim >= threshold:
@@ -128,9 +130,14 @@ def check_fingerprint(
     return False, ""
 
 
-def add_fingerprint(key: str, model_dir: str, state: dict[str, dict]) -> None:
-    """Compute and store the fingerprint for model_dir in state. Thread-safe."""
+def add_fingerprint(key: str, model_dir: str, state: dict[str, dict], hotkey: str = "") -> None:
+    """Compute and store the fingerprint for model_dir in state. Thread-safe.
+
+    Records the committing hotkey so check_fingerprint can skip same-miner matches.
+    """
     fp = compute_fingerprint(model_dir)
+    fp["hotkey"] = hotkey
     with _STATE_LOCK:
         state[key] = fp
-    logger.debug("stored fingerprint for %r (%d tensors)", key, len(fp.get("layer_keys", [])))
+    logger.debug("stored fingerprint for %r (%d tensors, hotkey=%s)",
+                 key, len(fp.get("layer_keys", [])), hotkey)
