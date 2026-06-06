@@ -227,6 +227,72 @@ manifest_sha256 = "982a92bd..."     # dataset integrity pin
 
 ---
 
+## Quick push: miner.py (all-in-one)
+
+`miner.py` is a standalone one-shot path that runs the full miner pipeline in a single
+command: discover king (from the dashboard) → download king weights → `train_or_perturb()`
+→ validate locally → upload to Hippius → submit the v4 reveal on-chain. Use it for a
+smoke test of the round trip; for a real submission, replace `train_or_perturb()` with
+actual training (see the "Complete flow" below, or `scripts/train_sft.py`).
+
+```bash
+ALBEDO_NETUID=97 \
+HIPPIUS_HUB_TOKEN=your_token \
+BT_WALLET_NAME=albedo \
+ALBEDO_CHALLENGER_NAMESPACE=youruser \
+python miner.py --hotkey h0
+```
+
+**Flags:**
+| Flag | Default | Purpose |
+|---|---|---|
+| `--hotkey` | `h0` | Miner hotkey (under `BT_WALLET_NAME`); also the default repo suffix |
+| `--suffix` | `<hotkey>` | Repo suffix → repo is `{namespace}/albedo-qwen3-4b-{suffix}` |
+| `--noise` | `0.001` | Gaussian-noise stddev for the `train_or_perturb()` stub |
+
+Required env: `ALBEDO_NETUID=97` (aborts if `0`), `HIPPIUS_HUB_TOKEN` (upload auth).
+The repo name must match `repo_pattern` (`^[^/]+/albedo-qwen3-4b-.+$`) or the run aborts.
+On success: `reveal committed — validator picks up within ~30 s`.
+
+> ⚠️ The bundled `train_or_perturb()` only copies the king and adds gaussian noise — it
+> will **not** beat a trained king. It exists to validate the upload/reveal mechanics.
+
+The reveal is committed via `subtensor.set_commitment(wallet, netuid, payload)` where
+`payload = build_reveal_v4(ref)` → `v4|{repo}|{digest}|{author_hotkey_ss58}`.
+
+---
+
+## Verify your reveal is on-chain
+
+After pushing (via `miner.py` or `scripts/upload_challenger.py` + a manual reveal), confirm
+the commitment actually landed on chain with `scripts/check_commits.py`. It's a read-only
+inspector — it scans `get_all_commitments(netuid)`, decodes every `v4|...` reveal, and
+prints repo / digest / reveal-block per hotkey. It does **not** touch validator state, the
+king, or the dashboard.
+
+```bash
+cd /path/to/albedo
+source .venv/bin/activate
+
+# All v4 commits currently on chain
+python scripts/check_commits.py
+
+# Just your hotkey
+python scripts/check_commits.py --hotkey 5GcD3Pk5XscAESmb...
+```
+
+Output is a table (`HOTKEY  REPO  DIGEST [block status]`) plus a summary line:
+`scanned N commitments — v4=… non_v4=… spoofed=… invalid=…`.
+
+- **status `ok`** — valid reveal; the validator will pick it up on its next chain scan (~20–30 s).
+- **status `SPOOFED`** — 4-part reveal whose embedded author ≠ the committing chain hotkey. The validator burns these (`spoof_rejected`); re-commit with your own hotkey as the author.
+- **no rows for your hotkey** — the commit didn't land (or hasn't propagated yet); re-run after a few seconds, and check the reveal string / wallet used.
+
+Env: `ALBEDO_NETUID` (default `97`), `ALBEDO_NETWORK` (default `finney`) — same names the
+validator and miner use.
+
+---
+
 ## Complete flow: new challenger model
 
 ### Step 1 — Collect training data
