@@ -17,7 +17,7 @@ fi
 
 # --- Required: Chutes judge auth --------------------------------------------
 : "${CHUTES_API_KEY:?must set CHUTES_API_KEY (cpk_... bearer token)}"
-export CHUTES_BASE_URL="${CHUTES_BASE_URL:-https://llm.chutes.ai/v1}"
+export CHUTES_BASE_URL="${CHUTES_BASE_URL:-https://llm.chutes.ai}"
 
 # --- Required: Hippius Hub auth for materializing king/challenger weights ----
 if [[ -z "${HIPPIUS_HUB_TOKEN:-}" && ( -z "${HIPPIUS_HUB_USERNAME:-}" || -z "${HIPPIUS_HUB_PASSWORD:-}" ) ]]; then
@@ -67,7 +67,7 @@ export ALBEDO_EVAL_PORT="${ALBEDO_EVAL_PORT:-9001}"   # must match tunnel + vali
 export ALBEDO_MAX_PARALLEL_TURNS="${ALBEDO_MAX_PARALLEL_TURNS:-8}"
 
 # --- Launch -----------------------------------------------------------------
-exec .venv/bin/uvicorn eval:app \
+exec .venv/bin/uvicorn albedo.eval_server.endpoints:app \
     --host "$ALBEDO_EVAL_HOST" \
     --port "$ALBEDO_EVAL_PORT" \
     --log-level info
