@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, AsyncIterator
 
 import httpx
 
 from albedo.config import (
+    DUEL_BUDGET_S,
     DUEL_GATE_ALPHA,
     DUEL_MIN_VALID_TURN_FRAC,
     DUEL_RESAMPLES,
@@ -137,9 +139,17 @@ async def run_duel(
     king_vllm_errors: int = 0
     chal_vllm_errors: int = 0
     semaphore = asyncio.Semaphore(max_parallel)
+    duel_start = time.monotonic()
+    _budget_logged = {"done": False}
 
-    async def _run_one(sample: Sample) -> TurnResult | None:
+    async def _run_one(sample: Sample) -> "TurnResult | str | None":
         async with semaphore:
+            if time.monotonic() - duel_start > DUEL_BUDGET_S:
+                if not _budget_logged["done"]:
+                    _budget_logged["done"] = True
+                    log.warning("run_duel %s: soft budget %.0fs exceeded — finalizing on completed turns",
+                                eval_id, DUEL_BUDGET_S)
+                return "budget_skip"
             try:
                 return await score_turn(
                     sample,
@@ -159,11 +169,16 @@ async def run_duel(
                 return None
 
     tasks = [asyncio.create_task(_run_one(s)) for s in samples]
+    budget_skipped = 0
     for coro in asyncio.as_completed(tasks):
-        result: TurnResult | None = await coro
+        result = await coro
+        if result == "budget_skip":
+            budget_skipped += 1
+            # Turn not started before the soft budget — not a failure, just reduces n_done.
+            continue
         if result is None:
             vllm_errors += 1
-            chal_vllm_errors += 1
+            # score_turn raised an unhandled exception — infra failure, not the challenger's fault.
             continue
         if result.vllm_error:
             vllm_errors += 1

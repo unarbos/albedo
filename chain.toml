@@ -3,9 +3,6 @@ name         = "Albedo"
 seed_repo    = "teutonic/albedo-qwen3-4b-genesis"
 # Challengers must be named albedo-qwen3-4b-<suffix> under any Hippius namespace.
 repo_pattern = "^[^/]+/albedo-qwen3-4b-.+$"
-# Dashboard only: hide kings crowned before this block. 0 = show all.
-# Override at runtime with ALBEDO_DISPLAY_START_BLOCK env var.
-display_start_block = 8326394
 
 [arch]
 module = "archs.qwen3"
@@ -58,6 +55,36 @@ tie_band               = 0.01
 call_timeout_s         = 300.0
 # Cap on wait time per 429 retry — prevents 4× backoff from reaching 384 s/attempt.
 max_429_wait_s         = 60.0
+# Bounded 429 retries on one call before giving up (→ parse_failure / fallback).
+max_429_retries        = 8
+# Default per-model request shaping (overridden per-model below).
+max_concurrency_per_model = 6
+min_interval_s_per_model  = 0.0
+# --- Unified transport v2 (stream-gated Chutes -> batched OpenRouter) ---
+chutes_try_s        = 2.0    # accept/reject gate: max wait for first streamed chunk
+chutes_max_s        = 150.0  # max wait for an accepted Chutes stream to finish
+or_timeout_s        = 150.0  # OpenRouter per-attempt timeout
+or_retries          = 8      # OpenRouter retries on any non-200 (4xx/5xx), no-response, or parse-fail (capped by judge_total_s)
+judge_total_s       = 330.0  # per-judge OpenRouter-phase ceiling -> then unscored
+chutes_giveup_tasks = 5      # circuit-breaker: dry tasks before OpenRouter-only
+
+# Per-model request shaping — DeepSeek is the dominant 429 source on Chutes.
+[judge.rate_limits]
+"deepseek-ai/DeepSeek-V3.2-TEE"      = { max_concurrency = 1, min_interval_s = 2.0 }
+"moonshotai/Kimi-K2.6-TEE"           = { max_concurrency = 2, min_interval_s = 2.0 }
+"Qwen/Qwen3-235B-A22B-Thinking-2507" = { max_concurrency = 4, min_interval_s = 0.0 }
+
+# Fallback provider: on a Chutes 429 (beyond chutes_429_grace_s) re-issue the call here.
+[judge.fallback]
+enabled          = true
+base_url         = "https://openrouter.ai/api"  # client appends /v1/chat/completions
+api_key_env      = "OPENROUTER_API_KEY"
+chutes_429_grace_s = 4.0
+reasoning_models = ["Qwen/Qwen3-235B-A22B-Thinking-2507", "moonshotai/Kimi-K2.6-TEE"]
+[judge.fallback.model_map]
+"deepseek-ai/DeepSeek-V3.2-TEE"      = "deepseek/deepseek-v3.2"
+"moonshotai/Kimi-K2.6-TEE"           = "moonshotai/kimi-k2.6"
+"Qwen/Qwen3-235B-A22B-Thinking-2507" = "qwen/qwen3-235b-a22b-thinking-2507"
 
 [dataset]
 repo        = "AlienKevin/SWE-ZERO-12M-trajectories"
@@ -74,6 +101,10 @@ gen_temperature      = 1.0
 gen_max_tokens       = 1024
 gen_max_model_len    = 32768
 king_chain_depth     = 5
+# Soft wall-budget: stop launching new turns past this, finalize on completed turns
+# (below the validator hard-timeout of 14000s, leaving room for probe + one in-flight
+# turn tail). Sized for per-judge-sequential judging: 3 judges x JUDGE_TOTAL_S=330s.
+duel_budget_s        = 11500.0
 # S4 acceptance: crown only if (challenger_score - king_score) >= win_margin (0–100 scale).
 win_margin           = 2.0
 min_valid_turn_frac  = 0.5

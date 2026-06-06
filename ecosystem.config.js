@@ -47,6 +47,10 @@ module.exports = {
         ALBEDO_EVAL_SERVER: env("ALBEDO_EVAL_SERVER", "http://localhost:9001"),
         ALBEDO_NETUID: env("ALBEDO_NETUID", "97"),
         ALBEDO_NETWORK: env("ALBEDO_NETWORK", "finney"),
+        // One-shot competition reset. 0 = normal (no-op). 1 = on next start, clear
+        // state/dashboard/seen + reseed genesis + rebuild the v4 queue (oldest first),
+        // then flip back to 0. "force" re-runs past the reset_marker guard.
+        ALBEDO_RESET: env("ALBEDO_RESET", "0"),
         // Hippius-only subnet keeps reveals timelock-encrypted — leave CR required.
         ALBEDO_REQUIRE_COMMIT_REVEAL: env("ALBEDO_REQUIRE_COMMIT_REVEAL", "1"),
         BT_WALLET_NAME: env("BT_WALLET_NAME", "default"),
@@ -65,9 +69,9 @@ module.exports = {
         // Loop cadence + robustness knobs.
         ALBEDO_POLL_INTERVAL: env("ALBEDO_POLL_INTERVAL", "30"),
         ALBEDO_WEIGHT_INTERVAL: env("ALBEDO_WEIGHT_INTERVAL", "300"),
-        ALBEDO_EVAL_HARD_TIMEOUT_S: env("ALBEDO_EVAL_HARD_TIMEOUT_S", "2400"),
+        ALBEDO_EVAL_HARD_TIMEOUT_S: env("ALBEDO_EVAL_HARD_TIMEOUT_S", "14000"),
         ALBEDO_STREAM_IDLE_WARN_S: env("ALBEDO_STREAM_IDLE_WARN_S", "600"),
-        ALBEDO_STREAM_IDLE_KILL_S: env("ALBEDO_STREAM_IDLE_KILL_S", "1800"),
+        ALBEDO_STREAM_IDLE_KILL_S: env("ALBEDO_STREAM_IDLE_KILL_S", "1500"),
         ALBEDO_REEVAL_LOOKBACK_HOURS: env("ALBEDO_REEVAL_LOOKBACK_HOURS", "24"),
         ALBEDO_MAX_REEVAL_PER_HOTKEY: env("ALBEDO_MAX_REEVAL_PER_HOTKEY", "1"),
         ALBEDO_EVAL_BOX_BACKOFF_S: env("ALBEDO_EVAL_BOX_BACKOFF_S", "120"),

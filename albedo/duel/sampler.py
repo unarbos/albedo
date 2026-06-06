@@ -139,7 +139,7 @@ class TrajectoryDataset:
 
         row_cache: dict[tuple[int, int], dict[str, Any]] = {}
         for shard_idx, row_indices in shard_to_rows.items():
-            shard_name = self._shards[shard_idx]["name"]
+            shard_name = (self._shards[shard_idx].get("path") or self._shards[shard_idx]["name"])
             shard_path = self._root / shard_name           # name is relative to dataset root
             if not shard_path.exists():
                 shard_path = self._root / Path(shard_name).name
@@ -159,7 +159,7 @@ class TrajectoryDataset:
             if row is None:
                 continue
 
-            shard_name = self._shards[shard_idx]["name"]
+            shard_name = (self._shards[shard_idx].get("path") or self._shards[shard_idx]["name"])
             turns = _extract_turns(row, shard_name, shard_idx, row_idx)
             if not turns:
                 continue

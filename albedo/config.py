@@ -74,6 +74,48 @@ JUDGE_CALL_TIMEOUT_S:   float = float(_j.get("call_timeout_s", _j.get("retry_tim
 # `retry_max_backoff_s` is the live-prod name for the same knob; accept both.
 JUDGE_429_MAX_WAIT_S:   float = float(_j.get("max_429_wait_s", _j.get("retry_max_backoff_s", 60.0)))
 
+# Per-model request shaping (reduce Chutes 429s). Each judge model gets its own
+# in-flight concurrency cap + minimum spacing between calls; env overrides win.
+JUDGE_MAX_CONCURRENCY_PER_MODEL: int = int(
+    os.environ.get("ALBEDO_JUDGE_MODEL_MAX_CONCURRENCY", _j.get("max_concurrency_per_model", 3)))
+JUDGE_MIN_INTERVAL_S_PER_MODEL: float = float(
+    os.environ.get("ALBEDO_JUDGE_MODEL_MIN_INTERVAL_S", _j.get("min_interval_s_per_model", 0.0)))
+# Per-model overrides: {model: {max_concurrency, min_interval_s}}.
+JUDGE_RATE_LIMITS: dict = _j.get("rate_limits", {})
+# Bounded 429 retries on a single call before giving up (was effectively infinite).
+JUDGE_429_MAX_RETRIES: int = int(_j.get("max_429_retries", 8))
+
+# Chutes -> OpenRouter fallback. On a Chutes 429 (beyond a short grace), re-issue the
+# same call to OpenRouter instead of waiting out the rate limit.
+JUDGE_FALLBACK_ENABLED: bool = (
+    os.environ.get("ALBEDO_JUDGE_FALLBACK", str(int(bool(_j.get("fallback", {}).get("enabled", True)))))
+    .lower() not in ("0", "false", "no", "")
+)
+_jf = _j.get("fallback", {})
+JUDGE_FALLBACK_BASE_URL:    str   = _jf.get("base_url", "https://openrouter.ai/api")
+JUDGE_FALLBACK_API_KEY_ENV: str   = _jf.get("api_key_env", "OPENROUTER_API_KEY")
+JUDGE_CHUTES_429_GRACE_S:   float = float(_jf.get("chutes_429_grace_s", 4.0))
+# Chutes judge id -> OpenRouter model id.
+JUDGE_FALLBACK_MODEL_MAP: dict = _jf.get("model_map", {})
+# Models that should request reasoning on OpenRouter (reasoning:{enabled:true}).
+JUDGE_FALLBACK_REASONING_MODELS: list[str] = _jf.get("reasoning_models", list(JUDGE_THINKING_MODELS))
+
+# --- Unified transport (v2): stream-gated Chutes -> batched OpenRouter ---
+# Accept/reject gate: max wait for the FIRST streamed Chutes chunk before deciding
+# Chutes isn't taking the request (then -> OpenRouter). 2s catches a fast 429/reject.
+JUDGE_CHUTES_TRY_S:  float = float(_j.get("chutes_try_s", 2.0))
+# Max wait for an ACCEPTED Chutes stream to finish generating (httpx read cap).
+JUDGE_CHUTES_MAX_S:  float = float(_j.get("chutes_max_s", 150.0))
+# OpenRouter per-attempt timeout and bounded retries (network/429/parse-fail).
+JUDGE_OR_TIMEOUT_S:  float = float(_j.get("or_timeout_s", 150.0))
+JUDGE_OR_RETRIES:    int   = int(_j.get("or_retries", 1))
+# Per-judge ceiling for the OpenRouter phase (Chutes is capped separately above);
+# once exceeded the judge is left unscored (caller treats as parse_failure/untested).
+JUDGE_TOTAL_S:       float = float(_j.get("judge_total_s", 330.0))
+# Circuit-breaker: after this many consecutive tasks with NO Chutes success, an eval's
+# ChutesJudge instance stops trying Chutes (OpenRouter-only) for the rest of that eval.
+JUDGE_CHUTES_GIVEUP_TASKS: int = int(_j.get("chutes_giveup_tasks", 5))
+
 # Dataset
 DATASET_REPO:            str = _d.get("repo", "")
 DATASET_SHARD_GLOB:      str = _d.get("shard_glob", "data/train-*.parquet")
@@ -91,6 +133,10 @@ DUEL_GEN_MAX_LEN:     int   = int(_u.get("gen_max_model_len", 32768))
 # Challenger must beat king by at least this many points on the 0–100 scale.
 DUEL_WIN_MARGIN:      float = float(_u.get("win_margin", 1.0))
 DUEL_KING_CHAIN_DEPTH: int  = int(_u.get("king_chain_depth", 5))
+# Whole-duel SOFT budget: once exceeded, stop launching NEW turns, await in-flight,
+# and finalize the verdict from completed turns (graceful partial; min_valid_turn_frac
+# still applies). Sits just below the validator hard-timeout. env override wins.
+DUEL_BUDGET_S: float = float(os.environ.get("ALBEDO_DUEL_BUDGET_S", _u.get("duel_budget_s", 11000.0)))
 # Fraction of completed turns that must parse for a duel to count — guards against
 # crowning on a lucky handful of turns when most failed (unfair comparison).
 DUEL_MIN_VALID_TURN_FRAC: float = float(_u.get("min_valid_turn_frac", 0.8))
