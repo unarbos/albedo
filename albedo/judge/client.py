@@ -1,3 +1,23 @@
+"""albedo.judge.client — unified LLM-as-judge transport.
+
+query_judges(models, messages, accept, max_tokens_fn) is the one task-level primitive used
+by BOTH the duel judges (turn.py) and the pre-eval injection probe (injection.py):
+
+  PER-JUDGE SEQUENTIAL: resolve judges one at a time, fully finishing one before
+  starting the next (judge1 -> judge2 -> judge3). For each judge:
+    - Chutes, stream-gated: open a streaming request; within JUDGE_CHUTES_TRY_S decide
+      accept vs reject (429/non-200/no first chunk -> reject); if accepted, read to
+      completion within JUDGE_CHUTES_MAX_S and keep iff accept(raw).
+    - on Chutes failure, fall back to OpenRouter for THAT judge (retrying on
+      network/429/parse-fail). The judge's whole Chutes+OR budget is bounded by
+      JUDGE_TOTAL_S, after which it resolves to None.
+  Circuit-breaker: after JUDGE_CHUTES_GIVEUP_TASKS consecutive tasks with no Chutes
+    success, this instance turns Chutes off (OpenRouter-only) for the rest of the eval.
+
+Returns {model: raw_text | None}; callers parse raw with their own validator. There is no
+whole-duel deadline cap here (that lived in the old _chat and caused cascade failures); the
+duel-level budget lives in duel/stream.py and the validator hard-timeout is the last resort.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -226,6 +246,9 @@ class ChutesJudge:
         payload: dict[str, Any] = {
             "model": or_model, "messages": messages, "temperature": JUDGE_TEMPERATURE, "max_tokens": max_tokens,
         }
+        # Do NOT enable reasoning mode on OR for thinking models — they follow
+        # the strict JSON instruction more reliably without it. Forced reasoning
+        # mode causes them to output verbose prose instead of the one-line JSON.
 
         sem = self._or_sem(model)
         attempt = 0
@@ -259,23 +282,63 @@ class ChutesJudge:
     async def query_judges(self, models: list[str], messages: list[dict], *,
                        accept: Callable[[str], bool],
                        max_tokens_fn: Callable[[str], int] = _max_tokens_for) -> dict[str, str | None]:
+        """All judges run CONCURRENTLY — asyncio.gather fires all 3 at once.
+
+        Each judge independently: Chutes stream-gate -> OpenRouter fallback.
+        If DeepSeek is rate-limited (429), Qwen3 and Kimi finish independently
+        rather than waiting behind it. Total per-turn latency = max(judge times),
+        not sum. Returns {model: raw|None}.
+        """
 
         async def _resolve_one(m: str) -> tuple[str, str | None, bool]:
-            """Returns (model, raw_text_or_None, chutes_succeeded)."""
+            """Race Chutes and OR simultaneously — first valid response wins.
+
+            Both providers are started at the same time. Whichever returns a
+            parseable verdict first cancels the other. This eliminates the
+            sequential fallback delay: OR starts immediately, not after Chutes
+            fails its 2s gate.
+            """
             deadline = time.monotonic() + JUDGE_TOTAL_S
-            chutes_ok = False
 
-            # Chutes stream-gate (skipped if circuit breaker tripped for this eval).
-            if not self._chutes_off:
-                c = await self._chutes_stream(m, messages, max_tokens_fn(m))
-                if c is not None and accept(c):
-                    return m, c, True
+            chutes_task = asyncio.create_task(
+                self._chutes_stream(m, messages, max_tokens_fn(m))
+            ) if not self._chutes_off else None
 
-            # OpenRouter fallback — fires immediately on any Chutes miss.
-            raw = await self._openrouter(
-                m, messages, max_tokens_fn(m), accept=accept, deadline=deadline
-            )
-            return m, raw, chutes_ok
+            or_task = asyncio.create_task(
+                self._openrouter(m, messages, max_tokens_fn(m),
+                                 accept=accept, deadline=deadline)
+            ) if self._fb_enabled else None
+
+            # If only one provider available, await it directly
+            if chutes_task is None and or_task is None:
+                return m, None, False
+            if chutes_task is None:
+                raw = await or_task
+                return m, raw, False
+            if or_task is None:
+                c = await chutes_task
+                ok = c is not None and accept(c)
+                return m, c if ok else None, ok
+
+            # Race: check each task as it completes
+            pending = {chutes_task, or_task}
+            chutes_won = False
+            result = None
+
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    raw = task.result()
+                    if raw is not None and accept(raw):
+                        # Winner found — cancel the other
+                        for t in pending:
+                            t.cancel()
+                        return m, raw, (task is chutes_task)
+
+            # Both failed
+            return m, None, False
 
         triples = await asyncio.gather(*[_resolve_one(m) for m in models])
 
