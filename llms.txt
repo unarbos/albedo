@@ -14,7 +14,7 @@
 ```
 ├── albedo/                      ← main package (all shared logic)
 │   ├── config.py                    Single source of truth — reads chain.toml at import time
-│   ├── stats.py                     Pure math: paired_bootstrap_lcb, dethrone_by_judge_dimensions
+│   ├── stats.py                     Pure math: paired_bootstrap_lcb, aggregate_duel
 │   │
 │   ├── storage/
 │   │   ├── r2.py                    R2 (Cloudflare) client — validator-private state
@@ -36,7 +36,7 @@
 │   │
 │   ├── preeval/
 │   │   ├── fingerprint.py           L2-norm near-duplicate detection (cosine sim ≥ 0.95)
-│   │   └── injection.py             LLM injection probe (N=3 turns, separate seed)
+│   │   └── injection.py             LLM injection probe (N=3, separate seed) — probe_batch, fail-closed → untested
 │   │
 │   ├── duel/
 │   │   ├── sampler.py               TrajectoryDataset + Sample — deterministic SWE-ZERO sampling
@@ -46,8 +46,11 @@
 │   ├── validator/
 │   │   ├── chain.py                 scan_reveals — decode v4 on-chain commitments
 │   │   ├── admission.py             validate_challenger_config — 9 checks before GPU duel
+│   │   ├── faults.py                is_infra_failure / is_miner_fault — classify eval failures
 │   │   ├── weights.py               maybe_set_weights — emission split with uid_map snapshot
-│   │   ├── challenge.py             process_challenge — one challenger end-to-end
+│   │   ├── challenge.py             process_challenge — one challenger end-to-end + /prune_cache after crown
+│   │   ├── website.py               upload_website — push dashboard HTML to Hippius
+│   │   ├── reset.py                 run_reset — automated one-shot competition reset (ALBEDO_RESET)
 │   │   └── loop.py                  main(), _startup(), _main_loop()
 │   │
 │   └── eval_server/
@@ -113,11 +116,39 @@ models = [                          # T=3 independent judges
   "Qwen/Qwen3-235B-A22B-Thinking-2507",
   "moonshotai/Kimi-K2.6-TEE",
 ]
+base_url_env       = "CHUTES_BASE_URL"   # env var holding the Chutes base URL
+api_key_env        = "CHUTES_API_KEY"    # env var holding the Chutes API key
 tie_band           = 0.01           # |delta| ≤ 0.01 → tie (not a win or loss)
 call_timeout_s     = 300.0          # hard deadline per judge call — returns parse_failure on expiry
 max_429_wait_s     = 60.0           # cap per 429-retry sleep (prevents 384s waits)
+max_429_retries    = 8              # bounded 429 retries before giving up
 retry_max          = 3              # non-429 retries
 retry_initial_backoff_s = 1.5
+max_concurrency_per_model = 6       # default per-model in-flight cap (overridden below)
+min_interval_s_per_model  = 0.0     # default per-model min spacing between calls
+# --- Unified transport v2: stream-gated Chutes → batched OpenRouter (see "Judge calls" below) ---
+chutes_try_s        = 2.0           # accept/reject gate: max wait for first streamed chunk
+chutes_max_s        = 150.0         # max wait for an accepted Chutes stream to finish
+or_timeout_s        = 150.0         # OpenRouter per-attempt timeout
+or_retries          = 8             # OpenRouter retries on any non-200 / no-response / parse-fail
+judge_total_s       = 330.0         # per-judge OpenRouter-phase ceiling → then unscored
+chutes_giveup_tasks = 5             # circuit-breaker: dry tasks before OpenRouter-only
+
+[judge.rate_limits]                 # per-model request shaping (DeepSeek = dominant 429 source)
+"deepseek-ai/DeepSeek-V3.2-TEE"      = { max_concurrency = 1, min_interval_s = 2.0 }
+"moonshotai/Kimi-K2.6-TEE"           = { max_concurrency = 2, min_interval_s = 2.0 }
+"Qwen/Qwen3-235B-A22B-Thinking-2507" = { max_concurrency = 4, min_interval_s = 0.0 }
+
+[judge.fallback]                    # OpenRouter fallback provider
+enabled          = true
+base_url         = "https://openrouter.ai/api"   # client appends /v1/chat/completions
+api_key_env      = "OPENROUTER_API_KEY"
+chutes_429_grace_s = 4.0
+reasoning_models = ["Qwen/Qwen3-235B-A22B-Thinking-2507", "moonshotai/Kimi-K2.6-TEE"]
+[judge.fallback.model_map]          # Chutes model id → OpenRouter model id
+"deepseek-ai/DeepSeek-V3.2-TEE"      = "deepseek/deepseek-v3.2"
+"moonshotai/Kimi-K2.6-TEE"           = "moonshotai/kimi-k2.6"
+"Qwen/Qwen3-235B-A22B-Thinking-2507" = "qwen/qwen3-235b-a22b-thinking-2507"
 
 [duel]
 n_samples            = 64           # SWE-ZERO trajectories per duel
@@ -128,7 +159,8 @@ gen_temperature      = 1.0
 gen_max_tokens       = 1024
 gen_max_model_len    = 32768
 king_chain_depth     = 5            # rolling payout: current + 4 past kings
-win_margin           = 1.0          # challenger must beat king by ≥1 point (0–100 scale)
+duel_budget_s        = 11500.0      # soft wall-budget — stop launching new turns past this
+win_margin           = 2.0          # challenger must beat king by ≥2 point (0–100 scale)
 
 [preeval]
 similarity_threshold = 0.95         # cosine sim ≥ this → duplicate rejection
@@ -150,7 +182,7 @@ manifest_sha256 = "982a92bd..."     # dataset integrity pin
 | `ALBEDO_NETWORK` | `finney` | Bittensor network |
 | `BT_WALLET_NAME` | `default` | Validator wallet name |
 | `BT_WALLET_HOTKEY` | `default` | Validator hotkey name |
-| `ALBEDO_EVAL_SERVER_URL` | `http://localhost:9001` | Eval server endpoint |
+| `ALBEDO_EVAL_SERVER` | `http://localhost:9001` | Eval server endpoint (legacy alias: `ALBEDO_EVAL_SERVER_URL`) |
 | `ALBEDO_R2_ENDPOINT` | — | Cloudflare R2 endpoint (private state) |
 | `ALBEDO_R2_BUCKET` | — | R2 bucket name |
 | `ALBEDO_R2_ACCESS_KEY` | — | R2 access key |
@@ -160,13 +192,22 @@ manifest_sha256 = "982a92bd..."     # dataset integrity pin
 | `ALBEDO_DS_SECRET_KEY` | — | Hippius S3 secret key |
 | `ALBEDO_WEIGHT_INTERVAL` | `300` | Blocks between weight sets |
 | `ALBEDO_BURN_UID` | `0` | UID to burn weights to when no registered king |
+| `ALBEDO_RESET` | `0` | `1`/`true`/`yes` = one-shot reset on startup (guarded by `reset_marker.json`); `force` bypasses the guard |
+| `ALBEDO_EVAL_HARD_TIMEOUT_S` | `14000` | Hard cap (s) on one eval's SSE stream before the validator kills it |
+| `ALBEDO_STREAM_IDLE_WARN_S` | `600` | Warn after this many seconds of stream silence |
+| `ALBEDO_STREAM_IDLE_KILL_S` | `1500` | Kill the eval after this many seconds of stream silence |
 
 ### Eval server
 | Variable | Default | Purpose |
 |---|---|---|
-| `CHUTES_API_KEY` | required | Judge LLM API key |
+| `CHUTES_API_KEY` | required | Primary judge LLM API key |
 | `CHUTES_BASE_URL` | `https://llm.chutes.ai/v1` | Judge API base URL |
-| `HIPPIUS_HUB_TOKEN` | required | Model download auth |
+| `OPENROUTER_API_KEY` | required if fallback enabled | OpenRouter fallback judge auth |
+| `ALBEDO_JUDGE_FALLBACK` | `1` (from chain.toml `[judge.fallback].enabled`) | Toggle OpenRouter fallback |
+| `ALBEDO_JUDGE_MODEL_MAX_CONCURRENCY` | `6` | Default per-model in-flight cap override |
+| `ALBEDO_JUDGE_MODEL_MIN_INTERVAL_S` | `0.0` | Default per-model min spacing override |
+| `ALBEDO_DUEL_BUDGET_S` | `11500.0` | Soft duel wall-budget (s) |
+| `HIPPIUS_HUB_TOKEN` | required | Model download auth (or `HIPPIUS_HUB_USERNAME`+`HIPPIUS_HUB_PASSWORD`) |
 | `ALBEDO_DATASET_DIR` | `/root/albedo/dataset` | Local SWE-ZERO parquet directory |
 | `ALBEDO_KING_GPUS` | `0` | CUDA_VISIBLE_DEVICES for king vLLM |
 | `ALBEDO_CHAL_GPUS` | `1` | CUDA_VISIBLE_DEVICES for challenger vLLM |
@@ -269,7 +310,7 @@ The script prints the reveal string. Submit it:
 import bittensor as bt
 wallet    = bt.Wallet(name="default", hotkey="default")
 subtensor = bt.Subtensor(network="finney")
-result    = subtensor.commit(wallet, 97, "v4|youruser/albedo-qwen3-4b-v1|sha256:...")
+result    = subtensor.commit(wallet, 97, "v4|youruser/albedo-qwen3-4b-v1|sha256:...|5GcD3...")
 print("Committed:", result)
 ```
 
@@ -294,8 +335,9 @@ print('King:', d['king'].get('model_repo'), '| Queue:', len(d.get('queue', [])))
 ```
 chain scan (every ~20s)
   scan_reveals()
+    → accept legacy 3-part (v4|repo|digest)
     → filter seen hotkeys, completed repos, king hotkeys
-    → spoof detection: author_hotkey ≠ chain_hotkey → burn + record_failure
+    → spoof detection (4-part only): author_hotkey ≠ chain_hotkey → burn + record_failure("spoof_rejected")
   enqueue()
     → 1-hotkey-1-eval enforcement
     → same repo from two hotkeys → second blocked at enqueue
@@ -303,13 +345,13 @@ chain scan (every ~20s)
     → validate_challenger_config() (9 checks — repo pattern, sha256, arch, locks, no .py, etc.)
     → _compute_seed(reveal_block)  ← uses commit block, not current block
     → POST /eval  (SSE stream)
-    →   eval server: probe_injection (N=3, separate seed)
-    →   eval server: check_fingerprint (cosine sim ≥ 0.95 → duplicate)
-    →   eval server: run_duel (64 turns × up to 10 turns × 3 judges)
-    →   eval server: stage-1 gate (wins ≥ 1, losses = 0)
-    →   eval server: stage-2 gate (bootstrap LCB > 0 at α=0.05)
+    →   eval server: check_fingerprint (cosine sim ≥ 0.95 → duplicate_model; same-hotkey skipped)
+    →   eval server: probe_injection (N=3, separate seed; unresolved → untested, fail-closed)
+    →   eval server: run_duel (64 turns × up to 10 turns × 3 judges, soft duel_budget_s)
+    →   eval server: gate-1 (challenger_score − king_score ≥ win_margin=2.0)
+    →   eval server: gate-2 (paired bootstrap LCB > 0 at α=0.05)
     →   verdict SSE event
-    → accepted → state.set_king() + /set_king on eval + set_weights
+    → accepted → state.set_king() + /set_king on eval + /prune_cache + set_weights (wait_for_inclusion=False)
     → always: state.close_eval() in finally
 ```
 
@@ -330,20 +372,24 @@ POST /eval (EvalRequest)
   └─ _stream() generator:
        acquire eval_lock
        Gate 1: materialize challenger → start vLLM → wait_healthy()
-               on failure → emit error verdict SSE, return
-       Gate 2: check_fingerprint(chal_dir, STATE.fingerprints)
-               is_dup=True → emit duplicate verdict SSE, return
+               (emits SSE phase:"materialize" keepalive) — on failure → error verdict SSE, return
+       Gate 2: check_fingerprint(chal_dir, STATE.fingerprints, hotkey)
+               same-hotkey entries skipped (own model not a dup); is_dup=True → duplicate verdict SSE, return
        Gate 3: probe_injection(challenger_url, eval_id, dataset_dir)
-               not is_clean → emit injection verdict SSE, return
+               (emits SSE phase:"probe" keepalive) — not is_clean → injection verdict SSE, return
        resolve_model_names() once (not per turn)
        run_duel(samples, king_client, chal_client, ...)
+         track elapsed vs DUEL_BUDGET_S (duel_budget_s=11500s); once exceeded, stop launching
+           new turns ("budget_skip") and finalize on completed turns — skipped turns reduce
+           n_done but are NOT failures/vllm_errors
          for each turn (up to max_parallel=8 concurrent):
            score_turn(): generate king+chal simultaneously, score all judges simultaneously
            vllm_error turns → excluded from delta calculation (not unfairly penalised)
-         stage-1: dethrone_by_judge_dimensions()
-         stage-2: paired_bootstrap_lcb() at gate_alpha=0.05
+         aggregate_duel(): metric-first mean → per-judge score → challenger_score vs king_score
+         gate-1: (challenger_score - king_score) >= win_margin (2.0 points, 0–100 scale)
+         gate-2: paired_bootstrap_lcb() LCB > 0 at gate_alpha=0.05
        emit verdict SSE
-       add challenger fingerprint (background task)
+       add challenger fingerprint (background task, tagged with hotkey)
        sink.flush() → publish trace to S3
 
 POST /set_king ({"king": {"repo": ..., "digest": ...}})
@@ -356,26 +402,34 @@ POST /set_king ({"king": {"repo": ..., "digest": ...}})
 
 ---
 
-## Judge retry logic (DeepSeek / rate limits)
+## Judge calls: Chutes → OpenRouter fallback (`albedo/judge/client.py`)
 
-`ChutesJudge._chat()` uses separate budgets for 429 and non-429 failures:
+`ChutesJudge.query_judges()` resolves each judge with a **stream-gated sequential
+fallback** — Chutes first, OpenRouter second. Both `pairwise_judge()` (scoring) and
+`probe_batch()` (injection probe) route through it.
 
-| Error | Retries | Backoff | Notes |
-|---|---|---|---|
-| 429 rate-limited | up to 10 | `1.5 × 4^min(n,4)` capped at `max_429_wait_s=60s` | Respects `Retry-After` header |
-| 5xx / network | up to `retry_max=3` | `1.5 × 2^attempt` | |
-| 4xx (not 429) | 0 | — | Permanent — raised immediately |
+**Per-judge resolution (`_resolve_one`):**
+1. **Chutes** (`_chutes_stream`) — opens a streaming request and waits up to
+   `chutes_try_s=2.0s` for the first SSE chunk. No chunk / non-200 / timeout → reject
+   fast (catches 429s without burning the budget). An accepted stream must finish
+   within `chutes_max_s=150.0s`.
+2. On Chutes reject, fall back to **OpenRouter** (`_openrouter`) — the Chutes model id is
+   remapped via `[judge.fallback.model_map]`; `or_timeout_s=150.0s` per attempt,
+   `or_retries=8`, and the whole OpenRouter phase per judge is capped by
+   `judge_total_s=330.0s`. Exhausting it leaves that judge **unresolved** (`None` →
+   `parse_failure` for scoring; fail-closed `untested` for probes).
 
-**Hard deadline** (`call_timeout_s=300s`): if the total retry sequence exceeds 5 minutes,
-`score()` returns a `parse_failure` Verdict (score=0.0, parse_ok=False) instead of blocking
-the duel. Probe calls (`probe()`) propagate `DeadlineExceeded` so the turn is marked untested.
+**Circuit breaker:** `query_judges` tracks `_chutes_dry_tasks`; after
+`chutes_giveup_tasks=5` tasks with zero Chutes successes it flips `_chutes_off=True`,
+skipping Chutes for the rest of the eval (OpenRouter-only).
 
-**Jitter**: 0–500ms random pre-call sleep staggers simultaneous king + challenger
-requests to the same judge, halving rate-limit pressure.
+**Per-model request shaping** (`[judge.rate_limits]`): each judge has its own
+`max_concurrency` semaphore + `min_interval_s` spacing (DeepSeek is the dominant 429
+source → `max_concurrency=1, min_interval_s=2.0`). Defaults come from
+`max_concurrency_per_model=6` / `min_interval_s_per_model=0.0`.
 
-**The "7 consecutive 429s" case** (DeepSeek under load):
-- Without cap: ~1,280s total wait (~21 min)
-- With cap at 60s: ~272s total wait (~4.5 min), deadline fires at 300s
+**Fallback toggle:** `[judge.fallback].enabled=true` (env `ALBEDO_JUDGE_FALLBACK`).
+Requires `OPENROUTER_API_KEY` on the eval box.
 
 ---
 
@@ -426,28 +480,19 @@ python scripts/seed_genesis.py --hf-model Qwen/Qwen3-4B --repo yourorg/albedo-qw
 python scripts/seed_genesis.py --local-dir checkpoints/genesis/final --repo yourorg/albedo-qwen3-4b-genesis
 
 # 2. Paste printed digest into chain.toml [seed].seed_digest
-# 3. Stop validator
-ssh templar "pm2 stop albedo-validator"
-
-# 4. Clear all R2 state
-python scripts/reset_state.py  # requires ALBEDO_R2_* env vars
-
-# 5. Deploy updated code
+# 3. Deploy updated code, then trigger an automated one-shot reset on next start:
 git push
-ssh templar "cd /path/to/albedo && git pull && pm2 restart albedo-validator"
+ssh templar "cd /path/to/albedo && git pull && ALBEDO_RESET=1 pm2 restart albedo-validator --update-env"
 
-# 6. Verify — logs should show: "crowned new king: reign=#0"
+# 4. Verify — logs should show: "crowned new king: reign=#0"
 ```
-
-Clears: `king/current.json`, `state/king_chain.json`, `state/seen_hotkeys.json`,
-`state/completed_repos.json`, `state/queue.json`, `state/validator_state.json`,
-`state/dashboard_history.json`
 
 ---
 
 ## Key API contracts
 
-**Reveal format:** `v4|{repo}|{digest}`
+**Reveal format:** `v4|{repo}|{digest}|{author_hotkey_ss58}` (4-part, spoof-checked).
+Legacy 3-part `v4|{repo}|{digest}` is also accepted — the chain hotkey is treated as the author.
 
 **EvalRequest body (POST /eval):**
 ```json
@@ -463,16 +508,24 @@ Clears: `king/current.json`, `state/king_chain.json`, `state/seen_hotkeys.json`,
 **Verdict SSE event (event: verdict):**
 ```json
 {
-  "eval_id":         "eval-000042",
-  "accepted":        true,
-  "is_duplicate":    false,
-  "mean_delta":      0.092,
-  "gate_lcb":        0.031,
-  "n_done":          64,
-  "n_valid":         61,
-  "vllm_errors":     3,
-  "judges":          {"deepseek-ai/DeepSeek-V3.2-TEE": "win", ...},
-  "dethrone":        {"rule": "match_exceed_one_dimension", "n_wins": 3, ...}
+  "eval_id":          "eval-000042",
+  "accepted":         true,
+  "n_done":           64,
+  "n_valid":          61,
+  "vllm_errors":      3,
+  "challenger_score": 56.2,
+  "king_score":       43.8,
+  "winner":           "challenger",
+  "by_judge":         {"deepseek-ai/DeepSeek-V3.2-TEE": 57.4, "Qwen/Qwen3-235B-A22B-Thinking-2507": 55.1, ...},
+  "by_metric":        {"correctness": 55.1, "grounding": 57.0, "progress": 56.8, "protocol": 55.9, "efficiency": 56.2},
+  "win_margin":       2.0,
+  "margin_ok":        true,
+  "mean_delta":       0.062,
+  "lcb":              0.031,
+  "se":               0.018,
+  "gate_alpha":       0.05,
+  "gate_lcb":         true,
+  "judge_models":     ["deepseek-ai/DeepSeek-V3.2-TEE", ...]
 }
 ```
 
