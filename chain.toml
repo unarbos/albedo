@@ -63,16 +63,17 @@ min_interval_s_per_model  = 0.0
 # --- Unified transport v2 (stream-gated Chutes -> batched OpenRouter) ---
 chutes_try_s        = 2.0    # accept/reject gate: max wait for first streamed chunk
 chutes_max_s        = 150.0  # max wait for an accepted Chutes stream to finish
-or_timeout_s        = 150.0  # OpenRouter per-attempt timeout
-or_retries          = 8      # OpenRouter retries on any non-200 (4xx/5xx), no-response, or parse-fail (capped by judge_total_s)
-judge_total_s       = 330.0  # per-judge OpenRouter-phase ceiling -> then unscored
-chutes_giveup_tasks = 5      # circuit-breaker: dry tasks before OpenRouter-only
+or_timeout_s        = 60.0   # OpenRouter per-attempt timeout (was 150 — OR is fast, no need to wait)
+or_retries          = 3      # OR retries (was 8 — fewer retries, fail fast and move on)
+judge_total_s       = 180.0  # per-judge ceiling (was 330 — parallel judges make 180s plenty)
+chutes_giveup_tasks = 2      # circuit-breaker fires after 2 dry tasks (was 5 — fire faster)
 
-# Per-model request shaping — DeepSeek is the dominant 429 source on Chutes.
+# Per-model OR concurrency — raised for racing (Chutes+OR simultaneous).
+# With 64 parallel turns all racing, each model needs enough OR slots.
 [judge.rate_limits]
-"deepseek-ai/DeepSeek-V3.2-TEE"      = { max_concurrency = 1, min_interval_s = 2.0 }
-"moonshotai/Kimi-K2.6-TEE"           = { max_concurrency = 2, min_interval_s = 2.0 }
-"Qwen/Qwen3-235B-A22B-Thinking-2507" = { max_concurrency = 4, min_interval_s = 0.0 }
+"deepseek-ai/DeepSeek-V3.2-TEE"      = { max_concurrency = 8, min_interval_s = 0.0 }
+"moonshotai/Kimi-K2.6-TEE"           = { max_concurrency = 8, min_interval_s = 0.0 }
+"Qwen/Qwen3-235B-A22B-Thinking-2507" = { max_concurrency = 8, min_interval_s = 0.0 }
 
 # Fallback provider: on a Chutes 429 (beyond chutes_429_grace_s) re-issue the call here.
 [judge.fallback]
