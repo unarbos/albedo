@@ -166,4 +166,9 @@ if not 1 <= DUEL_RESAMPLES <= 1_000_000:
 
 # Pre-eval
 PREEVAL_SIM_THRESHOLD: float = float(_p.get("similarity_threshold", 0.95))
+PREEVAL_INJECTION_PROBES: int = int(_p.get("injection_probes", 2))
+PREEVAL_INJECTION_JUDGES: list[str] = list(_p.get(
+    "injection_judges",
+    ["deepseek/deepseek-v4-flash"],
+))
 

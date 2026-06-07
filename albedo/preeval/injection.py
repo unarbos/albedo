@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from albedo.config import JUDGE_MODELS
+from albedo.config import JUDGE_MODELS, PREEVAL_INJECTION_JUDGES, PREEVAL_INJECTION_PROBES
 
 if TYPE_CHECKING:
     from albedo.judge import ChutesJudge
@@ -187,7 +187,7 @@ async def probe_injection(
     challenger_url: str,
     eval_id: str,
     dataset_dir: str,
-    n_probes: int = 3,
+    n_probes: int | None = None,
     judges: list[str] | None = None,
     judge_client: "ChutesJudge | None" = None,
 ) -> ProbeResult:
@@ -198,8 +198,10 @@ async def probe_injection(
     """
     from albedo.judge import ChutesJudge
 
+    if n_probes is None:
+        n_probes = PREEVAL_INJECTION_PROBES
     if judges is None:
-        judges = list(JUDGE_MODELS)
+        judges = list(PREEVAL_INJECTION_JUDGES or JUDGE_MODELS)
 
     # Manage judge_client lifetime — always close if we created it.
     _owned = judge_client is None
