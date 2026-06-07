@@ -91,7 +91,7 @@ shard_glob  = "data/train-*.parquet"
 manifest_sha256 = "982a92bd85d122d287b15f2ddb4e2050b9e345fb3921aa9a63382c7af022bd7f"
 
 [duel]
-n_samples            = 64
+n_samples            = 128
 max_turns_per_sample = 10
 alpha                = 0.001
 gate_alpha           = 0.05

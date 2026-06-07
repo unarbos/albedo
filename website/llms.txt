@@ -151,7 +151,7 @@ reasoning_models = []
 "z-ai/glm-5.1"                 = "z-ai/glm-5.1"
 
 [duel]
-n_samples            = 64           # SWE-ZERO trajectories per duel
+n_samples            = 128          # SWE-ZERO trajectories per duel
 max_turns_per_sample = 10           # max turns per trajectory
 gate_alpha           = 0.05         # bootstrap LCB gate threshold
 bootstrap_resamples  = 10000
@@ -418,7 +418,7 @@ chain scan (every ~20s)
     → POST /eval  (SSE stream)
     →   eval server: check_fingerprint (cosine sim ≥ 0.95 → duplicate_model; same-hotkey skipped)
     →   eval server: probe_injection (fast profile: 2 turns × deepseek/deepseek-v4-flash; unresolved → untested, fail-closed)
-    →   eval server: run_duel (staged: sample 64 → generate all king/challenger replies → judge fanout → aggregate)
+    →   eval server: run_duel (staged: sample 128 → generate all king/challenger replies → judge fanout → aggregate)
     →   eval server: gate-1 (challenger_score − king_score ≥ win_margin=2.0)
     →   eval server: gate-2 (paired bootstrap LCB > 0 at α=0.05)
     →   verdict SSE event
@@ -581,7 +581,7 @@ Legacy 3-part `v4|{repo}|{digest}` is also accepted — the chain hotkey is trea
 {
   "eval_id":          "eval-000042",
   "accepted":         true,
-  "n_done":           64,
+  "n_done":           128,
   "n_valid":          61,
   "vllm_errors":      3,
   "challenger_score": 56.2,
