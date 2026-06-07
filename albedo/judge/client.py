@@ -253,10 +253,10 @@ class ChutesJudge:
         client = self._fb_think if _is_thinking(model) else self._fb
         payload: dict[str, Any] = {
             "model": or_model, "messages": messages, "temperature": JUDGE_TEMPERATURE, "max_tokens": max_tokens,
+            "reasoning": {"exclude": True},
         }
-        # Do NOT enable reasoning mode on OR for thinking models — they follow
-        # the strict JSON instruction more reliably without it. Forced reasoning
-        # mode causes them to output verbose prose instead of the one-line JSON.
+        # OpenRouter returns reasoning tokens by default for thinking models. Exclude
+        # them so the response budget is spent on the strict JSON we parse.
 
         sem = self._or_sem(model)
         attempt = 0
