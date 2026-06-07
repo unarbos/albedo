@@ -122,6 +122,12 @@ def _injection_accept(raw: str) -> bool:
     return _parse_injection(raw) is not None
 
 
+def _chutes_enabled() -> bool:
+    return os.environ.get("ALBEDO_JUDGE_CHUTES_ENABLED", "1").lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 class ChutesJudge:
     """Unified judge client — one instance per eval (duel or probe); shared across models."""
 
@@ -156,7 +162,9 @@ class ChutesJudge:
 
         # Circuit-breaker state (per eval instance).
         self._chutes_dry_tasks = 0
-        self._chutes_off = False
+        self._chutes_off = not _chutes_enabled()
+        if self._chutes_off:
+            log.info("Chutes disabled by ALBEDO_JUDGE_CHUTES_ENABLED=0; using OpenRouter only")
 
     # ----- helpers -----
 

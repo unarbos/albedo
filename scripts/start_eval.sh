@@ -15,8 +15,12 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-# --- Required: Chutes judge auth --------------------------------------------
-: "${CHUTES_API_KEY:?must set CHUTES_API_KEY (cpk_... bearer token)}"
+# --- Required: judge auth ----------------------------------------------------
+export ALBEDO_JUDGE_CHUTES_ENABLED="${ALBEDO_JUDGE_CHUTES_ENABLED:-1}"
+if [[ "$ALBEDO_JUDGE_CHUTES_ENABLED" != "0" ]]; then
+  : "${CHUTES_API_KEY:?must set CHUTES_API_KEY (cpk_... bearer token)}"
+fi
+: "${OPENROUTER_API_KEY:?must set OPENROUTER_API_KEY}"
 export CHUTES_BASE_URL="${CHUTES_BASE_URL:-https://llm.chutes.ai}"
 
 # --- Required: Hippius Hub auth for materializing king/challenger weights ----
