@@ -68,28 +68,6 @@ async def _eval_set_king(http: httpx.AsyncClient, king: dict, eval_url: str) -> 
     resp.raise_for_status()
 
 
-async def _eval_prune_cache(http: httpx.AsyncClient, state: "State", eval_url: str) -> None:
-    """POST /prune_cache to keep only the current king + king_chain (≤6) on the eval box.
-
-    Anything else (old challengers, stale 1.7B models) is deleted. The oldest king is
-    evicted automatically: set_king truncates king_chain to DUEL_KING_CHAIN_DEPTH, so the
-    dropped king is no longer in the keep-list. Endpoint is eval-lock-guarded (409 if a
-    duel is running), so it never deletes a model mid-eval. Best-effort.
-    """
-    keep = [state.king] + list(state.king_chain) if state.king else list(state.king_chain)
-    keep_refs = [{"repo": e.model_repo, "digest": e.model_digest} for e in keep if e.model_repo]
-    if not keep_refs:
-        return
-    url = eval_url.rstrip("/") + "/prune_cache"
-    resp = await http.post(url, json={"keep": keep_refs}, timeout=120.0)
-    resp.raise_for_status()
-    try:
-        freed = resp.json().get("freed_bytes", 0)
-        log.info("prune_cache: kept %d kings, freed %.1f GB", len(keep_refs), freed / 1e9)
-    except Exception:
-        pass
-
-
 async def _stream_verdict(
     http: httpx.AsyncClient, url: str, payload: dict, state: "State", entry: dict,
 ) -> tuple[dict | None, bool, str]:
@@ -252,15 +230,10 @@ async def process_challenge(
             return "infra"
 
         # A duplicate verdict carries both is_duplicate and an error string — classify
-        # it as a duplicate (most specific) before the generic error branch. Use the
-        # "duplicate_model"/"too similar to" form the dashboard recognises so it renders
-        # an "invalid" badge + "duplicate of <repo>". Since the queue is replayed oldest
-        # commit first, the earlier-committed model is fingerprinted first, so the later
-        # near-duplicate is the one flagged here (first commit wins).
+        # it as a duplicate (most specific) before the generic error branch.
         if bool(verdict.get("is_duplicate", False)):   # type: ignore[union-attr]
-            dup_of = verdict.get("duplicate_of", "")
-            state.record_failure(entry, "duplicate_model", f"too similar to {dup_of}")
-            log.info("process_challenge: duplicate — %s  repo=%s  dup_of=%s", hotkey, model_repo, dup_of)
+            state.record_failure(entry, "duplicate", verdict.get("duplicate_of", ""))
+            log.info("process_challenge: duplicate — %s  repo=%s", hotkey, model_repo)
             return "duplicate"
 
         # An eval-server error verdict (e.g. challenger vLLM crash, injection): classify
@@ -322,11 +295,6 @@ async def process_challenge(
             except Exception as exc:
                 log.warning("process_challenge: _eval_set_king failed: %s", exc)
             await maybe_set_weights(subtensor, wallet, state, netuid=NETUID, force=True, reason="new king")
-            # Evict stale models from the eval box: keep only current king + king_chain (≤6).
-            try:
-                await _eval_prune_cache(http, state, eval_url)
-            except Exception as exc:
-                log.warning("process_challenge: prune_cache failed (non-fatal): %s", exc)
             return "crowned"
         state.record_verdict(entry, verdict)
         return "rejected"

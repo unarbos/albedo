@@ -149,8 +149,9 @@ def main() -> int:
 
     payload = build_reveal_v4(ref)
     log.info("submitting reveal …")
-    result = subtensor.set_commitment(
-        wallet=wallet, netuid=NETUID, data=payload
+    result = subtensor.set_reveal_commitment(
+        wallet=wallet, netuid=NETUID, data=payload,
+        blocks_until_reveal=3, wait_for_revealed_execution=False,
     )
     if result.success:
         log.info("reveal committed — validator picks up within ~30 s")

@@ -285,7 +285,7 @@ async def score_turn(
     context_messages = list(sample.messages_prefix or []) + list(sample.messages_prompt or [])
     judge_msgs = judge._build_pairwise_messages(context_messages, king_clean, chal_clean)
 
-    raws = await judge.query_judges(
+    raws = await judge.batch_or(
         judge_models, judge_msgs,
         accept=lambda r: parse_metric_verdict(r).parse_ok,
     )

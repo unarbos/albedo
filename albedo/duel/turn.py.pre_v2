@@ -16,7 +16,6 @@ from albedo.config import (
     JUDGE_METRIC_KEYS,
 )
 from albedo.duel.sampler import Sample
-from albedo.judge.verdict import parse_metric_verdict
 
 if TYPE_CHECKING:
     from albedo.judge import ChutesJudge
@@ -276,51 +275,25 @@ async def score_turn(
         except Exception:
             log.warning("sink write failed for turn %d", sample.global_idx)
 
-    # Strip injection, build the pairwise messages once, and score ALL judges via the
-    # unified transport in a single call (sequential stream-gated Chutes -> batched
-    # OpenRouter). A judge that neither provider resolves comes back as None -> parse-fail
-    # sentinel, so one judge can't abort the turn (mislabelled as vllm_error).
-    king_clean = strip_reply_injection(king_reply)
-    chal_clean = strip_reply_injection(chal_reply)
-    context_messages = list(sample.messages_prefix or []) + list(sample.messages_prompt or [])
-    judge_msgs = judge._build_pairwise_messages(context_messages, king_clean, chal_clean)
-
-    raws = await judge.query_judges(
-        judge_models, judge_msgs,
-        accept=lambda r: parse_metric_verdict(r).parse_ok,
+    raw_judge_results = await asyncio.gather(
+        *[
+            _score_single_judge(
+                judge, model, sample, king_reply, chal_reply, hotkey, seed, sink=sink
+            )
+            for model in judge_models
+        ],
+        return_exceptions=True,
     )
 
+    # Replace failed judge calls with a parse-failure sentinel so one judge
+    # exhausting its retries doesn't abort the whole turn (mislabelled as vllm_error).
     per_judge: list[dict] = []
-    for model in judge_models:
-        raw = raws.get(model)
-        if raw is None:
-            log.warning("judge %s unresolved on turn %d (Chutes+OpenRouter)", model, sample.global_idx)
+    for model, result in zip(judge_models, raw_judge_results):
+        if isinstance(result, Exception):
+            log.warning("judge %s raised on turn %d: %s", model, sample.global_idx, result)
             per_judge.append(_dummy_judge(model))
-            continue
-        v = parse_metric_verdict(raw)
-        per_judge.append({
-            "judge_model":   model,
-            "metric_scores": v.metric_scores,
-            "judge_mean":    v.judge_mean,
-            "parse_ok":      v.parse_ok,
-        })
-        if sink is not None:
-            try:
-                sink.write_judge_raw({
-                    "judge_model":     model,
-                    "global_idx":      sample.global_idx,
-                    "turn_idx":        sample.turn_idx,
-                    "instance_id":     sample.instance_id,
-                    "prompt_messages": context_messages,
-                    "king_reply":      king_clean,
-                    "chal_reply":      chal_clean,
-                    "raw_verdict":     v.raw,
-                    "metric_scores":   v.metric_scores,
-                    "judge_mean":      v.judge_mean,
-                    "parse_ok":        v.parse_ok,
-                })
-            except Exception:
-                log.warning("sink.write_judge_raw failed for judge %s turn %d", model, sample.global_idx)
+        else:
+            per_judge.append(result)
 
     # final_score = mean of per-judge means over judges that parsed ok.
     ok_means = [e["judge_mean"] for e in per_judge if e["parse_ok"]]
