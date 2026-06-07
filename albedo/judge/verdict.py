@@ -25,6 +25,21 @@ METRIC_SCORES: dict[str, float] = {
 _VALID_TOKENS = {"1", "2", "0", "draw", "tie", "model 1", "model_1", "model 2", "model_2"}
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
+_KEY_ALIASES: dict[str, str] = {
+    "correctness": "correctness",
+    "correct": "correctness",
+    "grounding": "grounding",
+    "groundedness": "grounding",
+    "faithfulness": "grounding",
+    "progress": "progress",
+    "task_progress": "progress",
+    "protocol": "protocol",
+    "format": "protocol",
+    "instruction_following": "protocol",
+    "efficiency": "efficiency",
+    "conciseness": "efficiency",
+}
+
 
 @dataclass
 class MetricVerdict:
@@ -79,13 +94,37 @@ def _map_token(tok: str) -> str | None:
     so 1 -> king, 2 -> challenger, 0 (or "draw"/"tie") -> draw.
     """
     tok = str(tok).strip().lower()
+    tok = re.sub(r"[\s_-]+", " ", tok)
     if tok in ("0", "draw", "tie"):
         return "draw"
-    if tok in ("1", "model 1", "model_1"):
+    if tok in (
+        "1", "model 1", "model1", "response 1", "candidate 1",
+        "a", "model a", "response a", "candidate a", "reply a", "king",
+    ):
         return "king"
-    if tok in ("2", "model 2", "model_2"):
+    if tok in (
+        "2", "model 2", "model2", "response 2", "candidate 2",
+        "b", "model b", "response b", "candidate b", "reply b", "challenger",
+    ):
+        return "challenger"
+    if re.search(r"\b(draw|tie|equal|same)\b", tok):
+        return "draw"
+    if re.search(r"\b(model|response|candidate|reply)\s*1\b|\b1\b", tok):
+        return "king"
+    if re.search(r"\b(model|response|candidate|reply)\s*2\b|\b2\b", tok):
         return "challenger"
     return None
+
+
+def _normalise_metric_obj(obj: dict) -> dict[str, object]:
+    """Return values keyed by canonical metric names, accepting common aliases."""
+    out: dict[str, object] = {}
+    for key, value in obj.items():
+        norm = re.sub(r"[^a-z0-9]+", "_", str(key).strip().lower()).strip("_")
+        canonical = _KEY_ALIASES.get(norm)
+        if canonical and canonical not in out:
+            out[canonical] = value
+    return out
 
 
 def parse_metric_verdict(raw: str) -> MetricVerdict:
@@ -93,12 +132,12 @@ def parse_metric_verdict(raw: str) -> MetricVerdict:
 
     A metric that is missing or malformed scores 0.0 and flips parse_ok to False.
     """
-    obj = _extract_json(raw) or {}
+    obj = _normalise_metric_obj(_extract_json(raw) or {})
     scores: dict[str, float] = {}
     ok = True
     for k in METRIC_KEYS:
         tok = str(obj.get(k, "")).strip().lower()
-        role = _map_token(tok) if tok in _VALID_TOKENS else None
+        role = _map_token(tok)
         if role is None:
             scores[k] = 0.0
             ok = False
