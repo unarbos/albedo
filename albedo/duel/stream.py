@@ -19,7 +19,14 @@ from albedo.config import (
     JUDGE_METRIC_KEYS,
 )
 from albedo.duel.sampler import Sample
-from albedo.duel.turn import TurnResult, resolve_model_names, score_turn, _score_single_judge
+from albedo.duel.turn import (
+    GeneratedTurn,
+    TurnResult,
+    generate_turn,
+    judge_generated_turn,
+    resolve_model_names,
+    _score_single_judge,
+)
 from albedo.stats import aggregate_duel, paired_bootstrap_lcb
 
 if TYPE_CHECKING:
@@ -135,6 +142,7 @@ async def run_duel(
     # Resolve model names once — not per turn — to avoid 2N extra HTTP calls.
     king_model_name, chal_model_name = await resolve_model_names(king_client, chal_client)
 
+    generated_turns: list[GeneratedTurn] = []
     results: list[TurnResult] = []
     vllm_errors: int = 0
     king_vllm_errors: int = 0
@@ -143,52 +151,78 @@ async def run_duel(
     duel_start = time.monotonic()
     _budget_logged = {"done": False}
 
-    async def _run_one(sample: Sample) -> "TurnResult | str | None":
+    async def _generate_one(sample: Sample) -> "GeneratedTurn | str | None":
         async with semaphore:
             if time.monotonic() - duel_start > DUEL_BUDGET_S:
                 if not _budget_logged["done"]:
                     _budget_logged["done"] = True
-                    log.warning("run_duel %s: soft budget %.0fs exceeded — finalizing on completed turns",
+                    log.warning("run_duel %s: soft budget %.0fs exceeded — stopping new generations",
                                 eval_id, DUEL_BUDGET_S)
                 return "budget_skip"
             try:
-                return await score_turn(
+                return await generate_turn(
                     sample,
                     king_client=king_client,
                     chal_client=chal_client,
                     king_model_name=king_model_name,
                     chal_model_name=chal_model_name,
-                    judge=judge,
-                    judge_models=judge_models,
-                    hotkey=hotkey,
-                    seed=seed,
-                    sink=sink,
                 )
             except Exception as exc:
-                log.error("score_turn failed for sample %d: %s",
+                log.error("generate_turn failed for sample %d: %s",
                           sample.global_idx, exc, exc_info=True)
                 return None
 
-    tasks = [asyncio.create_task(_run_one(s)) for s in samples]
+    yield _sse("phase", {"eval_id": eval_id, "phase": "generate", "n_total": n_samples})
+    tasks = [asyncio.create_task(_generate_one(s)) for s in samples]
     budget_skipped = 0
     for coro in asyncio.as_completed(tasks):
-        result = await coro
-        if result == "budget_skip":
+        generated = await coro
+        if generated == "budget_skip":
             budget_skipped += 1
             # Turn not started before the soft budget — not a failure, just reduces n_done.
             continue
-        if result is None:
+        if generated is None:
             vllm_errors += 1
-            # score_turn raised an unhandled exception — infra failure, not the challenger's fault.
+            # Generation raised an unhandled exception — infra failure, not the challenger's fault.
             continue
-        if result.vllm_error:
+        if generated.vllm_error:
             vllm_errors += 1
-            if result.vllm_error.startswith("king_"):
+            if generated.vllm_error.startswith("king_"):
                 king_vllm_errors += 1
             else:
                 chal_vllm_errors += 1
             continue
+        generated_turns.append(generated)
 
+    yield _sse("phase", {
+        "eval_id": eval_id,
+        "phase": "judge",
+        "n_generated": len(generated_turns),
+        "n_vllm_errors": vllm_errors,
+        "n_budget_skipped": budget_skipped,
+    })
+
+    async def _judge_one(generated: GeneratedTurn) -> "TurnResult | None":
+        try:
+            return await judge_generated_turn(
+                generated,
+                judge=judge,
+                judge_models=judge_models,
+                hotkey=hotkey,
+                seed=seed,
+                sink=sink,
+            )
+        except Exception as exc:
+            log.error("judge_generated_turn failed for sample %d: %s",
+                      generated.sample.global_idx, exc, exc_info=True)
+            return None
+
+    judge_tasks = [asyncio.create_task(_judge_one(g)) for g in generated_turns]
+    for coro in asyncio.as_completed(judge_tasks):
+        result = await coro
+        if result is None:
+            vllm_errors += 1
+            continue
         results.append(result)
 
         turn_data = {

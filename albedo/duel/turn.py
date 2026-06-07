@@ -70,6 +70,16 @@ def _scan_verdict_json(text: str) -> bool:
 
 
 @dataclass
+class GeneratedTurn:
+    sample:     Sample
+    king_reply: str
+    chal_reply: str
+    king_usage: dict
+    chal_usage: dict
+    vllm_error: str | None = None
+
+
+@dataclass
 class TurnResult:
     sample:          Sample
     king_reply:      str
@@ -244,6 +254,42 @@ async def score_turn(
     means (challenger perspective, 0.0–1.0). Logs a warning when parse_ok=False.
     """
 
+    generated = await generate_turn(
+        sample,
+        king_client=king_client,
+        chal_client=chal_client,
+        king_model_name=king_model_name,
+        chal_model_name=chal_model_name,
+    )
+    if generated.vllm_error:
+        return TurnResult(
+            sample=sample,
+            king_reply=generated.king_reply, chal_reply=generated.chal_reply,
+            per_judge=[_dummy_judge(m) for m in judge_models],
+            final_score=0.0, final_score_100=0.0, delta=0.0,
+            parse_ok=False, vllm_error=generated.vllm_error,
+            king_usage=generated.king_usage, chal_usage=generated.chal_usage,
+        )
+
+    return await judge_generated_turn(
+        generated,
+        judge=judge,
+        judge_models=judge_models,
+        hotkey=hotkey,
+        seed=seed,
+        sink=sink,
+    )
+
+
+async def generate_turn(
+    sample: Sample,
+    *,
+    king_client:     httpx.AsyncClient,
+    chal_client:     httpx.AsyncClient,
+    king_model_name: str,
+    chal_model_name: str,
+) -> GeneratedTurn:
+    """Generate king and challenger replies for one sampled turn."""
     full_messages = sample.messages_prefix + sample.messages_prompt
 
     (king_reply, king_usage, king_err), (chal_reply, chal_usage, chal_err) = \
@@ -254,14 +300,35 @@ async def score_turn(
 
     if king_err or chal_err:
         error_msg = f"king_{king_err}" if king_err else f"chal_{chal_err}"
-        return TurnResult(
+        return GeneratedTurn(
             sample=sample,
             king_reply=king_reply, chal_reply=chal_reply,
-            per_judge=[_dummy_judge(m) for m in judge_models],
-            final_score=0.0, final_score_100=0.0, delta=0.0,
-            parse_ok=False, vllm_error=error_msg,
             king_usage=king_usage, chal_usage=chal_usage,
+            vllm_error=error_msg,
         )
+
+    return GeneratedTurn(
+        sample=sample,
+        king_reply=king_reply, chal_reply=chal_reply,
+        king_usage=king_usage, chal_usage=chal_usage,
+    )
+
+
+async def judge_generated_turn(
+    generated: GeneratedTurn,
+    *,
+    judge:        "ChutesJudge",
+    judge_models: list[str],
+    hotkey:       str,
+    seed:         bytes,
+    sink:         "DatasetSink | None" = None,
+) -> TurnResult:
+    """Score a generated turn head-to-head across all judge models."""
+    sample = generated.sample
+    king_reply = generated.king_reply
+    chal_reply = generated.chal_reply
+    king_usage = generated.king_usage
+    chal_usage = generated.chal_usage
 
     # Write champion and challenger replies to the sink.
     if sink is not None:
