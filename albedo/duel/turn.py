@@ -70,6 +70,17 @@ def _scan_verdict_json(text: str) -> bool:
 
 
 @dataclass
+class GeneratedTurn:
+    """Output of the vLLM generation phase only (no judging yet)."""
+    sample:      Sample
+    king_reply:  str
+    chal_reply:  str
+    king_usage:  dict
+    chal_usage:  dict
+    vllm_error:  str | None = None
+
+
+@dataclass
 class TurnResult:
     sample:          Sample
     king_reply:      str
@@ -253,7 +264,12 @@ async def score_turn(
         )
 
     if king_err or chal_err:
-        error_msg = f"king_{king_err}" if king_err else f"chal_{chal_err}"
+        if king_err and chal_err:
+            error_msg = f"king_{king_err}|chal_{chal_err}"
+        elif king_err:
+            error_msg = f"king_{king_err}"
+        else:
+            error_msg = f"chal_{chal_err}"
         return TurnResult(
             sample=sample,
             king_reply=king_reply, chal_reply=chal_reply,
@@ -341,4 +357,133 @@ async def score_turn(
         parse_ok=all_parse_ok,
         king_usage=king_usage,
         chal_usage=chal_usage,
+    )
+
+
+async def generate_turn(
+    sample:          Sample,
+    king_client:     httpx.AsyncClient,
+    chal_client:     httpx.AsyncClient,
+    king_model_name: str,
+    chal_model_name: str,
+) -> GeneratedTurn:
+    """Generate king and challenger replies in parallel (no judging)."""
+    full_messages = sample.messages_prefix + sample.messages_prompt
+    (king_reply, king_usage, king_err), (chal_reply, chal_usage, chal_err) = \
+        await asyncio.gather(
+            _generate(king_client, king_model_name, full_messages),
+            _generate(chal_client, chal_model_name, full_messages),
+        )
+    if king_err and chal_err:
+        error_msg = f"king_{king_err}|chal_{chal_err}"
+    elif king_err:
+        error_msg = f"king_{king_err}"
+    elif chal_err:
+        error_msg = f"chal_{chal_err}"
+    else:
+        error_msg = None
+    return GeneratedTurn(
+        sample=sample,
+        king_reply=king_reply, chal_reply=chal_reply,
+        king_usage=king_usage, chal_usage=chal_usage,
+        vllm_error=error_msg,
+    )
+
+
+async def judge_generated_turn(
+    generated:    GeneratedTurn,
+    *,
+    judge:        "ChutesJudge",
+    judge_models: list[str],
+    hotkey:       str,
+    seed:         bytes,
+    sink:         "DatasetSink | None" = None,
+) -> TurnResult:
+    """Score a pre-generated turn head-to-head (no vLLM calls)."""
+    sample     = generated.sample
+    king_reply = generated.king_reply
+    chal_reply = generated.chal_reply
+
+    if generated.vllm_error:
+        return TurnResult(
+            sample=sample,
+            king_reply=king_reply, chal_reply=chal_reply,
+            per_judge=[_dummy_judge(m) for m in judge_models],
+            final_score=0.0, final_score_100=0.0, delta=0.0,
+            parse_ok=False, vllm_error=generated.vllm_error,
+            king_usage=generated.king_usage, chal_usage=generated.chal_usage,
+        )
+
+    if sink is not None:
+        try:
+            turn_meta = {
+                "global_idx":  sample.global_idx,
+                "instance_id": sample.instance_id,
+                "turn_idx":    sample.turn_idx,
+            }
+            sink.write_champion({**turn_meta, "reply": king_reply, "usage": generated.king_usage})
+            sink.write_challenger({**turn_meta, "reply": chal_reply, "usage": generated.chal_usage})
+        except Exception:
+            log.warning("sink write failed for turn %d", sample.global_idx)
+
+    king_clean = strip_reply_injection(king_reply)
+    chal_clean = strip_reply_injection(chal_reply)
+    context_messages = list(sample.messages_prefix or []) + list(sample.messages_prompt or [])
+    judge_msgs = judge._build_pairwise_messages(context_messages, king_clean, chal_clean)
+
+    raws = await judge.query_judges(
+        judge_models, judge_msgs,
+        accept=lambda r: parse_metric_verdict(r).parse_ok,
+    )
+
+    per_judge: list[dict] = []
+    for model in judge_models:
+        raw = raws.get(model)
+        if raw is None:
+            log.warning("judge %s unresolved on turn %d (Chutes+OpenRouter)", model, sample.global_idx)
+            per_judge.append(_dummy_judge(model))
+            continue
+        v = parse_metric_verdict(raw)
+        per_judge.append({
+            "judge_model":   model,
+            "metric_scores": v.metric_scores,
+            "judge_mean":    v.judge_mean,
+            "parse_ok":      v.parse_ok,
+        })
+        if sink is not None:
+            try:
+                sink.write_judge_raw({
+                    "judge_model":     model,
+                    "global_idx":      sample.global_idx,
+                    "turn_idx":        sample.turn_idx,
+                    "instance_id":     sample.instance_id,
+                    "prompt_messages": context_messages,
+                    "king_reply":      king_clean,
+                    "chal_reply":      chal_clean,
+                    "raw_verdict":     v.raw,
+                    "metric_scores":   v.metric_scores,
+                    "judge_mean":      v.judge_mean,
+                    "parse_ok":        v.parse_ok,
+                })
+            except Exception:
+                log.warning("sink.write_judge_raw failed for judge %s turn %d", model, sample.global_idx)
+
+    ok_means = [e["judge_mean"] for e in per_judge if e["parse_ok"]]
+    all_parse_ok = all(e["parse_ok"] for e in per_judge)
+    for e in per_judge:
+        if not e["parse_ok"]:
+            log.warning(
+                "parse_ok=False for judge %s on global_idx=%d",
+                e["judge_model"], sample.global_idx,
+            )
+
+    final_score = sum(ok_means) / len(ok_means) if ok_means else 0.0
+    return TurnResult(
+        sample=sample,
+        king_reply=king_reply, chal_reply=chal_reply,
+        per_judge=per_judge,
+        final_score=final_score, final_score_100=final_score * 100.0,
+        delta=final_score - 0.5,
+        parse_ok=all_parse_ok,
+        king_usage=generated.king_usage, chal_usage=generated.chal_usage,
     )
