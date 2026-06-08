@@ -19,7 +19,14 @@ from albedo.config import (
     JUDGE_METRIC_KEYS,
 )
 from albedo.duel.sampler import Sample
-from albedo.duel.turn import TurnResult, resolve_model_names, score_turn, _score_single_judge
+from albedo.duel.turn import (
+    GeneratedTurn,
+    TurnResult,
+    generate_turn,
+    judge_generated_turn,
+    resolve_model_names,
+    _score_single_judge,
+)
 from albedo.stats import aggregate_duel, paired_bootstrap_lcb
 
 if TYPE_CHECKING:
@@ -135,16 +142,18 @@ async def run_duel(
     # Resolve model names once — not per turn — to avoid 2N extra HTTP calls.
     king_model_name, chal_model_name = await resolve_model_names(king_client, chal_client)
 
-    results: list[TurnResult] = []
     vllm_errors: int = 0
     king_vllm_errors: int = 0
     chal_vllm_errors: int = 0
-    semaphore = asyncio.Semaphore(max_parallel)
+    gen_semaphore = asyncio.Semaphore(max_parallel)
     duel_start = time.monotonic()
     _budget_logged = {"done": False}
 
-    async def _run_one(sample: Sample) -> "TurnResult | str | None":
-        async with semaphore:
+    # Phase 1: generate all samples (vLLM only)
+    yield _sse("phase", {"phase": "generate"})
+
+    async def _gen_one(sample: Sample) -> "GeneratedTurn | str | None":
+        async with gen_semaphore:
             if time.monotonic() - duel_start > DUEL_BUDGET_S:
                 if not _budget_logged["done"]:
                     _budget_logged["done"] = True
@@ -152,12 +161,48 @@ async def run_duel(
                                 eval_id, DUEL_BUDGET_S)
                 return "budget_skip"
             try:
-                return await score_turn(
+                return await generate_turn(
                     sample,
                     king_client=king_client,
                     chal_client=chal_client,
                     king_model_name=king_model_name,
                     chal_model_name=chal_model_name,
+                )
+            except Exception as exc:
+                log.error("generate_turn failed for sample %d: %s",
+                          sample.global_idx, exc, exc_info=True)
+                return None
+
+    gen_tasks = [asyncio.create_task(_gen_one(s)) for s in samples]
+    generated_turns: list[GeneratedTurn] = []
+    budget_skipped = 0
+    for coro in asyncio.as_completed(gen_tasks):
+        gen = await coro
+        if gen == "budget_skip":
+            budget_skipped += 1
+            continue
+        if gen is None:
+            vllm_errors += 1
+            continue
+        if gen.vllm_error:
+            vllm_errors += 1
+            if "king_" in gen.vllm_error:
+                king_vllm_errors += 1
+            if "chal_" in gen.vllm_error:
+                chal_vllm_errors += 1
+            continue
+        generated_turns.append(gen)
+
+    # Phase 2: judge all generated turns
+    yield _sse("phase", {"phase": "judge"})
+
+    judge_semaphore = asyncio.Semaphore(max_parallel)
+
+    async def _judge_one(gen: GeneratedTurn) -> "TurnResult | None":
+        async with judge_semaphore:
+            try:
+                return await judge_generated_turn(
+                    gen,
                     judge=judge,
                     judge_models=judge_models,
                     hotkey=hotkey,
@@ -165,28 +210,16 @@ async def run_duel(
                     sink=sink,
                 )
             except Exception as exc:
-                log.error("score_turn failed for sample %d: %s",
-                          sample.global_idx, exc, exc_info=True)
+                log.error("judge_generated_turn failed for sample %d: %s",
+                          gen.sample.global_idx, exc, exc_info=True)
                 return None
 
-    tasks = [asyncio.create_task(_run_one(s)) for s in samples]
-    budget_skipped = 0
-    for coro in asyncio.as_completed(tasks):
+    judge_tasks = [asyncio.create_task(_judge_one(g)) for g in generated_turns]
+    results: list[TurnResult] = []
+    for coro in asyncio.as_completed(judge_tasks):
         result = await coro
-        if result == "budget_skip":
-            budget_skipped += 1
-            # Turn not started before the soft budget — not a failure, just reduces n_done.
-            continue
         if result is None:
             vllm_errors += 1
-            # score_turn raised an unhandled exception — infra failure, not the challenger's fault.
-            continue
-        if result.vllm_error:
-            vllm_errors += 1
-            if result.vllm_error.startswith("king_"):
-                king_vllm_errors += 1
-            else:
-                chal_vllm_errors += 1
             continue
 
         results.append(result)
@@ -228,17 +261,20 @@ async def run_duel(
             "n_retrying":       len(unscored),
             "retry_global_idx": [r.sample.global_idx for r in unscored],
         })
-        await asyncio.gather(*[
-            _rescore_failed_judges(
-                r,
-                judge=judge,
-                judge_models=judge_models,
-                hotkey=hotkey,
-                seed=seed,
-                sink=sink,
-            )
-            for r in unscored
-        ])
+        rescore_sem = asyncio.Semaphore(max_parallel)
+
+        async def _rescore_one(r: TurnResult) -> None:
+            async with rescore_sem:
+                await _rescore_failed_judges(
+                    r,
+                    judge=judge,
+                    judge_models=judge_models,
+                    hotkey=hotkey,
+                    seed=seed,
+                    sink=sink,
+                )
+
+        await asyncio.gather(*[_rescore_one(r) for r in unscored])
         still_unscored = sum(1 for r in results if not r.parse_ok)
         log.info(
             "Rescore pass %d done — %d/%d turns fully scored (%d still unscored)",
@@ -287,7 +323,7 @@ async def run_duel(
     margin_ok = (challenger_score - king_score) >= DUEL_WIN_MARGIN
 
     # Acceptance gate 2 (safety): bootstrap LCB on per-turn deltas must be > 0.
-    deltas: list[float] = [r.delta for r in results]
+    deltas: list[float] = [r.delta for r in results if r.parse_ok]
     mean_delta, lcb, se = paired_bootstrap_lcb(
         deltas,
         resamples=DUEL_RESAMPLES,
