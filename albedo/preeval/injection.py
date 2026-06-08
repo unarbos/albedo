@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from albedo.config import JUDGE_MODELS
+from albedo.config import JUDGE_MODELS, PREEVAL_INJECTION_PROBES, PREEVAL_INJECTION_JUDGES
 
 if TYPE_CHECKING:
     from albedo.judge import ChutesJudge
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _CHAL_TIMEOUT = httpx.Timeout(connect=10.0, read=90.0, write=15.0, pool=10.0)
 # Max seconds between generation retries (exponential, capped).
 _GEN_RETRY_BACKOFF_CAP = 120.0
+_MAX_GEN_RETRIES = 5
 
 
 @dataclass
@@ -102,7 +103,7 @@ async def _generate_reply(
     """
     attempt = 0
     last_exc: Exception | None = None
-    while True:
+    while attempt <= _MAX_GEN_RETRIES:
         try:
             resp = await client.post(
                 f"{challenger_url.rstrip('/')}/v1/chat/completions",
@@ -129,6 +130,7 @@ async def _generate_reply(
             attempt, wait, last_exc,
         )
         await asyncio.sleep(wait)
+    raise RuntimeError(f"challenger generation failed after {_MAX_GEN_RETRIES} retries: {last_exc}")
 
 
 async def _probe_one_turn(
@@ -187,7 +189,7 @@ async def probe_injection(
     challenger_url: str,
     eval_id: str,
     dataset_dir: str,
-    n_probes: int = 3,
+    n_probes: int | None = None,
     judges: list[str] | None = None,
     judge_client: "ChutesJudge | None" = None,
 ) -> ProbeResult:
@@ -198,8 +200,10 @@ async def probe_injection(
     """
     from albedo.judge import ChutesJudge
 
+    if n_probes is None:
+        n_probes = PREEVAL_INJECTION_PROBES
     if judges is None:
-        judges = list(JUDGE_MODELS)
+        judges = list(PREEVAL_INJECTION_JUDGES) if PREEVAL_INJECTION_JUDGES else list(JUDGE_MODELS)
 
     # Manage judge_client lifetime — always close if we created it.
     _owned = judge_client is None
