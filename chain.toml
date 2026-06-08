@@ -44,6 +44,7 @@ score_max_tokens    = 768
 thinking_max_tokens = 4096
 thinking_models = [
   "minimax/minimax-m3",
+  "deepseek/deepseek-v4-flash",
   "z-ai/glm-5.1",
 ]
 retry_max              = 3
@@ -81,7 +82,7 @@ enabled          = true
 base_url         = "https://openrouter.ai/api"  # client appends /v1/chat/completions
 api_key_env      = "OPENROUTER_API_KEY"
 chutes_429_grace_s = 4.0
-reasoning_models = []
+reasoning_models = ["deepseek/deepseek-v4-flash"]
 [judge.fallback.model_map]
 "minimax/minimax-m3"           = "minimax/minimax-m3"
 "deepseek/deepseek-v4-flash"   = "deepseek/deepseek-v4-flash"

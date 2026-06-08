@@ -16,7 +16,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # --- Required: judge auth ----------------------------------------------------
-export ALBEDO_JUDGE_CHUTES_ENABLED="${ALBEDO_JUDGE_CHUTES_ENABLED:-1}"
+export ALBEDO_JUDGE_CHUTES_ENABLED="${ALBEDO_JUDGE_CHUTES_ENABLED:-0}"
 if [[ "$ALBEDO_JUDGE_CHUTES_ENABLED" != "0" ]]; then
   : "${CHUTES_API_KEY:?must set CHUTES_API_KEY (cpk_... bearer token)}"
 fi

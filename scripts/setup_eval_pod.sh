@@ -12,7 +12,7 @@ if ! command -v uv >/dev/null; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-python3 -m venv .venv
+uv venv
 source .venv/bin/activate
 uv pip install -e . vllm hf_transfer 2>&1 | tail -5
 
@@ -24,10 +24,10 @@ if [[ ! -f /var/albedo/dataset/manifest.json ]]; then
 fi
 
 # Stop any prior eval
-pkill -f "uvicorn eval:app" 2>/dev/null || true
+pkill -f uvicorn 2>/dev/null || true
 sleep 2
 
-nohup bash scripts/start_eval_remote.sh > /var/albedo/logs/eval_server.log 2>&1 &
+nohup bash scripts/run_eval.sh > /var/albedo/logs/eval_server.log 2>&1 &
 echo "eval server pid=$!"
 sleep 3
 curl -sf http://127.0.0.1:9001/health | head -c 500 || tail -20 /var/albedo/logs/eval_server.log

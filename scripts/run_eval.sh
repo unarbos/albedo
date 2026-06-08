@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 RESTART_DELAY=10   # seconds between crash and restart
-MAX_RESTARTS=20    # give up after this many consecutive rapid restarts
+MAX_RESTARTS=200   # give up after this many consecutive rapid restarts
 RAPID_S=60         # a restart within this many seconds counts as "rapid"
 
 restarts=0

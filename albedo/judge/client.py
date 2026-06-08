@@ -259,8 +259,11 @@ class ChutesJudge:
         payload: dict[str, Any] = {
             "model": or_model, "messages": messages, "temperature": JUDGE_TEMPERATURE, "max_tokens": max_tokens,
         }
-        # Let thinking models use their reasoning budget. We parse only the final
-        # assistant content so quoted JSON inside reasoning cannot become a verdict.
+        # Non-reasoning models: exclude reasoning from the response so the full
+        # max_tokens budget is available for content. Reasoning models (deepseek-v4-flash)
+        # reason freely — we parse only assistant content, never reasoning_content.
+        if model not in JUDGE_FALLBACK_REASONING_MODELS:
+            payload["reasoning"] = {"enabled": False, "exclude": True}
 
         sem = self._or_sem(model)
         attempt = 0
