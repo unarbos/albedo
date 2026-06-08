@@ -308,14 +308,23 @@ async def process_challenge(
             )
             # Record which judges crowned the new king. The current eval verdict
             # carries them under "by_judge" (older shape used "judges").
-            crown_judges = list((verdict.get("by_judge") or verdict.get("judges") or {}).keys())
-            # block is None for current-format (dict) commitments; coerce to 0 so
-            # KingEntry's int validator doesn't raise and silently abort the crown.
+            by_judge = verdict.get("by_judge") or verdict.get("judges") or {}
+            crown_judges = list(by_judge.keys())
+            crown_judge_scores = [
+                {"model": m, "chal_mean": round(pct / 100, 6), "king_mean": round(1 - pct / 100, 6)}
+                for m, pct in by_judge.items()
+            ] if isinstance(by_judge, dict) else crown_judges
+            # Use current chain block for crowned_block; entry.get("block") is the reveal
+            # block which may be None for dict-format commitments.
+            try:
+                crowned_block = int(subtensor.block)
+            except Exception:
+                crowned_block = entry.get("block") or 0
             state.set_king(
                 hotkey=hotkey, model_repo=model_repo, model_digest=model_digest,
-                block=entry.get("block") or 0, challenge_id=eval_id,
+                block=crowned_block, challenge_id=eval_id,
                 dethrone_judges=crown_judges,
-                crown_judges=crown_judges,
+                crown_judges=crown_judge_scores,
             )
             try:
                 await _eval_set_king(http, state.king.to_dict(), eval_url)

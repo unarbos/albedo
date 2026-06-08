@@ -12,7 +12,7 @@ export const DATA_ENDPOINTS = [
 export const EVALS_BASE = "https://us-east-1.hippius.com/albedo/evals/";
 
 export const JUDGE_META = {
-  "deepseek-ai/DeepSeek-V3.2-TEE":          { letter: "D" },
-  "Qwen/Qwen3-235B-A22B-Thinking-2507":     { letter: "Q" },
-  "moonshotai/Kimi-K2.6-TEE":               { letter: "K" },
+  "minimax/minimax-m3":         { letter: "M" },
+  "deepseek/deepseek-v4-flash": { letter: "D" },
+  "z-ai/glm-5.1":               { letter: "G" },
 };
