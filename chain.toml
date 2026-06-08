@@ -43,6 +43,8 @@ metric_keys = ["correctness", "grounding", "progress", "protocol", "efficiency"]
 score_max_tokens    = 768
 thinking_max_tokens = 4096
 thinking_models = [
+  "minimax/minimax-m3",
+  "z-ai/glm-5.1",
 ]
 retry_max              = 3
 retry_initial_backoff_s = 1.5
