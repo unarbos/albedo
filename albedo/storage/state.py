@@ -353,7 +353,7 @@ class State:
         old_chain = list(self.king_chain)
         # block is None for current-format (dict) commitments — coerce so KingEntry's
         # int validator never aborts a crown.
-        block = int(block) if isinstance(block, int) else 0
+        block = int(block) if block is not None else 0
         entry = KingEntry(
             hotkey=hotkey,
             model_repo=model_repo,
@@ -374,6 +374,7 @@ class State:
             self.king_chain = old_chain
             log.error("set_king: R2 flush failed; in-memory state rolled back — king NOT updated")
             return
+        self.flush_dashboard(force=True)
         log.info("New king: %s  repo=%s  block=%d", hotkey, model_repo, block)
 
     def enqueue(self, reveal: dict, *, force: bool = False) -> str | None:
