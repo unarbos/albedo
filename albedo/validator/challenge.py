@@ -226,6 +226,7 @@ async def process_challenge(
         "king": {
             "repo":   king.model_repo,     # was "model_repo"
             "digest": king.model_digest,   # was "model_digest"
+            "hotkey": king.hotkey,
         },
         "challenger": {
             "repo":   model_repo,          # was missing entirely

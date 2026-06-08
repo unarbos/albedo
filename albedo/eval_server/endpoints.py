@@ -13,7 +13,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from albedo.config import DUEL_MAX_TURNS, DUEL_N_SAMPLES
+import hashlib
+
+from albedo.config import DATASET_MANIFEST_SHA256, DUEL_MAX_TURNS, DUEL_N_SAMPLES
 from albedo.duel import TrajectoryDataset, run_duel
 from albedo.judge import ChutesJudge
 from albedo.models import ModelRef, materialize_model, prune_model_cache
@@ -195,7 +197,7 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
             sink = DatasetSink(
                 eval_id=req.eval_id,
                 challenger_hotkey=hotkey,
-                king_hotkey=req.king.get("repo", "") if req.king else "",
+                king_hotkey=req.king.get("hotkey", "") if req.king else "",
             )
             try:
                 # Keepalive: these pre-duel phases emit no 'start'/'turn' events, so feed the
@@ -252,6 +254,12 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                     return
 
                 # Duel
+                manifest_path = Path(_DATASET_DIR) / "manifest.json"
+                actual_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                if actual_sha != DATASET_MANIFEST_SHA256:
+                    raise RuntimeError(
+                        f"dataset manifest mismatch: {actual_sha} != {DATASET_MANIFEST_SHA256}"
+                    )
                 dataset = await asyncio.to_thread(
                     lambda: TrajectoryDataset(_DATASET_DIR).sample(seed, n_samples, max_turns)
                 )
@@ -272,8 +280,9 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 ):
                     yield chunk
 
-                # Store + persist challenger fingerprint (with its hotkey) for future dup checks
-                asyncio.create_task(_add_and_persist(chal_ref.immutable_ref, chal_dir, hotkey))
+                # Store + persist challenger fingerprint (with its hotkey) for future dup checks.
+                # Awaited before yielding the verdict to ensure fingerprint is synced.
+                await _add_and_persist(chal_ref.immutable_ref, chal_dir, hotkey)
 
             finally:
                 STATE.current_eval_id = None
