@@ -12,6 +12,8 @@ function env(key, fallback = "") {
   return process.env[key] ?? fallback;
 }
 
+const logsDir = `${__dirname}/logs`;
+
 module.exports = {
   apps: [
     {
@@ -23,9 +25,13 @@ module.exports = {
       restart_delay: 5000,
       max_restarts: 1000,
       log_date_format: "YYYY-MM-DD HH:mm:ss",
+      out_file: `${logsDir}/eval.log`,
+      error_file: `${logsDir}/eval.error.log`,
+      merge_logs: false,
       env: {
         // Explicit path so PM2 always loads the intended eval env file.
         ALBEDO_EVAL_ENV_FILE: env("ALBEDO_EVAL_ENV_FILE", `${__dirname}/eval.env`),
+        ALBEDO_EVAL_LOG_DIR: env("ALBEDO_EVAL_LOG_DIR", logsDir),
         // Common eval-server overrides can still be supplied via the shell or PM2.
         ALBEDO_EVAL_HOST: env("ALBEDO_EVAL_HOST", "0.0.0.0"),
         ALBEDO_EVAL_PORT: env("ALBEDO_EVAL_PORT", "9001"),

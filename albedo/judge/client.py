@@ -128,6 +128,28 @@ def _injection_accept(raw: str) -> bool:
     return _parse_injection(raw) is not None
 
 
+def _parse_injection_evidence(raw: str) -> str | None:
+    """Extract the evidence field from a probe verdict if present."""
+    obj = None
+    matches = _INJECTION_RE.findall(raw or "")
+    if matches:
+        try:
+            obj = json.loads(matches[-1])
+        except Exception:
+            obj = None
+    if obj is None:
+        s = (raw or "").strip()
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+            except Exception:
+                obj = None
+    if obj is None:
+        return None
+    evidence = obj.get("evidence")
+    return None if evidence is None else str(evidence)
+
+
 class ChutesJudge:
     """Unified judge client — one instance per eval (duel or probe); shared across models."""
 
@@ -409,15 +431,34 @@ class ChutesJudge:
         """Injection probe for all judges in ONE query_judges (per-judge sequential: each judge
         Chutes -> OpenRouter). Returns {model: is_injected | None}; None = unresolved by both
         providers within budget -> the caller fails closed (marks the turn untested)."""
+        detailed = await self.probe_batch_with_raw(messages, reply, models)
+        out: dict[str, bool | None] = {}
+        for m in models:
+            entry = detailed.get(m) or {}
+            out[m] = entry.get("injection")
+        return out
+
+    async def probe_batch_with_raw(
+        self,
+        messages: list[dict],
+        reply: str,
+        models: list[str],
+    ) -> dict[str, dict[str, str | bool | None]]:
+        """Return parsed and raw injection-probe verdicts for every judge model."""
         probe_msgs = self._build_probe_messages(messages, reply)
         raws = await self.query_judges(
             models, probe_msgs, accept=_injection_accept,
             max_tokens_fn=lambda m: JUDGE_THINKING_TOKENS if _is_thinking(m) else JUDGE_MAX_TOKENS,
         )
-        out: dict[str, bool | None] = {}
+        out: dict[str, dict[str, str | bool | None]] = {}
         for m in models:
             raw = raws.get(m)
-            out[m] = None if raw is None else _parse_injection(raw)
+            injection = None if raw is None else _parse_injection(raw)
+            out[m] = {
+                "injection": injection,
+                "raw": raw,
+                "evidence": None if raw is None else _parse_injection_evidence(raw),
+            }
         return out
 
     async def probe(self, messages: list[dict], reply: str, *, model: str) -> tuple[bool, str]:
