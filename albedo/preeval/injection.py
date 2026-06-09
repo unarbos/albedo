@@ -24,6 +24,10 @@ _GEN_RETRY_BACKOFF_CAP = 120.0
 _MAX_GEN_RETRIES = 5
 
 
+def _probe_log(eval_id: str, message: str, *args: object) -> None:
+    logger.info("[%s][probe] " + message, eval_id, *args)
+
+
 @dataclass
 class ProbeResult:
     n_probes:         int
@@ -159,19 +163,23 @@ async def _probe_one_turn(
     # OpenRouter), bounded by the per-judge ceiling. A judge neither provider resolves
     # comes back None -> we mark the turn UNTESTED (fail-closed) rather than retrying
     # forever, so is_clean=False and the challenger is not crowned on an unverified probe.
-    results = await judge_client.probe_batch(prompt_messages, reply, judges)
+    results = await judge_client.probe_batch_with_raw(prompt_messages, reply, judges)
 
-    injections_by_judge: dict[str, bool] = {}
+    judge_results: dict[str, dict[str, str | bool | None]] = {}
     untested = False
     for judge_model in judges:
-        verdict = results.get(judge_model)
-        if verdict is None:
+        verdict = results.get(judge_model) or {}
+        injection = verdict.get("injection")
+        if injection is None:
             untested = True
             logger.warning("probe %d: judge %r unresolved (fail-closed -> untested)",
                            probe_index, judge_model)
-            continue
-        injections_by_judge[judge_model] = verdict
-        if verdict:
+        judge_results[judge_model] = {
+            "injection": injection,
+            "raw": verdict.get("raw"),
+            "evidence": verdict.get("evidence"),
+        }
+        if injection:
             logger.warning("probe %d: injection detected by judge %r", probe_index, judge_model)
 
     return {
@@ -179,8 +187,10 @@ async def _probe_one_turn(
         "skipped":             False,
         "untested":            untested,
         "n_messages":          len(prompt_messages),
+        "prompt_messages":     prompt_messages,
+        "challenger_reply":    reply,
         "reply_len":           len(reply),
-        "injections_by_judge": injections_by_judge,
+        "judges":              judge_results,
     }
 
 
@@ -211,6 +221,13 @@ async def probe_injection(
         judge_client = ChutesJudge()
 
     try:
+        _probe_log(
+            eval_id,
+            "starting n_probes=%d judges=%s dataset_dir=%s",
+            n_probes,
+            ",".join(judges),
+            dataset_dir,
+        )
         rng = random.Random(_probe_seed(eval_id))
         turns = _sample_turns(dataset_dir, n_probes, rng)
 
@@ -223,11 +240,13 @@ async def probe_injection(
                 n_probes=0, n_injections=0, triggered_judges=[],
                 probe_details=[{"probe_index": 0, "error": "no_dataset_turns", "untested": True}],
             )
+        _probe_log(eval_id, "sampled %d probe turn(s)", len(turns))
 
         async with httpx.AsyncClient(timeout=_CHAL_TIMEOUT) as http:
             # Resolve actual model name once — sending "default" causes HTTP 400
             # on standard vLLM deployments that don't register a "default" alias.
             challenger_model = await _get_model_name(challenger_url, http)
+            _probe_log(eval_id, "challenger model resolved as %s", challenger_model)
 
             tasks = [
                 asyncio.create_task(
@@ -239,6 +258,7 @@ async def probe_injection(
                 for i, turn in enumerate(turns)
             ]
             raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+            _probe_log(eval_id, "completed %d probe task(s)", len(raw_results))
     finally:
         if _owned:
             await judge_client.aclose()
@@ -260,16 +280,26 @@ async def probe_injection(
         if result.get("skipped"):
             continue
 
-        for judge_model, detected in result.get("injections_by_judge", {}).items():
+        for judge_model, entry in result.get("judges", {}).items():
+            detected = entry.get("injection")
             if detected:
                 # Any judge flagging any turn is enough — no majority required.
                 n_injections += 1
                 if judge_model not in triggered_judges:
                     triggered_judges.append(judge_model)
 
-    return ProbeResult(
+    result = ProbeResult(
         n_probes=len(turns),
         n_injections=n_injections,
         triggered_judges=triggered_judges,
         probe_details=probe_details,
     )
+    _probe_log(
+        eval_id,
+        "finished clean=%s injections=%d untested=%d triggered_judges=%s",
+        result.is_clean,
+        result.n_injections,
+        result.n_untested,
+        ",".join(result.triggered_judges) or "none",
+    )
+    return result

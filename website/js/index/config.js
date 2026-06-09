@@ -18,6 +18,11 @@ export const LLMS_URLS = [
   "https://eu-central-1.hippius.com/albedo/llms.txt",
   "https://s3.hippius.com/albedo/llms.txt",
 ];
+export const SWEBENCH_LITE_URLS = [
+  "../swebench-lite/index.json",
+  "https://us-east-1.hippius.com/albedo/swebench-lite/index.json",
+  "https://s3.hippius.com/albedo/swebench-lite/index.json",
+];
 
 export const ENDPOINT_CACHE_KEY = "albedo.endpoint.v1";
 export const EVALS_BASE = "https://us-east-1.hippius.com/albedo/evals/";

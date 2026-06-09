@@ -3,62 +3,76 @@ import { BITTENSOR_BLOCK_TIME_S } from "./config.js";
 export function buildKingsList(d) {
   const chain   = d.king_chain || [];
   const history = d.history || [];
-  const kings = [];
-  const seenIds = new Set();
 
-  chain.forEach(k => {
-    seenIds.add(k.challenge_id);
-    kings.push({ ...k, _rich: true, _inferred: false });
-  });
+  const evalNum = id => parseInt((id || "").replace(/\D/g, ""), 10) || 0;
 
-  history
-    .filter(h => h.accepted && !seenIds.has(h.challenge_id))
-    .forEach(h => {
-      seenIds.add(h.challenge_id);
-      kings.push({
-        challenge_id:  h.challenge_id,
-        hotkey:        h.hotkey,
-        uid:           h.uid ?? null,
-        model_repo:    h.model_repo,
-        king_digest:   h.model_digest,
-        crowned_at:    h.completed_at,
-        crowned_block: null,
-        // A crowned challenger's reign = the champion it beat (king_reign_number) + 1,
-        // so kingTitle() can name it (ALBEDO-I …) instead of falling back to base model.
-        reign_number:  h.king_reign_number != null ? h.king_reign_number + 1 : null,
-        weight:        null,
-        registered:    null,
-        judges:        h.judges || [],
-        _rich:         false,
-        _inferred:     false,
-      });
-    });
+  const histById = new Map(
+    history.filter(h => h.accepted && h.eval_id).map(h => [h.eval_id, h])
+  );
 
-  kings.sort((a, b) => {
-    const ta = a.crowned_at ? new Date(a.crowned_at).getTime() : 0;
-    const tb = b.crowned_at ? new Date(b.crowned_at).getTime() : 0;
-    return tb - ta;
-  });
+  const byId = new Map();
 
-  const chainTimes = chain.map(k => k.crowned_at ? new Date(k.crowned_at).getTime() : Infinity);
-  const oldestChainMs = chainTimes.length ? Math.min(...chainTimes) : Infinity;
-  const knownMin = chain.reduce((mn, k) =>
-    k.reign_number != null && k.reign_number < mn ? k.reign_number : mn, Infinity);
-
-  if (knownMin !== Infinity) {
-    let counter = knownMin - 1;
-    for (let i = 0; i < kings.length; i++) {
-      const k = kings[i];
-      if (k.reign_number != null) continue;
-      const kt = k.crowned_at ? new Date(k.crowned_at).getTime() : 0;
-      if (kt < oldestChainMs && counter >= 0) {
-        kings[i] = { ...kings[i], reign_number: counter, _inferred: true };
-        counter--;
-      }
-    }
+  // 1. King chain + current king (full live metadata: uid, weight, registered, etc.)
+  chain.forEach(k => byId.set(k.challenge_id, { ...k, _rich: true }));
+  if (d.king?.challenge_id && !byId.has(d.king.challenge_id)) {
+    byId.set(d.king.challenge_id, { ...d.king, _rich: true });
   }
 
-  return kings;
+  // 2. Supplement with accepted history entries evicted from the chain.
+  histById.forEach((h, id) => {
+    if (byId.has(id)) return;
+    byId.set(id, {
+      challenge_id:  id,
+      hotkey:        h.hotkey,
+      uid:           h.uid ?? null,
+      model_repo:    h.model_repo,
+      king_digest:   h.model_digest,
+      crowned_at:    h.completed_at,
+      crowned_block: null,
+      weight:        null,
+      registered:    null,
+      judges:        h.judges || [],
+      _rich:         false,
+    });
+  });
+
+  // 3. Sort chronologically by eval_id (oldest first), assign absolute reign numbers.
+  const sorted = Array.from(byId.values())
+    .sort((a, b) => evalNum(a.challenge_id) - evalNum(b.challenge_id));
+
+  const totalKings = Number(d.stats?.accepted) || sorted.length;
+  const offset = Math.max(0, totalKings - sorted.length);
+  sorted.forEach((k, i) => { k.reign_number = offset + i + 1; });
+
+  // Sync back to d.king so the hero section (if any) reads the correct title.
+  if (d.king?.challenge_id) {
+    const e = byId.get(d.king.challenge_id);
+    if (e) d.king.reign_number = e.reign_number;
+  }
+
+  const result = sorted.reverse(); // newest first: current king at top
+
+  // 4. Append genesis/base model from chain metadata (never enters history).
+  const seedRepo = d.chain?.seed_repo;
+  const alreadyPresent = seedRepo && result.some(k => k.model_repo === seedRepo);
+  if (seedRepo && !alreadyPresent) {
+    result.push({
+      challenge_id:  null,
+      hotkey:        null,
+      uid:           null,
+      model_repo:    seedRepo,
+      king_digest:   d.chain?.seed_digest || "",
+      crowned_at:    null,
+      crowned_block: null,
+      weight:        null,
+      registered:    false,
+      judges:        [],
+      reign_number:  0,
+      _rich:         false,
+    });
+  }
+
+  return result;
 }
 
 export function applyDisplayStartBlock(d) {

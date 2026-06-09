@@ -19,6 +19,15 @@ fi
 : "${CHUTES_API_KEY:?must set CHUTES_API_KEY (cpk_... bearer token)}"
 export CHUTES_BASE_URL="${CHUTES_BASE_URL:-https://llm.chutes.ai}"
 
+# --- Optional: Slack alerts for eval-server problems -------------------------
+# These are read by albedo.eval_server.notifications on the GPU eval box only.
+# Example:
+#   ALBEDO_SLACK_WEBHOOK_URL="<paste-your-slack-incoming-webhook-here>"
+export ALBEDO_SLACK_WEBHOOK_URL="${ALBEDO_SLACK_WEBHOOK_URL:-}"
+export ALBEDO_SLACK_USERNAME="${ALBEDO_SLACK_USERNAME:-Albedo Eval Server}"
+export ALBEDO_SLACK_ICON_URL="${ALBEDO_SLACK_ICON_URL:-}"
+export ALBEDO_SLACK_COOLDOWN_S="${ALBEDO_SLACK_COOLDOWN_S:-300}"
+
 # --- Required: Hippius Hub auth for materializing king/challenger weights ----
 if [[ -z "${HIPPIUS_HUB_TOKEN:-}" && ( -z "${HIPPIUS_HUB_USERNAME:-}" || -z "${HIPPIUS_HUB_PASSWORD:-}" ) ]]; then
   echo "ERROR: set HIPPIUS_HUB_TOKEN, or HIPPIUS_HUB_USERNAME + HIPPIUS_HUB_PASSWORD" >&2
@@ -56,7 +65,9 @@ export VLLM_MOE_USE_DEEP_GEMM="${VLLM_MOE_USE_DEEP_GEMM:-0}"
 export ALBEDO_MODEL_CACHE_DIR="${ALBEDO_MODEL_CACHE_DIR:-/root/albedo/hippius_models}"
 export ALBEDO_MIN_DISK_BYTES="${ALBEDO_MIN_DISK_BYTES:-53687091200}"  # 50 GB
 export ALBEDO_TMP_DIR="${ALBEDO_TMP_DIR:-/root/albedo/tmp}"
+export ALBEDO_EVAL_LOG_DIR="${ALBEDO_EVAL_LOG_DIR:-$(pwd)/logs}"
 mkdir -p "$ALBEDO_TMP_DIR/triton_cache" "$ALBEDO_TMP_DIR/torchinductor"
+mkdir -p "$ALBEDO_EVAL_LOG_DIR"
 export TMPDIR="$ALBEDO_TMP_DIR"
 export TRITON_CACHE_DIR="$ALBEDO_TMP_DIR/triton_cache"
 export TORCHINDUCTOR_CACHE_DIR="$ALBEDO_TMP_DIR/torchinductor"

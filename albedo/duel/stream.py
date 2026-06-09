@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _duel_log(eval_id: str, message: str, *args: object) -> None:
+    log.info("[%s][duel] " + message, eval_id, *args)
+
+
 async def _rescore_failed_judges(
     result: TurnResult,
     *,
@@ -136,11 +140,25 @@ async def run_duel(
     """
     n_samples = len(samples)
     n_judges  = len(judge_models)
+    _duel_log(
+        eval_id,
+        "start samples=%d judges=%d max_parallel=%d hotkey=%s",
+        n_samples,
+        n_judges,
+        max_parallel,
+        hotkey or "unknown",
+    )
 
     yield _sse("start", {"eval_id": eval_id, "n_samples": n_samples, "n_judges": n_judges})
 
     # Resolve model names once — not per turn — to avoid 2N extra HTTP calls.
     king_model_name, chal_model_name = await resolve_model_names(king_client, chal_client)
+    _duel_log(
+        eval_id,
+        "resolved model names king=%s challenger=%s",
+        king_model_name,
+        chal_model_name,
+    )
 
     vllm_errors: int = 0
     king_vllm_errors: int = 0
@@ -188,10 +206,19 @@ async def run_duel(
             vllm_errors += 1
             if "king_" in gen.vllm_error:
                 king_vllm_errors += 1
-            if "chal_" in gen.vllm_error:
-                chal_vllm_errors += 1
+        if "chal_" in gen.vllm_error:
+            chal_vllm_errors += 1
             continue
         generated_turns.append(gen)
+    _duel_log(
+        eval_id,
+        "generation phase done generated=%d vllm_errors=%d budget_skipped=%d king_vllm_errors=%d chal_vllm_errors=%d",
+        len(generated_turns),
+        vllm_errors,
+        budget_skipped,
+        king_vllm_errors,
+        chal_vllm_errors,
+    )
 
     # Phase 2: judge all generated turns
     yield _sse("phase", {"phase": "judge"})
@@ -243,6 +270,12 @@ async def run_duel(
         yield _sse("turn", turn_data)
 
     n_done = len(results)
+    _duel_log(
+        eval_id,
+        "judge phase done scored_turns=%d vllm_errors=%d",
+        n_done,
+        vllm_errors,
+    )
 
     # Multi-pass rescore: retry only the failed judge(s) per turn, not the full turn.
     # Each pass fires after all previous work completes so in-flight OR calls resolve first.
@@ -310,6 +343,13 @@ async def run_duel(
                 await sink.flush()
             except Exception:
                 pass
+        log.warning(
+            "[%s][duel] rejected due to min_valid_frac n_valid=%d n_done=%d threshold=%.0f%%",
+            eval_id,
+            n_valid,
+            n_done,
+            DUEL_MIN_VALID_TURN_FRAC * 100,
+        )
         yield _sse("verdict", verdict_data)
         return
 
@@ -363,4 +403,16 @@ async def run_duel(
         except Exception:
             log.warning("sink.set_scores failed for eval %r", eval_id)
 
+    _duel_log(
+        eval_id,
+        "verdict accepted=%s winner=%s challenger_score=%.3f king_score=%.3f margin_ok=%s gate_lcb=%s n_valid=%d n_done=%d",
+        accepted,
+        winner,
+        challenger_score,
+        king_score,
+        margin_ok,
+        gate_lcb,
+        n_valid,
+        n_done,
+    )
     yield _sse("verdict", verdict_data)
