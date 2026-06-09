@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+<title>ALBEDO - Chat</title>
+<link rel="icon" type="image/svg+xml" href="../css/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../css/index.css">
+<link rel="stylesheet" href="../css/chat.css">
+</head>
+<body>
+
+<header class="chat-header">
+  <div class="chat-frame">
+    <a class="brand" href="./index.html">
+      <img class="brand-logo" src="../css/favicon.svg" width="18" height="18" alt="" aria-hidden="true">
+      <span>Albedo</span>
+    </a>
+    <div class="chat-tab-bar">
+      <div class="chat-tabs" id="chat-tabs" role="tablist"></div>
+      <button type="button" class="chat-tab-new" id="chat-tab-new" aria-label="New chat">+</button>
+    </div>
+  </div>
+</header>
+
+<main class="chat-main chat-frame">
+  <section class="chat-shell" aria-label="Chat">
+    <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+    <form class="chat-composer" id="chat-form">
+      <label class="sr-only" for="chat-input">Message</label>
+      <textarea id="chat-input" name="message" rows="1" placeholder="message..." autocomplete="off"></textarea>
+    </form>
+  </section>
+</main>
+
+<script type="module" src="../js/chat/main.js"></script>
+</body>
+</html>

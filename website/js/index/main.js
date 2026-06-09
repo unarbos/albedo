@@ -1,10 +1,14 @@
 import { POLL_MS, BUILD_ID, HTML_ENDPOINTS } from "./config.js";
-import { fetchDashboard, fetchLlmsText, initEndpointCache } from "./fetch.js";
+import { fetchDashboard, fetchLlmsText, fetchSwebenchLite, initEndpointCache } from "./fetch.js";
 import { render } from "./render.js";
 
 async function poll() {
-  const data = await fetchDashboard(Date.now());
-  if (data) render(data);
+  const buster = Date.now();
+  const [data, swebenchLite] = await Promise.all([
+    fetchDashboard(buster),
+    fetchSwebenchLite(buster),
+  ]);
+  if (data) render(data, swebenchLite);
 }
 
 async function checkVersion() {

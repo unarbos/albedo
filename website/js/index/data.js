@@ -50,6 +50,8 @@ export function verdictBadge(h) {
   if (isDuplicateEntry(h))  return `<span class="verdict-badge lost">invalid</span>`;
   if (isInjectionEntry(h))  return `<span class="verdict-badge lost">invalid</span>`;
   if ((h.error_code || h.code) === "config_mismatch") return `<span class="verdict-badge lost">invalid</span>`;
+  if ((h.error_code || h.code) === "challenger_rejected") return `<span class="verdict-badge lost">invalid</span>`;
+  if ((h.error_code || h.code) === "admission_rejected") return `<span class="verdict-badge lost">invalid</span>`;
   if ((h.error_code || h.code) === "eval_infra" || (h.error_code || h.code) === "infra_failure")
     return `<span class="verdict-badge error">error</span>`;
   if (h.error_code || h.code) return `<span class="verdict-badge error">error</span>`;
@@ -150,36 +152,103 @@ export function failReasonCell(h) {
 
 // Build the full king lineage for the releases table + evolution chart. The backend
 // keeps the current king in d.king, separate from the on-chain king_chain, so we merge
-// it in. Each entry's `judges` is normalized to score objects
-// {model, chal_mean, king_mean, n} pulled from that king's crowning verdict in history,
-// so the evolution bars and final score have data to draw.
+// it in. Kings that have been evicted from the chain (depth capped at 5) are recovered
+// from accepted history entries. Reign numbers are re-derived from chronological order
+// using eval_id as a monotonic counter, offset by stats.accepted so the current king's
+// reign reflects the true total number of crownings ever.
 export function buildIndexKings(d) {
   const chain   = d.king_chain || [];
   const history = d.history || [];
 
-  const judgesFromVerdict = (cid) => {
-    const h = (history || []).find(x => x.accepted && (x.eval_id === cid || x.challenge_id === cid));
-    const v = h?.verdict;
-    if (!v?.by_judge) return [];
-    return Object.entries(v.by_judge).map(([model, pct]) => {
-      const chal = Number(pct) / 100;
-      return { model, chal_mean: chal, king_mean: 1 - chal, n: v.n_valid ?? 0 };
-    });
-  };
+  const evalNum = id => parseInt((id || "").replace(/\D/g, ""), 10) || 0;
 
-  const norm = (k) => {
+  const histById = new Map(history.filter(h => h.accepted && h.eval_id).map(h => [h.eval_id, h]));
+
+  // Chain entries have full metadata; fall back to history's pre-built judges array if needed.
+  // Return the original object when no change is needed so reign_number mutations propagate
+  // back to d.king (which renderHero reads directly).
+  const normChain = (k) => {
     const hasScores = Array.isArray(k.judges) && k.judges.length && typeof k.judges[0] === "object";
-    return { ...k, judges: hasScores ? k.judges : judgesFromVerdict(k.challenge_id) };
+    if (!hasScores) {
+      const h = histById.get(k.challenge_id);
+      if (h?.judges?.length) return { ...k, judges: h.judges };
+    }
+    return k;
   };
 
   const byId = new Map();
-  chain.forEach(k => byId.set(k.challenge_id, norm(k)));
+
+  // 1. King chain + current king (full metadata: hotkey, uid, coldkey, weight, etc.)
+  chain.forEach(k => byId.set(k.challenge_id, normChain(k)));
   if (d.king?.challenge_id && !byId.has(d.king.challenge_id)) {
-    byId.set(d.king.challenge_id, norm(d.king));
+    byId.set(d.king.challenge_id, normChain(d.king));
   }
 
-  return Array.from(byId.values())
-    .sort((a, b) => (b.reign_number ?? 0) - (a.reign_number ?? 0));
+  // 2. Supplement from accepted history entries evicted from the chain.
+  //    These lack live uid_map metadata (coldkey, registered, weight) but have
+  //    model, hotkey, uid, timestamp, and pre-built judge scores.
+  histById.forEach((h, id) => {
+    if (byId.has(id)) return;
+    byId.set(id, {
+      challenge_id:  id,
+      hotkey:        h.hotkey,
+      model_repo:    h.model_repo,
+      model_digest:  h.model_digest,
+      uid:           h.uid,
+      crowned_at:    h.completed_at,
+      crowned_block: null,
+      registered:    false,   // no longer in live uid_map; dim the row
+      weight:        null,
+      weight_share:  null,
+      judges:        h.judges || [],
+    });
+  });
+
+  // 3. Sort chronologically by eval_id number (oldest first).
+  const sorted = Array.from(byId.values())
+    .sort((a, b) => evalNum(a.challenge_id) - evalNum(b.challenge_id));
+
+  // 4. Re-assign reign numbers. stats.accepted is the total count of all crownings ever,
+  //    including any that have scrolled out of the history window. Use it as the ceiling
+  //    so the current king's reign label matches the true historical count.
+  const totalKings = Number(d.stats?.accepted) || sorted.length;
+  const offset = Math.max(0, totalKings - sorted.length);
+  sorted.forEach((k, i) => { k.reign_number = offset + i + 1; });
+
+  // normChain may have returned a spread copy rather than d.king itself, so the
+  // reign_number mutation above may not have reached d.king. Sync it back explicitly
+  // so renderHero (which reads d.king.reign_number directly) shows the correct title.
+  if (d.king?.challenge_id) {
+    const e = byId.get(d.king.challenge_id);
+    if (e) d.king.reign_number = e.reign_number;
+  }
+
+  const result = sorted.reverse(); // newest first for the UI
+
+  // 5. Append the genesis/base model at the end (bottom of table, oldest).
+  //    It is set directly at subnet init — never enters history or king_chain once
+  //    evicted — so reconstruct it from chain metadata. Skip if it's somehow still
+  //    in king_chain (model_repo match) to avoid a duplicate row.
+  const seedRepo = d.chain?.seed_repo;
+  const alreadyPresent = seedRepo && result.some(k => k.model_repo === seedRepo);
+  if (seedRepo && !alreadyPresent) {
+    result.push({
+      challenge_id:  null,
+      model_repo:    seedRepo,
+      model_digest:  d.chain?.seed_digest || "",
+      reign_number:  0,    // kingTitleName(0) → "base model"
+      crowned_at:    null,
+      crowned_block: null,
+      registered:    false,
+      weight:        null,
+      weight_share:  null,
+      judges:        [],
+      hotkey:        null,
+      uid:           null,
+    });
+  }
+
+  return result;
 }
 
 export function applyDisplayStartBlock(d) {
@@ -189,7 +258,7 @@ export function applyDisplayStartBlock(d) {
   const ref = d.king || (d.king_chain || [])[0];
   const refBlock = ref?.crowned_block;
   const refAt    = ref?.crowned_at;
-  if (!refBlock || !refAt) return d;
+  if (refBlock == null || refBlock <= 0 || !refAt) return d;
 
   const refMs      = new Date(refAt).getTime();
   const diffBlocks = refBlock - startBlock;

@@ -1,7 +1,8 @@
-import { DATA_ENDPOINTS, ENDPOINT_CACHE_KEY, LLMS_URLS } from "./config.js";
+import { DATA_ENDPOINTS, ENDPOINT_CACHE_KEY, LLMS_URLS, SWEBENCH_LITE_URLS } from "./config.js";
 
 let DATA_URL = null;
 export let llmsTextCache = null;
+let SWEBENCH_LITE_CACHE = null;
 
 export function loadCachedEndpoint() {
   try {
@@ -50,6 +51,18 @@ export async function fetchLlmsText() {
     } catch {}
   }
   return null;
+}
+
+export async function fetchSwebenchLite(buster) {
+  for (const url of SWEBENCH_LITE_URLS) {
+    try {
+      const r = await fetch(url + "?t=" + buster, { cache: "no-store" });
+      if (!r.ok) continue;
+      SWEBENCH_LITE_CACHE = await r.json();
+      return SWEBENCH_LITE_CACHE;
+    } catch {}
+  }
+  return SWEBENCH_LITE_CACHE;
 }
 
 export function initEndpointCache() {

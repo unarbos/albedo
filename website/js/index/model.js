@@ -2,9 +2,9 @@ import { toRoman } from "./format.js";
 import { EVALS_BASE } from "./config.js";
 
 export const JUDGE_META = {
-  "deepseek-ai/DeepSeek-V3.2-TEE": { letter: "D", label: "DEEPSEEK" },
-  "Qwen/Qwen3-235B-A22B-Thinking-2507": { letter: "Q", label: "QWEN" },
-  "moonshotai/Kimi-K2.6-TEE": { letter: "K", label: "KIMI" },
+  "minimax/minimax-m3":          { letter: "M", label: "MINIMAX" },
+  "deepseek/deepseek-v4-flash":  { letter: "D", label: "DEEPSEEK" },
+  "z-ai/glm-5.1":                { letter: "G", label: "GLM" },
 };
 
 export function judgeShortName(model) {

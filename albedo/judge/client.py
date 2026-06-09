@@ -55,6 +55,7 @@ from albedo.config import (
     JUDGE_FALLBACK_REASONING_MODELS,
     JUDGE_RATE_LIMITS,
 )
+from albedo.eval_server.notifications import notify_problem
 
 
 from albedo.judge.rubric import PAIRWISE_RUBRIC_SYSTEM, PROBE_SYSTEM, build_pairwise_user
@@ -125,6 +126,28 @@ def _parse_injection(raw: str) -> bool | None:
 
 def _injection_accept(raw: str) -> bool:
     return _parse_injection(raw) is not None
+
+
+def _parse_injection_evidence(raw: str) -> str | None:
+    """Extract the evidence field from a probe verdict if present."""
+    obj = None
+    matches = _INJECTION_RE.findall(raw or "")
+    if matches:
+        try:
+            obj = json.loads(matches[-1])
+        except Exception:
+            obj = None
+    if obj is None:
+        s = (raw or "").strip()
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+            except Exception:
+                obj = None
+    if obj is None:
+        return None
+    evidence = obj.get("evidence")
+    return None if evidence is None else str(evidence)
 
 
 class ChutesJudge:
@@ -204,6 +227,15 @@ class ChutesJudge:
                 timeout=httpx.Timeout(connect=10.0, read=JUDGE_CHUTES_MAX_S, write=30.0, pool=10.0),
             ) as resp:
                 if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", "replace")
+                    await notify_problem(
+                        title=f"Chutes judge HTTP {resp.status_code}",
+                        message=f"Chutes returned HTTP {resp.status_code} for judge model `{model}`.",
+                        dedupe_key=f"judge:chutes:{model}:{resp.status_code}:{body[:120]}",
+                        details=body,
+                        status_code=resp.status_code,
+                        source="judge",
+                    )
                     return None  # 429 / capacity / error -> Chutes not taking it
                 agen = resp.aiter_lines()
 
@@ -276,6 +308,16 @@ class ChutesJudge:
                 last = "parse_fail"
             except httpx.HTTPStatusError as exc:
                 last = f"http_{exc.response.status_code}"
+                await notify_problem(
+                    title=f"OpenRouter judge HTTP {exc.response.status_code}",
+                    message=f"OpenRouter returned HTTP {exc.response.status_code} for judge model `{model}`.",
+                    dedupe_key=(
+                        f"judge:openrouter:{model}:{exc.response.status_code}:{exc.response.text[:120]}"
+                    ),
+                    details=exc.response.text,
+                    status_code=exc.response.status_code,
+                    source="judge",
+                )
             except Exception as exc:
                 last = type(exc).__name__
             finally:
@@ -389,15 +431,34 @@ class ChutesJudge:
         """Injection probe for all judges in ONE query_judges (per-judge sequential: each judge
         Chutes -> OpenRouter). Returns {model: is_injected | None}; None = unresolved by both
         providers within budget -> the caller fails closed (marks the turn untested)."""
+        detailed = await self.probe_batch_with_raw(messages, reply, models)
+        out: dict[str, bool | None] = {}
+        for m in models:
+            entry = detailed.get(m) or {}
+            out[m] = entry.get("injection")
+        return out
+
+    async def probe_batch_with_raw(
+        self,
+        messages: list[dict],
+        reply: str,
+        models: list[str],
+    ) -> dict[str, dict[str, str | bool | None]]:
+        """Return parsed and raw injection-probe verdicts for every judge model."""
         probe_msgs = self._build_probe_messages(messages, reply)
         raws = await self.query_judges(
             models, probe_msgs, accept=_injection_accept,
             max_tokens_fn=lambda m: JUDGE_THINKING_TOKENS if _is_thinking(m) else JUDGE_MAX_TOKENS,
         )
-        out: dict[str, bool | None] = {}
+        out: dict[str, dict[str, str | bool | None]] = {}
         for m in models:
             raw = raws.get(m)
-            out[m] = None if raw is None else _parse_injection(raw)
+            injection = None if raw is None else _parse_injection(raw)
+            out[m] = {
+                "injection": injection,
+                "raw": raw,
+                "evidence": None if raw is None else _parse_injection_evidence(raw),
+            }
         return out
 
     async def probe(self, messages: list[dict], reply: str, *, model: str) -> tuple[bool, str]:

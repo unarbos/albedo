@@ -159,6 +159,6 @@ export function render(d) {
 
   const inferredCount = kings.filter(k => k._inferred).length;
   notice.textContent = inferredCount
-    ? `~ reign numbers on ${inferredCount} older ${inferredCount === 1 ? "entry" : "entries"} are inferred from position — block and UID unavailable for those`
+    ? `~ ${inferredCount} older ${inferredCount === 1 ? "entry" : "entries"} before history window — reign numbers estimated`
     : "";
 }
