@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -14,6 +15,43 @@ import httpx
 from albedo.config import DUEL_GEN_MAX_LEN
 
 log = logging.getLogger(__name__)
+
+
+def reclaim_stray_on_ports(ports: list[int]) -> None:
+    """SIGKILL any process group still listening on the given ports.
+
+    vLLM children are launched detached (start_new_session=True), so if the eval
+    server was hard-killed (PM2 SIGKILL / OOM / crash) without running its graceful
+    shutdown, the old king/challenger vLLM processes survive and keep holding GPU
+    memory — the next startup would then OOM. Called once on startup to free them.
+    """
+    want = {str(p) for p in ports}
+    try:
+        out = subprocess.run(
+            ["ss", "-tlnp"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except Exception as exc:
+        log.warning("startup reclaim: could not list listening ports: %s", exc)
+        return
+
+    killed_pgids: set[int] = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local = parts[3]  # e.g. "0.0.0.0:8001"
+        if local.rsplit(":", 1)[-1] not in want:
+            continue
+        for pid in {int(m) for m in re.findall(r"pid=(\d+)", line)}:
+            try:
+                pgid = os.getpgid(pid)
+                if pgid in killed_pgids:
+                    continue
+                os.killpg(pgid, signal.SIGKILL)
+                killed_pgids.add(pgid)
+                log.warning("startup reclaim: SIGKILL stray pgid=%d holding %s", pgid, local)
+            except (ProcessLookupError, PermissionError):
+                pass
 
 _GPU_MEMORY_UTILIZATION = os.environ.get("ALBEDO_GPU_MEMORY_UTILIZATION", "0.55")
 _VLLM_DTYPE = os.environ.get("ALBEDO_VLLM_DTYPE", "bfloat16")
@@ -35,6 +73,7 @@ class VLLMProcess:
         self._proc: subprocess.Popen | None = None
         self._started_at: float | None = None
         self._client: httpx.AsyncClient | None = None
+        self._log_fh = None  # per-role vLLM stdout/stderr sink
 
     async def start(self, model_dir: str, model_name: str) -> None:
         """Stop any running process and launch a fresh vLLM subprocess."""
@@ -57,10 +96,26 @@ class VLLMProcess:
         ]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": self._gpus}
 
-        log.info("[%s] starting vLLM on port %d — gpus=%s model=%r", self._role, self._port, self._gpus, model_name)
+        # Send this vLLM's verbose engine output + crash tracebacks to its own
+        # per-role file so they don't pollute the eval-server log. Appended (not
+        # truncated) so the tail before a crash/restart is preserved for debugging.
+        log_dir = os.environ.get("ALBEDO_EVAL_LOG_DIR", "./logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"vllm_{self._role}.log")
+        self._log_fh = open(log_path, "a", buffering=1)
+        self._log_fh.write(
+            f"\n===== [{self._role}] vLLM start port={self._port} gpus={self._gpus} "
+            f"model={model_name} =====\n"
+        )
+        self._log_fh.flush()
+
+        log.info("[%s] starting vLLM on port %d — gpus=%s model=%r (output -> %s)",
+                 self._role, self._port, self._gpus, model_name, log_path)
         self._proc = subprocess.Popen(
             cmd, env=env,
             start_new_session=True,  # isolate into its own process group
+            stdout=self._log_fh,
+            stderr=subprocess.STDOUT,
         )
         self._model_name = model_name
         self._started_at = time.monotonic()
@@ -109,6 +164,13 @@ class VLLMProcess:
         self._model_name = ""
         self._started_at = None
 
+        if self._log_fh is not None:
+            try:
+                self._log_fh.close()
+            except Exception:
+                pass
+            self._log_fh = None
+
     async def wait_healthy(self, *, timeout: float = 180.0) -> None:
         """Poll GET /health until 200; raises TimeoutError or RuntimeError on early exit."""
         url = f"http://localhost:{self._port}/health"
@@ -136,6 +198,17 @@ class VLLMProcess:
         if self._proc is None:
             return False
         return self._proc.poll() is None
+
+    async def is_healthy(self, *, timeout: float = 5.0) -> bool:
+        if not self.is_alive():
+            return False
+        url = f"http://localhost:{self._port}/health"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as probe:
+                resp = await probe.get(url)
+                return resp.status_code == 200
+        except httpx.TransportError:
+            return False
 
     @property
     def model_name(self) -> str:

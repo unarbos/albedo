@@ -21,11 +21,14 @@ from albedo.judge import ChutesJudge
 from albedo.models import ModelRef, materialize_model, prune_model_cache
 from albedo.preeval import add_fingerprint, check_fingerprint, probe_injection
 from albedo.eval_server.server_state import STATE, CHAL_PORT, KING_PORT
+from albedo.eval_server.vllm import reclaim_stray_on_ports
 from albedo.eval_server.sink import DatasetSink
 from albedo.eval_server.fingerprint_store import load_fingerprints, save_fingerprints
 from albedo.eval_server.notifications import notify_problem
 from albedo.eval_server.probe_logs import write_probe_artifacts
+from albedo.eval_server.logging_setup import setup_logging
 
+setup_logging()
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Albedo Eval Server")
@@ -64,7 +67,11 @@ async def _add_and_persist(key: str, model_dir: str, hotkey: str = "") -> None:
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    """Load persisted near-duplicate fingerprint state into memory (best-effort)."""
+    """Reclaim orphaned vLLM from a hard restart, then load fingerprint state."""
+    # If the previous eval server was SIGKILLed, its detached king/challenger vLLM
+    # procs are still holding GPU memory — free them before we try to start ours.
+    await asyncio.to_thread(reclaim_stray_on_ports, [KING_PORT, CHAL_PORT])
+
     loaded = await asyncio.to_thread(load_fingerprints)
     if loaded:
         STATE.fingerprints.update(loaded)
@@ -245,21 +252,21 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 king_hotkey=req.king.get("hotkey", "") if req.king else "",
             )
             try:
-                _eval_log(req.eval_id, "lock", "acquired; starting pre-duel gates")
+                _eval_log(req.eval_id, "pre-eval", "lock acquired; starting pre-duel gates")
                 # Keepalive: these pre-duel phases emit no 'start'/'turn' events, so feed the
                 # validator's idle timer (it resets on any line) while we materialise + probe.
                 yield _sse("phase", {"eval_id": req.eval_id, "phase": "materialize"})
                 # Gate 1: materialise challenger and start vLLM
                 try:
-                    _eval_log(req.eval_id, "materialize", "materializing challenger %s", _short_ref(chal_ref.immutable_ref))
+                    _eval_log(req.eval_id, "pre-eval:materialize", "materializing challenger %s", _short_ref(chal_ref.immutable_ref))
                     chal_dir = await asyncio.wait_for(
                         asyncio.to_thread(materialize_model, chal_ref),
                         timeout=_MODEL_DOWNLOAD_TIMEOUT,
                     )
-                    _eval_log(req.eval_id, "materialize", "challenger materialized at %s; starting vLLM", chal_dir)
+                    _eval_log(req.eval_id, "pre-eval:materialize", "challenger materialized at %s; starting vLLM", chal_dir)
                     await STATE.chal_proc.start(chal_dir, chal_ref.immutable_ref)
                     await STATE.chal_proc.wait_healthy()
-                    _eval_log(req.eval_id, "startup", "challenger vLLM healthy")
+                    _eval_log(req.eval_id, "pre-eval:challenger", "challenger vLLM healthy")
                 except Exception as exc:
                     log.error("challenger vLLM failed to start: %s", exc)
                     await notify_problem(
@@ -277,7 +284,7 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                     return
 
                 # Gate 2: near-duplicate fingerprint check
-                _eval_log(req.eval_id, "fingerprint", "running near-duplicate fingerprint check")
+                _eval_log(req.eval_id, "pre-eval:fingerprint", "running near-duplicate fingerprint check")
                 is_dup, dup_key = await asyncio.to_thread(
                     check_fingerprint, chal_dir, STATE.fingerprints, None, hotkey
                 )
@@ -290,11 +297,11 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                         "error": f"duplicate_model: too similar to {dup_key}",
                     })
                     return
-                _eval_log(req.eval_id, "fingerprint", "fingerprint check passed")
+                _eval_log(req.eval_id, "pre-eval:fingerprint", "fingerprint check passed")
 
                 # Gate 3: injection probe — probe seed is distinct from duel seed
                 yield _sse("phase", {"eval_id": req.eval_id, "phase": "probe"})
-                _eval_log(req.eval_id, "probe", "starting injection probe")
+                _eval_log(req.eval_id, "pre-eval:probe", "starting injection probe")
                 probe = await probe_injection(
                     challenger_url=f"http://localhost:{CHAL_PORT}",
                     eval_id=req.eval_id,
@@ -308,7 +315,7 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 )
                 _eval_log(
                     req.eval_id,
-                    "probe",
+                    "pre-eval:probe",
                     "finished clean=%s probes=%d injections=%d untested=%d",
                     probe.is_clean,
                     probe.n_probes,
@@ -328,6 +335,42 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                     })
                     return
 
+                if not await STATE.king_proc.is_healthy():
+                    log.warning(
+                        "king vLLM not healthy at eval %s — restarting %s",
+                        req.eval_id, _short_ref(king_ref.immutable_ref),
+                    )
+                    _eval_log(req.eval_id, "pre-eval:king", "king not healthy; restarting %s",
+                              _short_ref(king_ref.immutable_ref))
+                    yield _sse("phase", {"eval_id": req.eval_id, "phase": "king_restart"})
+                    try:
+                        king_dir = await asyncio.wait_for(
+                            asyncio.to_thread(materialize_model, king_ref),
+                            timeout=_MODEL_DOWNLOAD_TIMEOUT,
+                        )
+                        await STATE.king_proc.start(king_dir, king_ref.immutable_ref)
+                        await STATE.king_proc.wait_healthy()
+                        _eval_log(req.eval_id, "pre-eval:king", "king vLLM healthy after restart")
+                    except Exception as exc:
+                        log.error("king vLLM restart failed: %s", exc)
+                        await notify_problem(
+                            title="king restart failed",
+                            message=(
+                                f"King vLLM unavailable for eval `{req.eval_id}` "
+                                f"(`{king_ref.immutable_ref}`)."
+                            ),
+                            dedupe_key=(
+                                f"eval:king_restart:{king_ref.immutable_ref}:"
+                                f"{type(exc).__name__}:{str(exc)[:120]}"
+                            ),
+                            details=str(exc),
+                        )
+                        yield _sse("verdict", {
+                            "eval_id": req.eval_id, "accepted": False,
+                            "error": f"king_unavailable: {exc}",
+                        })
+                        return
+
                 # Duel
                 manifest_path = Path(_DATASET_DIR) / "manifest.json"
                 actual_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -335,13 +378,13 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                     raise RuntimeError(
                         f"dataset manifest mismatch: {actual_sha} != {DATASET_MANIFEST_SHA256}"
                     )
-                _eval_log(req.eval_id, "dataset", "dataset manifest verified")
+                _eval_log(req.eval_id, "pre-eval:dataset", "dataset manifest verified")
                 dataset = await asyncio.to_thread(
                     lambda: TrajectoryDataset(_DATASET_DIR).sample(seed, n_samples, max_turns)
                 )
                 _eval_log(
                     req.eval_id,
-                    "dataset",
+                    "pre-eval:dataset",
                     "sampled dataset turns=%d (requested n_samples=%d max_turns=%d)",
                     len(dataset),
                     n_samples,
@@ -352,8 +395,13 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 judge = ChutesJudge()
                 _eval_log(
                     req.eval_id,
-                    "duel",
-                    "starting duel with %d judge(s): %s",
+                    "eval",
+                    "EVAL START — pre-eval gates passed; duel begins king=%s challenger=%s "
+                    "n_samples=%d max_turns=%d judges=%d (%s)",
+                    _short_ref(king_ref.immutable_ref),
+                    _short_ref(chal_ref.immutable_ref),
+                    n_samples,
+                    max_turns,
                     len(JUDGE_MODELS),
                     ", ".join(JUDGE_MODELS),
                 )

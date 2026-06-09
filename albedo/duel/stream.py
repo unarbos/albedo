@@ -206,8 +206,8 @@ async def run_duel(
             vllm_errors += 1
             if "king_" in gen.vllm_error:
                 king_vllm_errors += 1
-        if "chal_" in gen.vllm_error:
-            chal_vllm_errors += 1
+            if "chal_" in gen.vllm_error:
+                chal_vllm_errors += 1
             continue
         generated_turns.append(gen)
     _duel_log(
@@ -318,23 +318,28 @@ async def run_duel(
 
     n_valid = sum(1 for r in results if r.parse_ok)
 
-    # Guard: if too few turns parsed, the duel is statistically unreliable.
-    # This fires after the retry pass so transient judge failures don't count against us.
-    if n_done > 0 and (n_valid / n_done) < DUEL_MIN_VALID_TURN_FRAC:
-        log.warning(
-            "duel %s: only %d/%d turns scored (< %.0f%% threshold) — rejecting",
-            eval_id, n_valid, n_done, DUEL_MIN_VALID_TURN_FRAC * 100,
-        )
+    if n_done == 0 or (n_valid / n_done) < DUEL_MIN_VALID_TURN_FRAC:
+        if n_done == 0:
+            reason = (
+                f"no_valid_turns: 0/{n_samples} turns generated — likely a vLLM "
+                f"outage (vllm_errors={vllm_errors}, king_vllm_errors={king_vllm_errors}, "
+                f"chal_vllm_errors={chal_vllm_errors})"
+            )
+        else:
+            reason = (
+                f"min_valid_frac: only {n_valid}/{n_done} turns scored "
+                f"(< {DUEL_MIN_VALID_TURN_FRAC:.0%} threshold)"
+            )
+        log.warning("duel %s rejected: %s", eval_id, reason)
         verdict_data = {
             "eval_id":     eval_id,
             "accepted":    False,
             "n_done":      n_done,
             "n_valid":     n_valid,
             "vllm_errors": vllm_errors,
-            "error":       (
-                f"min_valid_frac: only {n_valid}/{n_done} turns scored "
-                f"(< {DUEL_MIN_VALID_TURN_FRAC:.0%} threshold)"
-            ),
+            "king_vllm_errors": king_vllm_errors,
+            "chal_vllm_errors": chal_vllm_errors,
+            "error":       reason,
             "judge_models": judge_models,
         }
         if sink is not None:
@@ -343,13 +348,6 @@ async def run_duel(
                 await sink.flush()
             except Exception:
                 pass
-        log.warning(
-            "[%s][duel] rejected due to min_valid_frac n_valid=%d n_done=%d threshold=%.0f%%",
-            eval_id,
-            n_valid,
-            n_done,
-            DUEL_MIN_VALID_TURN_FRAC * 100,
-        )
         yield _sse("verdict", verdict_data)
         return
 

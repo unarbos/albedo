@@ -393,6 +393,10 @@ class ChutesJudge:
 
         triples = await asyncio.gather(*[_resolve_one(m) for m in models])
 
+        for m, raw, hit in triples:
+            provider = "chutes" if hit else ("openrouter" if raw is not None else "none")
+            log.info("[judge] %s -> %s via %s", m, "ok" if raw is not None else "miss", provider)
+
         results = {m: raw for m, raw, _ in triples}
         chutes_hit = any(hit for _, _, hit in triples)
 
