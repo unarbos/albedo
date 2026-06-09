@@ -405,7 +405,10 @@ table.data-table th {
   border-bottom: 1px solid var(--color-border);
   white-space: nowrap;
 }
-table.data-table th.r, table.data-table td.r { text-align: right; }
+table.data-table th.r, table.data-table td.r { text-align: right; padding-left: 6px; padding-right: 8px; }
+.lcb-val { font-family: var(--font-mono); font-size: 11px; }
+.lcb-win  { color: var(--color-gold); }
+.lcb-lose { color: var(--color-fg-3); }
 table.data-table th.center, table.data-table td.center { text-align: center; }
 table.data-table tbody tr {
   border-bottom: 1px solid var(--color-border-subtle);
@@ -696,3 +699,51 @@ table.releases td.dl { text-align: right; padding-right: 4px; }
   table.data-table td.model a { max-width: 200px; }
   table.releases td.model .model-cell { max-width: 200px; }
 }
+
+
+/* ---------- SWE-bench Lite ---------- */
+table.data-table.swebench-table td.model a {
+  max-width: 260px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+}
+.swe-score {
+  color: var(--color-gold);
+  font-weight: 600;
+}
+.swe-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 78px;
+  height: 18px;
+  border-radius: 2px;
+  border: 1px solid var(--color-border);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+.swe-status.complete,
+.swe-status.completed {
+  border-color: rgba(68, 255, 154, 0.3);
+  color: rgba(68, 255, 154, 0.85);
+}
+.swe-status.running {
+  border-style: dashed;
+  border-color: rgba(90, 200, 250, 0.45);
+  color: rgba(90, 200, 250, 0.75);
+}
+.swe-status.failed {
+  border-color: rgba(255, 71, 71, 0.3);
+  color: rgba(255, 71, 71, 0.85);
+}
+.swe-json {
+  color: var(--color-fg-3);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.swe-json:hover { color: var(--color-accent); }
