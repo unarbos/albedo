@@ -19,6 +19,15 @@ fi
 : "${CHUTES_API_KEY:?must set CHUTES_API_KEY (cpk_... bearer token)}"
 export CHUTES_BASE_URL="${CHUTES_BASE_URL:-https://llm.chutes.ai}"
 
+# --- Optional: Slack alerts for eval-server problems -------------------------
+# These are read by albedo.eval_server.notifications on the GPU eval box only.
+# Example:
+#   ALBEDO_SLACK_WEBHOOK_URL="<paste-your-slack-incoming-webhook-here>"
+export ALBEDO_SLACK_WEBHOOK_URL="${ALBEDO_SLACK_WEBHOOK_URL:-}"
+export ALBEDO_SLACK_USERNAME="${ALBEDO_SLACK_USERNAME:-Albedo Eval Server}"
+export ALBEDO_SLACK_ICON_URL="${ALBEDO_SLACK_ICON_URL:-}"
+export ALBEDO_SLACK_COOLDOWN_S="${ALBEDO_SLACK_COOLDOWN_S:-300}"
+
 # --- Required: Hippius Hub auth for materializing king/challenger weights ----
 if [[ -z "${HIPPIUS_HUB_TOKEN:-}" && ( -z "${HIPPIUS_HUB_USERNAME:-}" || -z "${HIPPIUS_HUB_PASSWORD:-}" ) ]]; then
   echo "ERROR: set HIPPIUS_HUB_TOKEN, or HIPPIUS_HUB_USERNAME + HIPPIUS_HUB_PASSWORD" >&2

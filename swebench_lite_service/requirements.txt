@@ -1,0 +1,9 @@
+swebench
+vllm
+datasets
+httpx
+fastapi
+uvicorn
+boto3
+
+mini-swe-agent

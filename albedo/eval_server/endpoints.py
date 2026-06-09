@@ -23,6 +23,7 @@ from albedo.preeval import add_fingerprint, check_fingerprint, probe_injection
 from albedo.eval_server.server_state import STATE, CHAL_PORT, KING_PORT
 from albedo.eval_server.sink import DatasetSink
 from albedo.eval_server.fingerprint_store import load_fingerprints, save_fingerprints
+from albedo.eval_server.notifications import notify_problem
 
 log = logging.getLogger(__name__)
 
@@ -145,10 +146,19 @@ async def set_king(body: dict) -> JSONResponse:
         log.info("set_king: already running %r — no-op", ref.immutable_ref)
         return JSONResponse({"ok": True, "started": False, "model": ref.immutable_ref})
 
-    model_dir = await asyncio.wait_for(
-        asyncio.to_thread(materialize_model, ref),
-        timeout=_MODEL_DOWNLOAD_TIMEOUT,
-    )
+    try:
+        model_dir = await asyncio.wait_for(
+            asyncio.to_thread(materialize_model, ref),
+            timeout=_MODEL_DOWNLOAD_TIMEOUT,
+        )
+    except Exception as exc:
+        await notify_problem(
+            title="set_king materialize failed",
+            message=f"Failed to materialize king model `{ref.immutable_ref}`.",
+            dedupe_key=f"set_king:materialize:{ref.immutable_ref}:{type(exc).__name__}:{str(exc)[:120]}",
+            details=str(exc),
+        )
+        raise
 
     if STATE.eval_lock.locked():
         return JSONResponse(
@@ -157,8 +167,17 @@ async def set_king(body: dict) -> JSONResponse:
         )
 
     async with STATE.eval_lock:
-        await STATE.king_proc.start(model_dir, ref.immutable_ref)
-        await STATE.king_proc.wait_healthy()
+        try:
+            await STATE.king_proc.start(model_dir, ref.immutable_ref)
+            await STATE.king_proc.wait_healthy()
+        except Exception as exc:
+            await notify_problem(
+                title="set_king startup failed",
+                message=f"King vLLM failed to start for `{ref.immutable_ref}`.",
+                dedupe_key=f"set_king:start:{ref.immutable_ref}:{type(exc).__name__}:{str(exc)[:120]}",
+                details=str(exc),
+            )
+            raise
 
     # Fingerprint + persist in the background to avoid blocking the response
     asyncio.create_task(_add_and_persist(ref.immutable_ref, model_dir))
@@ -213,6 +232,14 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                     await STATE.chal_proc.wait_healthy()
                 except Exception as exc:
                     log.error("challenger vLLM failed to start: %s", exc)
+                    await notify_problem(
+                        title="challenger startup failed",
+                        message=f"Challenger vLLM failed to start for `{chal_ref.immutable_ref}`.",
+                        dedupe_key=(
+                            f"eval:chal_start:{chal_ref.immutable_ref}:{type(exc).__name__}:{str(exc)[:120]}"
+                        ),
+                        details=str(exc),
+                    )
                     yield _sse("verdict", {
                         "eval_id": req.eval_id, "accepted": False,
                         "error": f"chal_vllm_start_failed: {exc}",
@@ -284,6 +311,18 @@ async def eval_endpoint(req: EvalRequest) -> StreamingResponse:
                 # Awaited before yielding the verdict to ensure fingerprint is synced.
                 await _add_and_persist(chal_ref.immutable_ref, chal_dir, hotkey)
 
+            except Exception as exc:
+                log.exception("eval %s failed", req.eval_id)
+                await notify_problem(
+                    title="eval request failed",
+                    message=(
+                        f"Eval `{req.eval_id}` failed for challenger `{chal_ref.immutable_ref}` "
+                        f"and hotkey `{hotkey or 'unknown'}`."
+                    ),
+                    dedupe_key=f"eval:failure:{type(exc).__name__}:{str(exc)[:160]}",
+                    details=str(exc),
+                )
+                raise
             finally:
                 STATE.current_eval_id = None
                 try:

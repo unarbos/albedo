@@ -55,6 +55,7 @@ from albedo.config import (
     JUDGE_FALLBACK_REASONING_MODELS,
     JUDGE_RATE_LIMITS,
 )
+from albedo.eval_server.notifications import notify_problem
 
 
 from albedo.judge.rubric import PAIRWISE_RUBRIC_SYSTEM, PROBE_SYSTEM, build_pairwise_user
@@ -204,6 +205,15 @@ class ChutesJudge:
                 timeout=httpx.Timeout(connect=10.0, read=JUDGE_CHUTES_MAX_S, write=30.0, pool=10.0),
             ) as resp:
                 if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", "replace")
+                    await notify_problem(
+                        title=f"Chutes judge HTTP {resp.status_code}",
+                        message=f"Chutes returned HTTP {resp.status_code} for judge model `{model}`.",
+                        dedupe_key=f"judge:chutes:{model}:{resp.status_code}:{body[:120]}",
+                        details=body,
+                        status_code=resp.status_code,
+                        source="judge",
+                    )
                     return None  # 429 / capacity / error -> Chutes not taking it
                 agen = resp.aiter_lines()
 
@@ -276,6 +286,16 @@ class ChutesJudge:
                 last = "parse_fail"
             except httpx.HTTPStatusError as exc:
                 last = f"http_{exc.response.status_code}"
+                await notify_problem(
+                    title=f"OpenRouter judge HTTP {exc.response.status_code}",
+                    message=f"OpenRouter returned HTTP {exc.response.status_code} for judge model `{model}`.",
+                    dedupe_key=(
+                        f"judge:openrouter:{model}:{exc.response.status_code}:{exc.response.text[:120]}"
+                    ),
+                    details=exc.response.text,
+                    status_code=exc.response.status_code,
+                    source="judge",
+                )
             except Exception as exc:
                 last = type(exc).__name__
             finally:

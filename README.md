@@ -105,6 +105,8 @@ python validator.py
 
 Use `pm2 start ecosystem.config.js` to run both processes under PM2, or `tunnel.sh` to forward the eval-server port over SSH.
 
+On the GPU eval box, use `pm2 start ecosystem.eval.config.js` to run the eval server with `scripts/start_eval.sh` and `eval.env`.
+
 ## Layout
 
 ```
