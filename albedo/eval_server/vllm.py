@@ -53,6 +53,7 @@ class VLLMProcess:
             "--gpu-memory-utilization", _GPU_MEMORY_UTILIZATION,
             # Shard across every assigned GPU so larger models fit (e.g. "0,1,2,3" -> TP=4).
             "--tensor-parallel-size", str(_tensor_parallel_size(self._gpus)),
+            "--generation-config", "vllm",
         ]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": self._gpus}
 

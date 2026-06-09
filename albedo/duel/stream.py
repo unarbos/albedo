@@ -307,6 +307,7 @@ async def run_duel(
         if sink is not None:
             try:
                 sink.set_scores(verdict_data)
+                await sink.flush()
             except Exception:
                 pass
         yield _sse("verdict", verdict_data)
@@ -358,6 +359,7 @@ async def run_duel(
     if sink is not None:
         try:
             sink.set_scores(verdict_data)
+            await sink.flush()
         except Exception:
             log.warning("sink.set_scores failed for eval %r", eval_id)
 

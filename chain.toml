@@ -115,4 +115,4 @@ rescore_passes       = 2      # max per-judge retry passes after main scoring (r
 [preeval]
 similarity_threshold = 0.95
 injection_probes     = 2
-injection_judges     = ["deepseek/deepseek-v4-flash"]
+injection_judges     = []
