@@ -32,7 +32,7 @@ module.exports = {
         // Explicit path so PM2 always loads the intended eval env file.
         ALBEDO_EVAL_ENV_FILE: env("ALBEDO_EVAL_ENV_FILE", `${__dirname}/eval.env`),
         ALBEDO_EVAL_LOG_DIR: env("ALBEDO_EVAL_LOG_DIR", logsDir),
-        // Common eval-server overrides can still be supplied via the shell or PM2.
+        ALBEDO_LOG_LEVEL: env("ALBEDO_LOG_LEVEL", "INFO"),
         ALBEDO_EVAL_HOST: env("ALBEDO_EVAL_HOST", "0.0.0.0"),
         ALBEDO_EVAL_PORT: env("ALBEDO_EVAL_PORT", "9001"),
         ALBEDO_MAX_PARALLEL_TURNS: env("ALBEDO_MAX_PARALLEL_TURNS", "8"),
