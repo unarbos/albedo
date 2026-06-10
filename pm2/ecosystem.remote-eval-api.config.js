@@ -22,7 +22,7 @@ const env = loadEnv();
 module.exports = {
   apps: [
     {
-      name: "albedo-remote-eval-api",
+      name: env.ALBEDO_REMOTE_EVAL_PM2_NAME || "albedo-remote-eval-api",
       cwd: path.resolve(__dirname, ".."),
       script: env.ALBEDO_REMOTE_EVAL_PM2_SCRIPT || "uv",
       args: env.ALBEDO_REMOTE_EVAL_PM2_ARGS || "run albedo-remote-eval-api",
