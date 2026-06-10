@@ -171,6 +171,7 @@ class EvalDispatcher:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Albedo eval dispatcher.")
     parser.add_argument("--once", action="store_true", help="Claim and dispatch at most one eval.")
+    parser.add_argument("--sweep-abandoned", action="store_true", help="Mark expired EVAL attempts abandoned and retryable.")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -178,7 +179,10 @@ def main() -> None:
         settings=settings,
         repository=EvalRepository(settings.database_url),
     )
-    if args.once:
+    if args.sweep_abandoned:
+        abandoned = dispatcher.repository.sweep_abandoned_eval_attempts(worker_id=settings.worker_id)
+        print(f"abandoned_eval_attempts={abandoned}")
+    elif args.once:
         asyncio.run(dispatcher.dispatch_once())
     else:
         asyncio.run(dispatcher.run_forever())
