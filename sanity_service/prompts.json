@@ -1,0 +1,5 @@
+[
+  "What does this Python function do?\n\ndef double(x):\n    return x * 2",
+  "Complete this function:\n\ndef add(a, b):\n    ",
+  "What is wrong with this code?\n\nprint(x[5])  # x is not defined"
+]
