@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     dataset_version: str = "AlienKevin/SWE-ZERO-12M-trajectories"
     dataset_manifest_uri: str
     dataset_manifest_hash: str = "982a92bd85d122d287b15f2ddb4e2050b9e345fb3921aa9a63382c7af022bd7f"
+    dataset_manifest_path: str | None = None
     sample_count: int = 128
     max_turns_per_sample: int = 10
     sampling_algo: str = "swe-zero-manifest-sample-v1"

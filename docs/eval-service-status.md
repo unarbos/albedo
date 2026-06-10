@@ -18,6 +18,7 @@ It is intended for repo users who need to know what can run today and what still
   - `sample_count = 128`, `max_turns_per_sample = 10`, `sampling_algo = swe-zero-manifest-sample-v1`.
   - `eval_runs` persists `dataset_manifest_hash`, `dataset_max_turns_per_sample`, `dataset_sample_seed`, `dataset_sample_ids`, and `dataset_sampling_algo`.
 - Deterministic SWE-ZERO manifest coordinate sampler for `data/train-*.parquet` shard manifests.
+- Optional local manifest loading via `ALBEDO_EVAL_DATASET_MANIFEST_PATH`, including SHA-256 verification and dispatcher-side `sample_ids` generation.
 - Remote failure classification helpers:
   - Explicit miner faults are terminal.
   - Provider, infra, unknown, and broken remote streams are retryable.
@@ -41,7 +42,7 @@ It is intended for repo users who need to know what can run today and what still
   - No vLLM model loading or generation workers.
   - No scoring worker or judge provider integration.
 - S3/Hippius artifact upload and artifact row creation are not implemented yet.
-- Dataset manifest loading is not wired into the dispatcher yet; the sampler exists, but the dispatcher still sends empty `sample_ids` until manifest fetch/load is added.
+- S3 dataset manifest fetching is not implemented yet. The dispatcher can generate `sample_ids` only when a local `ALBEDO_EVAL_DATASET_MANIFEST_PATH` is configured.
 - Remote run reconciliation after dispatcher crash/restart is not implemented yet.
 - Lease heartbeats and lease-expiry recovery are not implemented yet.
 - Retry backoff/requeue scheduling is not implemented yet.
@@ -50,6 +51,8 @@ It is intended for repo users who need to know what can run today and what still
 - Other subnet services remain out of this eval-service-only slice: chain reader, Hippius validation worker, pre-eval dispatcher, set reign worker, and weight setter.
 
 ## Run Notes
+
+- Set `ALBEDO_EVAL_DATASET_MANIFEST_PATH` to a local SWE-ZERO `manifest.json` to include deterministic `sample_ids` in eval requests.
 
 - Install/sync dependencies with `uv sync` once network/package access is available.
 - Run API: `uv run albedo-eval-api`.
