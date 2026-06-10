@@ -9,6 +9,7 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
+    "pyarrow>=16.0.0",
     "uvicorn[standard]>=0.30.0",
 ]
 

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 
 from .models import EvalRequest
 from .remote_config import RemoteSettings, get_remote_settings
-from .remote_state import RemoteRunStore
+from .remote_state import RemoteRun, RemoteRunStore
+from .remote_worker import RemoteEvalWorker
 
 
 app = FastAPI(title="Albedo Remote Eval API", version="0.1.0")
@@ -31,6 +32,9 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def ready(settings: RemoteSettings = Depends(get_remote_settings), _: None = Depends(require_auth)) -> dict[str, object]:
+    warnings = []
+    if not settings.dataset_root and not settings.mock_auto_verdict:
+        warnings.append("ALBEDO_REMOTE_DATASET_ROOT is not set")
     return {
         "ready": settings.ready,
         "host_id": settings.host_id,
@@ -38,7 +42,8 @@ def ready(settings: RemoteSettings = Depends(get_remote_settings), _: None = Dep
         "accelerator_type": settings.accelerator_type,
         "gpu_count": settings.gpu_count,
         "free_gpu_count": settings.free_gpu_count,
-        "warnings": [],
+        "generation_backend": settings.generation_backend,
+        "warnings": warnings,
     }
 
 
@@ -51,12 +56,14 @@ def capacity(settings: RemoteSettings = Depends(get_remote_settings), _: None = 
         "free_gpu_count": settings.free_gpu_count,
         "active_runs": len(store.list_active()),
         "accelerator_type": settings.accelerator_type,
+        "generation_backend": settings.generation_backend,
     }
 
 
 @app.post("/eval-runs")
 def start_eval_run(
     request: EvalRequest,
+    background_tasks: BackgroundTasks,
     settings: RemoteSettings = Depends(get_remote_settings),
     _: None = Depends(require_auth),
 ) -> dict[str, str]:
@@ -67,6 +74,10 @@ def start_eval_run(
         challenger_won=settings.mock_challenger_won,
         auto_verdict=settings.mock_auto_verdict,
     )
+    if not settings.mock_auto_verdict:
+        queued_run = store.mark_worker_started(run.remote_run_id)
+        if queued_run:
+            background_tasks.add_task(_execute_remote_run, queued_run, settings)
     return {"remote_run_id": run.remote_run_id, "state": run.state}
 
 
@@ -91,20 +102,12 @@ def cancel_eval_run(remote_run_id: str, _: None = Depends(require_auth)) -> dict
     run = store.get(remote_run_id)
     if not run:
         raise HTTPException(status_code=404, detail="remote run not found")
-    run.state = "failed"
-    run.events.append(
-        {
-            "type": "verdict",
-            "eval_run_id": str(run.request.eval_run_id),
-            "state": "failed",
-            "fault_class": "REMOTE_EVAL_FAULT",
-            "fault_code": "remote_run_cancelled",
-            "fault_message": "Remote run cancelled by backend",
-            "retryable": True,
-            "artifacts": {},
-        }
-    )
+    run.fail(fault_code="remote_run_cancelled", fault_message="Remote run cancelled by backend")
     return {"remote_run_id": remote_run_id, "state": run.state}
+
+
+def _execute_remote_run(run: RemoteRun, settings: RemoteSettings) -> None:
+    RemoteEvalWorker(settings).execute(run)
 
 
 def main() -> None:

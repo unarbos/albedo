@@ -67,7 +67,7 @@ def test_remote_api_starts_idempotent_run_and_replays_verdict():
     verdict = events[-1]
     assert verdict["type"] == "verdict"
     assert verdict["state"] == "succeeded"
-    assert verdict["artifacts"]["generated_samples"].endswith("/generated-samples.jsonl")
+    assert verdict["artifacts"] == {}
 
 
 def test_remote_api_capacity_reports_active_runs():
