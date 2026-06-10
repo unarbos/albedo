@@ -56,6 +56,18 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
         def __exit__(self, exc_type, exc, tb):
             return None
 
+        def stream(self, method, url, headers=None):
+            response = self.get(url, headers=headers)
+
+            class ResponseContext:
+                def __enter__(self):
+                    return response
+
+                def __exit__(self, exc_type, exc, tb):
+                    return None
+
+            return ResponseContext()
+
         def get(self, url, headers=None):
             request = httpx.Request("GET", url, headers=headers or {})
             if "/service/token" in url:

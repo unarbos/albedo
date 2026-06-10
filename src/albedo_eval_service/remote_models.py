@@ -165,19 +165,45 @@ class ModelArtifactResolver:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 blob_url = f"https://{registry}/v2/{repository}/blobs/{layer_digest}"
                 blob_headers = {"Authorization": f"Bearer {token}"} if token else {}
-                blob_response = client.get(blob_url, headers=blob_headers)
-                if blob_response.status_code == 401:
-                    token = _bearer_token(client, blob_response, repository)
-                    blob_response = client.get(blob_url, headers={"Authorization": f"Bearer {token}"})
-                blob_response.raise_for_status()
-                destination.write_bytes(blob_response.content)
-                _verify_digest(destination.read_bytes(), layer_digest, label=name)
+                auth_response = _stream_blob_to_file(client, blob_url, blob_headers, destination, layer_digest, label=name)
+                if auth_response is not None:
+                    token = _bearer_token(client, auth_response, repository)
+                    _stream_blob_to_file(client, blob_url, {"Authorization": f"Bearer {token}"}, destination, layer_digest, label=name)
         done_marker_payload = {"source": original_ref, "registry": registry, "repository": repository, "digest": digest}
         (temp_dir / ".albedo-model-cache.json").write_text(json.dumps(done_marker_payload, sort_keys=True) + "\n", encoding="utf-8")
         cache_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_dir.replace(cache_dir)
         file_count, total_size_bytes = _tree_stats(cache_dir)
         return ResolvedModel(original_ref, str(cache_dir), "oci", False, file_count, total_size_bytes)
+
+
+def _stream_blob_to_file(
+    client: httpx.Client,
+    url: str,
+    headers: dict[str, str],
+    destination: Path,
+    expected_digest: str,
+    *,
+    label: str,
+) -> httpx.Response | None:
+    temp_destination = destination.with_suffix(destination.suffix + ".download")
+    digest = hashlib.sha256()
+    with client.stream("GET", url, headers=headers) as response:
+        if response.status_code == 401:
+            return response
+        response.raise_for_status()
+        with temp_destination.open("wb") as handle:
+            for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                digest.update(chunk)
+                handle.write(chunk)
+    actual = "sha256:" + digest.hexdigest()
+    if actual != expected_digest:
+        temp_destination.unlink(missing_ok=True)
+        raise ValueError(f"{label} digest mismatch: expected {expected_digest}, got {actual}")
+    temp_destination.replace(destination)
+    return None
 
 
 def parse_oci_ref(model_ref: str) -> tuple[str, str, str] | None:
