@@ -4,18 +4,25 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Callable, TypeVar
+from typing import Callable, Protocol, TypeVar
 
 from .dataset_manifest import load_manifest_file
 from .models import EvalRequest
+from .remote_artifacts import ArtifactUploader, RunArtifactSpool, build_artifact_uploader
 from .remote_config import RemoteSettings
 from .remote_dataset import EvalSample, load_swe_zero_samples
 from .remote_generation import GenerationResult, Generator, VllmProcessGenerator
+from .remote_models import ModelArtifactResolver, ResolvedModel
 from .remote_state import RemoteRun
 from .sampling import swe_zero_manifest_sample_ids
 
 GeneratorFactory = Callable[[str, list[str], str], Generator]
 T = TypeVar("T")
+
+
+class ModelResolver(Protocol):
+    def resolve(self, model_ref: str) -> ResolvedModel:
+        ...
 
 
 @dataclass(frozen=True)
@@ -35,9 +42,18 @@ class GpuTopology:
 
 
 class RemoteEvalWorker:
-    def __init__(self, settings: RemoteSettings, *, generator_factory: GeneratorFactory | None = None):
+    def __init__(
+        self,
+        settings: RemoteSettings,
+        *,
+        generator_factory: GeneratorFactory | None = None,
+        model_resolver: ModelResolver | None = None,
+        artifact_uploader: ArtifactUploader | None = None,
+    ):
         self.settings = settings
         self._generator_factory = generator_factory or self._vllm_generator
+        self._model_resolver = model_resolver or ModelArtifactResolver(settings)
+        self._artifact_uploader = artifact_uploader or build_artifact_uploader(settings)
 
     def execute(self, run: RemoteRun) -> None:
         try:
@@ -49,6 +65,25 @@ class RemoteEvalWorker:
         request = run.request
         topology = self._topology(request)
         samples = self._load_samples(request)
+        run.append_event(
+            {
+                "type": "model_resolution_started",
+                "eval_run_id": str(request.eval_run_id),
+                "models": ["challenger", "previous_king"],
+            }
+        )
+        king_model = self._resolve_model_for_side(run, request, side="previous_king")
+        challenger_model = self._resolve_model_for_side(run, request, side="challenger")
+        run.append_event(
+            {
+                "type": "model_resolution_done",
+                "eval_run_id": str(request.eval_run_id),
+                "models": [
+                    king_model.as_event(side="previous_king"),
+                    challenger_model.as_event(side="challenger"),
+                ],
+            }
+        )
         run.set_state("generating")
         run.append_event(
             {
@@ -60,10 +95,8 @@ class RemoteEvalWorker:
             }
         )
 
-        king_model = self._model_for_side(request, side="previous_king")
-        challenger_model = self._model_for_side(request, side="challenger")
-        king_generator = self._generator_factory("previous_king", topology.previous_king, king_model)
-        challenger_generator = self._generator_factory("challenger", topology.challenger, challenger_model)
+        king_generator = self._generator_factory("previous_king", topology.previous_king, king_model.local_path)
+        challenger_generator = self._generator_factory("challenger", topology.challenger, challenger_model.local_path)
         with ThreadPoolExecutor(max_workers=2) as executor:
             king_future = executor.submit(king_generator.generate, samples)
             challenger_future = executor.submit(challenger_generator.generate, samples)
@@ -94,6 +127,15 @@ class RemoteEvalWorker:
             challenger_results=challenger_results,
             scoring_records=scoring_records,
         )
+        verdict = self._write_and_upload_artifacts(
+            run=run,
+            request=request,
+            verdict=verdict,
+            samples=samples,
+            king_results=king_results,
+            challenger_results=challenger_results,
+            scoring_records=scoring_records,
+        )
         run.append_event(verdict)
         run.set_state(str(verdict["state"]))
 
@@ -119,6 +161,12 @@ class RemoteEvalWorker:
         if side == "challenger":
             return self.settings.challenger_model or request.challenger.model_uri
         raise ValueError(f"unsupported model side: {side}")
+
+    def _resolve_model_for_side(self, run: RemoteRun, request: EvalRequest, *, side: str) -> ResolvedModel:
+        model_ref = self._model_for_side(request, side=side)
+        resolved = self._model_resolver.resolve(model_ref)
+        run.append_event({"type": "model_resolved", "eval_run_id": str(request.eval_run_id), **resolved.as_event(side=side)})
+        return resolved
 
     def _vllm_generator(self, side: str, gpu_ids: list[str], model: str) -> Generator:
         if self.settings.generation_backend != "vllm":
@@ -181,6 +229,7 @@ class RemoteEvalWorker:
                     "gpu_ids": topology.previous_king + topology.challenger,
                     "king_errors": sum(1 for sample_id in sample_ids if king_by_id[sample_id].error),
                     "chal_errors": sum(1 for sample_id in sample_ids if challenger_by_id[sample_id].error),
+                    "generated_sample_count": min(batch_idx * request.dataset.generation_batch_size, len(samples)),
                     "state": "succeeded",
                 }
             )
@@ -196,6 +245,7 @@ class RemoteEvalWorker:
                     "judge_config_hash": request.scoring.judge_config_hash,
                     "judge_count": request.scoring.judge_count,
                     "allowed_scores": request.scoring.allowed_scores,
+                    "scored_sample_count": min(batch_idx * request.dataset.scoring_batch_size, len(scoring_records)),
                     "state": "succeeded",
                 }
             )
@@ -252,16 +302,97 @@ class RemoteEvalWorker:
             "allowed_scores": request.scoring.allowed_scores,
             "valid_turns": len(scoring_records),
             "total_turns": len(samples),
+            "generated_sample_count": len(samples),
+            "scored_sample_count": len(scoring_records),
             "king_vllm_errors": king_errors,
             "chal_vllm_errors": chal_errors,
             "judge_errors": 0,
             "gpu_topology": topology.as_dict(),
             "artifacts": {},
+            "artifact_metadata": {},
             "fault_class": "REMOTE_EVAL_FAULT" if not sample_scores else None,
             "fault_code": "no_valid_generated_pairs" if not sample_scores else None,
             "fault_message": "No sample pair had both king and challenger output" if not sample_scores else None,
             "retryable": True if not sample_scores else None,
         }
+
+    def _write_and_upload_artifacts(
+        self,
+        *,
+        run: RemoteRun,
+        request: EvalRequest,
+        verdict: dict[str, object],
+        samples: list[EvalSample],
+        king_results: list[GenerationResult],
+        challenger_results: list[GenerationResult],
+        scoring_records: list[dict[str, object]],
+    ) -> dict[str, object]:
+        spool = RunArtifactSpool(self.settings.artifact_spool_dir, request.eval_run_id)
+        king_by_id = {result.sample_id: result for result in king_results}
+        challenger_by_id = {result.sample_id: result for result in challenger_results}
+        generated_rows = []
+        transcript_rows = []
+        for sample in samples:
+            king = king_by_id.get(sample.sample_id)
+            challenger = challenger_by_id.get(sample.sample_id)
+            generated_row = {
+                "eval_run_id": str(request.eval_run_id),
+                "sample_id": sample.sample_id,
+                "prompt": sample.prompt,
+                "previous_king_output": king.text if king else "",
+                "challenger_output": challenger.text if challenger else "",
+                "king_error": king.error if king else "missing_generation",
+                "chal_error": challenger.error if challenger else "missing_generation",
+            }
+            generated_rows.append(generated_row)
+            transcript_rows.append({**generated_row, "target": sample.target})
+        progress_rows = [{"sequence": idx, **event} for idx, event in enumerate(run.events, start=1)]
+        remote_log_text = _remote_log_summary(run, verdict)
+
+        files = {
+            "request": spool.write_json("request.json", request.model_dump(mode="json")),
+            "progress": spool.write_jsonl("progress.jsonl", progress_rows),
+            "generated_samples": spool.write_jsonl("generated-samples.jsonl", generated_rows),
+            "transcript": spool.write_jsonl("duel-transcript.jsonl", transcript_rows),
+            "scoring_results": spool.write_jsonl("scoring-results.jsonl", scoring_records),
+            "remote_logs": spool.write_text("remote-logs.txt", remote_log_text),
+        }
+        uploads = self._artifact_uploader.upload_run_artifacts(
+            eval_run_id=request.eval_run_id,
+            artifact_prefix=request.artifact_prefix,
+            files=files,
+        )
+        enriched = {**verdict}
+        enriched["artifacts"] = {name: upload.uri for name, upload in sorted(uploads.items())}
+        enriched["artifact_metadata"] = {name: upload.metadata() for name, upload in sorted(uploads.items())}
+        verdict_path = spool.write_json("verdict.json", enriched)
+        verdict_upload = self._artifact_uploader.upload_run_artifacts(
+            eval_run_id=request.eval_run_id,
+            artifact_prefix=request.artifact_prefix,
+            files={"verdict": verdict_path},
+        )["verdict"]
+        enriched["artifacts"] = {**enriched["artifacts"], "verdict": verdict_upload.uri}
+        enriched["artifact_metadata"] = {**enriched["artifact_metadata"], "verdict": verdict_upload.metadata()}
+        if self.settings.cleanup_local_artifacts:
+            spool.cleanup()
+        return enriched
+
+
+def _remote_log_summary(run: RemoteRun, verdict: dict[str, object]) -> str:
+    lines = [
+        f"remote_run_id={run.remote_run_id}",
+        f"eval_run_id={run.request.eval_run_id}",
+        f"state={verdict.get('state')}",
+        f"events={len(run.events)}",
+        f"king_vllm_errors={verdict.get('king_vllm_errors', 0)}",
+        f"chal_vllm_errors={verdict.get('chal_vllm_errors', 0)}",
+        f"judge_errors={verdict.get('judge_errors', 0)}",
+    ]
+    fault_code = verdict.get("fault_code")
+    if fault_code:
+        lines.append(f"fault_code={fault_code}")
+        lines.append(f"fault_message={verdict.get('fault_message', '')}")
+    return "\n".join(lines) + "\n"
 
 
 def _parse_gpu_ids(raw: str) -> list[str]:

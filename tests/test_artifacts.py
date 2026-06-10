@@ -38,3 +38,32 @@ def test_artifact_records_from_verdict_handles_non_s3_uris():
     assert records[0].storage_backend == "hippius"
     assert records[0].bucket is None
     assert records[0].object_key is None
+
+
+def test_artifact_records_from_verdict_carries_metadata():
+    records = artifact_records_from_verdict(
+        submission_id=uuid4(),
+        stage_attempt_id=uuid4(),
+        artifacts={"generated_samples": "s3://albedo-artifacts/submissions/1/eval/2/generated-samples.jsonl"},
+        artifact_metadata={
+            "generated_samples": {
+                "sha256": "sha256:" + "a" * 64,
+                "size_bytes": 123,
+                "content_type": "application/x-ndjson",
+            }
+        },
+    )
+
+    assert records[0].sha256 == "sha256:" + "a" * 64
+    assert records[0].size_bytes == 123
+    assert records[0].content_type == "application/x-ndjson"
+
+
+def test_artifact_records_from_verdict_marks_local_cache():
+    records = artifact_records_from_verdict(
+        submission_id=uuid4(),
+        stage_attempt_id=uuid4(),
+        artifacts={"remote_logs": "local-cache:///tmp/albedo/remote-logs.txt"},
+    )
+
+    assert records[0].storage_backend == "local-cache"
