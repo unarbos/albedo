@@ -73,14 +73,28 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path):
 
     request = _request()
     run = RemoteRun(remote_run_id=str(request.eval_run_id), request=request, state="accepted")
-    settings = RemoteSettings(dataset_root=str(tmp_path), generation_backend="vllm")
+    settings = RemoteSettings(
+        dataset_root=str(tmp_path),
+        generation_backend="vllm",
+        upload_artifacts=False,
+        artifact_spool_dir=str(tmp_path / "artifacts"),
+    )
 
     RemoteEvalWorker(settings, generator_factory=factory).execute(run)
 
     assert run.state == "succeeded"
     verdict = run.final_verdict()
     assert verdict is not None
-    assert verdict["artifacts"] == {}
+    assert set(verdict["artifacts"]) == {
+        "generated_samples",
+        "progress",
+        "remote_logs",
+        "request",
+        "scoring_results",
+        "transcript",
+        "verdict",
+    }
+    assert verdict["artifact_metadata"]["generated_samples"]["sha256"].startswith("sha256:")
     assert verdict["valid_turns"] == 2
     assert verdict["gpu_topology"]["previous_king"] == ["0", "1", "2", "3"]
     assert verdict["gpu_topology"]["challenger"] == ["4", "5", "6", "7"]
@@ -95,7 +109,13 @@ def test_remote_worker_rejects_overlapping_gpu_groups(tmp_path):
     _write_dataset(tmp_path)
     request = _request()
     run = RemoteRun(remote_run_id=str(request.eval_run_id), request=request, state="accepted")
-    settings = RemoteSettings(dataset_root=str(tmp_path), previous_king_gpu_ids="0,1,2,3", challenger_gpu_ids="3,4,5,6")
+    settings = RemoteSettings(
+        dataset_root=str(tmp_path),
+        previous_king_gpu_ids="0,1,2,3",
+        challenger_gpu_ids="3,4,5,6",
+        upload_artifacts=False,
+        artifact_spool_dir=str(tmp_path / "artifacts"),
+    )
 
     RemoteEvalWorker(settings, generator_factory=lambda side, gpu_ids, model: RecordingGenerator(side=side, calls=[])).execute(run)
 

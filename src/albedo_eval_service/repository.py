@@ -209,6 +209,7 @@ class EvalRepository:
     def record_remote_event(self, *, submission_id: UUID, attempt_id: UUID, event: dict[str, Any]) -> None:
         with self._connect() as conn:
             with conn.transaction():
+                self._apply_remote_event_to_eval_run_inside_tx(conn, event)
                 self.record_event_inside_tx(
                     conn,
                     submission_id=submission_id,
@@ -482,6 +483,52 @@ class EvalRepository:
                 )
 
     @staticmethod
+    def _apply_remote_event_to_eval_run_inside_tx(conn: psycopg.Connection, event: dict[str, Any]) -> None:
+        eval_run_id = event.get("eval_run_id")
+        if not eval_run_id:
+            return
+        event_type = event.get("type")
+        if event_type == "generation_started":
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET state = 'GENERATING',
+                    gpu_topology = %s,
+                    gpu_ids = %s,
+                    sample_count = COALESCE(%s, sample_count)
+                WHERE id = %s
+                """,
+                (
+                    Jsonb(event.get("gpu_topology", {})),
+                    _gpu_ids_from_topology(event.get("gpu_topology")),
+                    event.get("sample_count"),
+                    eval_run_id,
+                ),
+            )
+        elif event_type == "generation_batch_done":
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET generated_sample_count = GREATEST(generated_sample_count, COALESCE(%s, 0))
+                WHERE id = %s
+                """,
+                (event.get("generated_sample_count"), eval_run_id),
+            )
+        elif event_type == "scoring_started":
+            conn.execute("UPDATE eval_runs SET state = 'SCORING' WHERE id = %s", (eval_run_id,))
+        elif event_type == "scoring_batch_done":
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET scored_sample_count = GREATEST(scored_sample_count, COALESCE(%s, 0))
+                WHERE id = %s
+                """,
+                (event.get("scored_sample_count"), eval_run_id),
+            )
+        elif event_type == "verdict":
+            conn.execute("UPDATE eval_runs SET state = 'VERDICT_READY' WHERE id = %s AND state <> 'SUCCEEDED'", (eval_run_id,))
+
+    @staticmethod
     def record_event_inside_tx(
         conn: psycopg.Connection,
         *,
@@ -517,14 +564,16 @@ class EvalRepository:
             submission_id=submission_id,
             stage_attempt_id=attempt_id,
             artifacts=artifacts,
+            artifact_metadata=verdict.get("artifact_metadata") if isinstance(verdict.get("artifact_metadata"), dict) else None,
         ):
             conn.execute(
                 """
                 INSERT INTO artifacts (
                     id, submission_id, stage_attempt_id, artifact_type,
-                    storage_backend, uri, bucket, object_key
+                    storage_backend, uri, bucket, object_key, sha256,
+                    size_bytes, content_type
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     uuid4(),
@@ -535,6 +584,9 @@ class EvalRepository:
                     artifact.uri,
                     artifact.bucket,
                     artifact.object_key,
+                    artifact.sha256,
+                    artifact.size_bytes,
+                    artifact.content_type,
                 ),
             )
 
@@ -567,6 +619,17 @@ class EvalRepository:
             """,
             (fault_class, fault_code, fault_message, submission_id),
         )
+
+
+def _gpu_ids_from_topology(topology: object) -> list[str] | None:
+    if not isinstance(topology, dict):
+        return None
+    ids: list[str] = []
+    for key in ("previous_king", "challenger"):
+        values = topology.get(key)
+        if isinstance(values, list):
+            ids.extend(str(value) for value in values)
+    return ids or None
 
 
 def _win_margin(verdict: dict[str, Any]) -> float | None:

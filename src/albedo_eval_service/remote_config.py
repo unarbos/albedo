@@ -38,6 +38,18 @@ class RemoteSettings(BaseSettings):
     max_model_len: int | None = None
     enforce_eager: bool = False
 
+    resolve_model_artifacts: bool = True
+    model_cache_dir: str = "/tmp/albedo-remote-models"
+    artifact_spool_dir: str = "/tmp/albedo-remote-artifacts"
+    remote_state_dir: str = "/tmp/albedo-remote-state"
+    upload_artifacts: bool = True
+    cleanup_local_artifacts: bool = False
+    s3_endpoint_url: str | None = None
+    s3_region: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+    s3_session_token: str | None = None
+
 
 @lru_cache
 def get_remote_settings() -> RemoteSettings:

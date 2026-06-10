@@ -29,3 +29,6 @@ postgres-data/
 
 # Design scratch/source doc is intentionally local-only for now
 Systemdesign.md
+# Local remote eval scratch directories
+albedo-remote-artifacts/
+albedo-remote-models/

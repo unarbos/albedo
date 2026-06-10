@@ -123,6 +123,112 @@ def test_sweep_abandoned_eval_attempts_returns_submission_to_retryable(db_url: s
     )
 
 
+def test_record_remote_progress_and_verdict_artifacts_update_eval_run(db_url: str):
+    repo = EvalRepository(db_url)
+    submission_id = _seed_eval_ready_submission(db_url)
+    claimed = repo.claim_next_eval(worker_id="worker-a", lease_seconds=60, request_builder=_request_builder)
+    assert claimed is not None
+
+    repo.record_remote_event(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        event={
+            "type": "generation_started",
+            "eval_run_id": str(claimed.eval_run_id),
+            "sample_count": 2,
+            "gpu_topology": {
+                "accelerator": "B200",
+                "previous_king": ["0", "1", "2", "3"],
+                "challenger": ["4", "5", "6", "7"],
+                "tensor_parallel_size_per_model": 4,
+            },
+        },
+    )
+    repo.record_remote_event(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        event={"type": "generation_batch_done", "eval_run_id": str(claimed.eval_run_id), "generated_sample_count": 2},
+    )
+    repo.record_remote_event(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        event={"type": "scoring_started", "eval_run_id": str(claimed.eval_run_id)},
+    )
+    repo.record_remote_event(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        event={"type": "scoring_batch_done", "eval_run_id": str(claimed.eval_run_id), "scored_sample_count": 2},
+    )
+
+    repo.mark_eval_succeeded(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        eval_run_id=claimed.eval_run_id,
+        verdict={
+            "type": "verdict",
+            "state": "succeeded",
+            "challenger_won": True,
+            "score_challenger": 0.75,
+            "score_king": 0.25,
+            "valid_turns": 2,
+            "total_turns": 2,
+            "generated_sample_count": 2,
+            "scored_sample_count": 2,
+            "king_vllm_errors": 0,
+            "chal_vllm_errors": 0,
+            "judge_errors": 0,
+            "gpu_topology": {"previous_king": ["0", "1", "2", "3"], "challenger": ["4", "5", "6", "7"]},
+            "artifacts": {
+                "generated_samples": "s3://albedo-artifacts/submissions/1/eval/2/generated-samples.jsonl",
+                "scoring_results": "s3://albedo-artifacts/submissions/1/eval/2/scoring-results.jsonl",
+            },
+            "artifact_metadata": {
+                "generated_samples": {
+                    "sha256": "sha256:" + "a" * 64,
+                    "size_bytes": 321,
+                    "content_type": "application/x-ndjson",
+                },
+                "scoring_results": {
+                    "sha256": "sha256:" + "b" * 64,
+                    "size_bytes": 123,
+                    "content_type": "application/x-ndjson",
+                },
+            },
+        },
+    )
+
+    with psycopg.connect(db_url) as conn:
+        eval_row = conn.execute(
+            """
+            SELECT state, generated_sample_count, scored_sample_count, gpu_ids
+            FROM eval_runs
+            WHERE id = %s
+            """,
+            (claimed.eval_run_id,),
+        ).fetchone()
+        artifact_row = conn.execute(
+            """
+            SELECT storage_backend, bucket, object_key, sha256, size_bytes, content_type
+            FROM artifacts
+            WHERE stage_attempt_id = %s AND artifact_type = 'GENERATED_SAMPLES'
+            """,
+            (claimed.attempt_id,),
+        ).fetchone()
+
+    assert eval_row[0] == "SUCCEEDED"
+    assert eval_row[1] == 2
+    assert eval_row[2] == 2
+    assert eval_row[3] == ["0", "1", "2", "3", "4", "5", "6", "7"]
+    assert artifact_row == (
+        "s3",
+        "albedo-artifacts",
+        "submissions/1/eval/2/generated-samples.jsonl",
+        "sha256:" + "a" * 64,
+        321,
+        "application/x-ndjson",
+    )
+
+
 def _request_builder(submission, king, _remote_host, eval_run_id):
     settings = Settings(
         database_url="postgresql://unused",
