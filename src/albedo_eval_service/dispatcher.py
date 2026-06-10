@@ -8,10 +8,12 @@ from uuid import UUID
 import httpx
 
 from .config import Settings, get_settings
+from .dataset_manifest import load_manifest_file
 from .faults import broken_stream_fault, classify_failure_verdict
 from .models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
 from .remote_client import RemoteEvalClient
 from .repository import ClaimedEval, EvalRepository
+from .sampling import swe_zero_manifest_sample_ids
 
 
 def build_eval_request(
@@ -24,7 +26,7 @@ def build_eval_request(
         f"{settings.artifact_prefix.rstrip('/')}/submissions/"
         f"{submission['id']}/eval/{eval_run_id}"
     )
-    sample_ids = submission.get("dataset_sample_ids") or []
+    sample_ids = submission.get("dataset_sample_ids") or _build_sample_ids(settings, submission["block_hash"])
     return EvalRequest(
         eval_run_id=eval_run_id,
         submission_id=submission["id"],
@@ -52,6 +54,21 @@ def build_eval_request(
             judge_count=settings.judge_count,
         ),
         artifact_prefix=artifact_prefix,
+    )
+
+
+def _build_sample_ids(settings: Settings, block_hash: str) -> list[str]:
+    if not settings.dataset_manifest_path:
+        return []
+    manifest = load_manifest_file(
+        settings.dataset_manifest_path,
+        expected_sha256=settings.dataset_manifest_hash,
+    )
+    return swe_zero_manifest_sample_ids(
+        manifest,
+        block_hash=block_hash,
+        sample_count=settings.sample_count,
+        max_turns_per_sample=settings.max_turns_per_sample,
     )
 
 
