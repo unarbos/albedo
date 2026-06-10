@@ -233,6 +233,71 @@ class EvalRepository:
                 (remote_run_id, eval_run_id),
             )
 
+
+    def sweep_abandoned_eval_attempts(self, *, worker_id: str) -> int:
+        with self._connect() as conn:
+            with conn.transaction():
+                rows = conn.execute(
+                    """
+                    SELECT sa.id AS attempt_id, sa.submission_id, er.id AS eval_run_id
+                    FROM stage_attempts sa
+                    JOIN model_submissions ms ON ms.id = sa.submission_id
+                    LEFT JOIN eval_runs er ON er.stage_attempt_id = sa.id
+                    WHERE sa.stage = 'EVAL'
+                      AND sa.state = 'RUNNING'
+                      AND sa.lease_expires_at < now()
+                      AND ms.state = 'EVAL_RUNNING'
+                    FOR UPDATE SKIP LOCKED
+                    """
+                ).fetchall()
+                for row in rows:
+                    conn.execute(
+                        """
+                        UPDATE stage_attempts
+                        SET state = 'ABANDONED', finished_at = now(),
+                            fault_class = 'REMOTE_EVAL_FAULT',
+                            fault_code = 'eval_attempt_lease_expired',
+                            fault_message = 'Eval attempt lease expired before completion'
+                        WHERE id = %s
+                        """,
+                        (row["attempt_id"],),
+                    )
+                    if row.get("eval_run_id"):
+                        conn.execute(
+                            """
+                            UPDATE eval_runs
+                            SET state = 'FAILED_RETRYABLE', finished_at = now(),
+                                fault_class = 'REMOTE_EVAL_FAULT',
+                                fault_code = 'eval_attempt_lease_expired',
+                                fault_message = 'Eval attempt lease expired before completion'
+                            WHERE id = %s
+                            """,
+                            (row["eval_run_id"],),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE model_submissions
+                        SET state = 'EVAL_RETRYABLE',
+                            fault_class = 'REMOTE_EVAL_FAULT',
+                            fault_code = 'eval_attempt_lease_expired',
+                            fault_message = 'Eval attempt lease expired before completion',
+                            retry_count = retry_count + 1,
+                            updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (row["submission_id"],),
+                    )
+                    self.record_event_inside_tx(
+                        conn,
+                        submission_id=row["submission_id"],
+                        stage_attempt_id=row["attempt_id"],
+                        event_type="eval_attempt_abandoned",
+                        severity="WARN",
+                        message="Eval attempt lease expired before completion",
+                        data={"worker_id": worker_id, "eval_run_id": str(row.get("eval_run_id") or "")},
+                    )
+                return len(rows)
+
     def mark_eval_succeeded(
         self,
         *,
