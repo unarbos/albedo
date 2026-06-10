@@ -36,14 +36,15 @@ It is intended for repo users who need to know what can run today and what still
   - Records known verdict artifact links into `artifacts` rows on successful eval completion.
   - Marks successful verdicts as `EVAL_WIN` or `COMPLETE_LOSS`.
   - Marks remote HTTP/stream failures as retryable `REMOTE_EVAL_FAULT`.
-- Minimal FastAPI surface: `/health`, `/ready`, and `/submissions/{id}`.
+- Minimal backend FastAPI surface: `/health`, `/ready`, and `/submissions/{id}`.
+- Minimal remote eval smoke API: `/health`, `/ready`, `/capacity`, `/eval-runs`, event replay, status lookup, and cancel.
+- Remote smoke mode can emit a deterministic mock verdict for dispatcher/tunnel testing before GPU generation is implemented.
 - Focused tests for SWE-ZERO sampling, manifest verification, dispatcher request building, artifact mapping, and fault classification.
 
 ## Unfinished
 
-- Remote GPU host service is not implemented yet:
-  - No remote `/eval-runs` API server.
-  - No GPU reservation implementation.
+- Remote GPU host service is only a smoke control plane right now:
+  - No real GPU reservation implementation.
   - No vLLM model loading or generation workers.
   - No scoring worker or judge provider integration.
 - S3/Hippius artifact upload is not implemented yet. Remote-produced verdict artifact links are recorded after successful eval completion.
@@ -57,7 +58,8 @@ It is intended for repo users who need to know what can run today and what still
 
 - Set `ALBEDO_EVAL_DATASET_MANIFEST_PATH` to a local SWE-ZERO `manifest.json` to include deterministic `sample_ids` in eval requests.
 - Install/sync dependencies with `uv sync` once network/package access is available.
-- Run API: `uv run albedo-eval-api`.
+- Run backend API: `uv run albedo-eval-api`.
+- Run remote eval smoke API: `uv run albedo-remote-eval-api`.
 - Run dispatcher once: `uv run albedo-eval-dispatcher --once`.
 - Sweep expired eval leases: `uv run albedo-eval-dispatcher --sweep-abandoned`.
 - Reconcile active remote runs: `uv run albedo-eval-dispatcher --reconcile-running`.
