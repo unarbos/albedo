@@ -1,2 +1,14 @@
 .cache/
 Systemdesign.md
+
+# secrets — keep .env.example tracked, ignore the real .env
+.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
