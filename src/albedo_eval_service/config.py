@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     lease_seconds: int = 1800
     dispatch_poll_seconds: float = 5.0
     remote_event_timeout_seconds: float = 30.0
+    remote_event_poll_seconds: float = 5.0
 
 
 @lru_cache

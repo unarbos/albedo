@@ -199,20 +199,33 @@ class EvalDispatcher:
         attempt_id: UUID,
         remote_run_id: str,
     ) -> dict[str, Any]:
-        async for event in client.iter_events(remote_run_id):
-            self.repository.record_remote_event(
-                submission_id=submission_id,
-                attempt_id=attempt_id,
-                event=event,
-            )
-            self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
-            if event.get("type") == "verdict":
-                return event
+        seen_event_count = 0
+        while True:
+            events: list[dict[str, Any]] = []
+            async for event in client.iter_events(remote_run_id):
+                events.append(event)
 
-        remote_state = await client.get_eval(remote_run_id)
-        if remote_state.get("type") == "verdict" or remote_state.get("state") in {"succeeded", "failed"}:
-            return remote_state
-        raise asyncio.TimeoutError("remote event replay ended before final verdict")
+            for event in events[seen_event_count:]:
+                self.repository.record_remote_event(
+                    submission_id=submission_id,
+                    attempt_id=attempt_id,
+                    event=event,
+                )
+                self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
+                if event.get("type") == "verdict":
+                    return event
+            seen_event_count = max(seen_event_count, len(events))
+
+            remote_state = await client.get_eval(remote_run_id)
+            if remote_state.get("type") == "verdict" or remote_state.get("state") in {"succeeded", "failed"}:
+                if len(events) == seen_event_count and remote_state.get("type") == "verdict":
+                    self.repository.record_remote_event(
+                        submission_id=submission_id,
+                        attempt_id=attempt_id,
+                        event=remote_state,
+                    )
+                return remote_state
+            await asyncio.sleep(self.settings.remote_event_poll_seconds)
 
     async def run_forever(self) -> None:
         while True:
