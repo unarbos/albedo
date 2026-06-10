@@ -103,6 +103,8 @@ class EvalDispatcher:
             await client.ready()
             start_response = await client.start_eval(claimed.request)
             remote_run_id = str(start_response.get("remote_run_id") or claimed.eval_run_id)
+            self.repository.set_remote_run_id(eval_run_id=claimed.eval_run_id, remote_run_id=remote_run_id)
+            self.repository.heartbeat_attempt(attempt_id=claimed.attempt_id, lease_seconds=self.settings.lease_seconds)
             verdict = await self._follow_until_verdict(client, claimed, remote_run_id)
             if verdict.get("state") == "succeeded":
                 self.repository.mark_eval_succeeded(
@@ -150,6 +152,7 @@ class EvalDispatcher:
                 attempt_id=claimed.attempt_id,
                 event=event,
             )
+            self.repository.heartbeat_attempt(attempt_id=claimed.attempt_id, lease_seconds=self.settings.lease_seconds)
             if event.get("type") == "verdict":
                 return event
 

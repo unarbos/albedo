@@ -29,10 +29,13 @@ It is intended for repo users who need to know what can run today and what still
   - Uses a Postgres advisory lock plus active-state checks for sequential full eval.
   - Creates `stage_attempts` and `eval_runs` before remote work starts.
   - Persists remote progress events.
+  - Persists remote run IDs after remote start.
+  - Refreshes the stage-attempt lease while remote events are replayed.
+  - Records known verdict artifact links into `artifacts` rows on successful eval completion.
   - Marks successful verdicts as `EVAL_WIN` or `COMPLETE_LOSS`.
   - Marks remote HTTP/stream failures as retryable `REMOTE_EVAL_FAULT`.
 - Minimal FastAPI surface: `/health`, `/ready`, and `/submissions/{id}`.
-- Focused tests for SWE-ZERO sampling and fault classification.
+- Focused tests for SWE-ZERO sampling, manifest verification, dispatcher request building, artifact mapping, and fault classification.
 
 ## Unfinished
 
@@ -41,10 +44,10 @@ It is intended for repo users who need to know what can run today and what still
   - No GPU reservation implementation.
   - No vLLM model loading or generation workers.
   - No scoring worker or judge provider integration.
-- S3/Hippius artifact upload and artifact row creation are not implemented yet.
+- S3/Hippius artifact upload is not implemented yet. Remote-produced verdict artifact links are recorded after successful eval completion.
 - S3 dataset manifest fetching is not implemented yet. The dispatcher can generate `sample_ids` only when a local `ALBEDO_EVAL_DATASET_MANIFEST_PATH` is configured.
 - Remote run reconciliation after dispatcher crash/restart is not implemented yet.
-- Lease heartbeats and lease-expiry recovery are not implemented yet.
+- Lease heartbeat is implemented while dispatching, but lease-expiry recovery/sweeping is not implemented yet.
 - Retry backoff/requeue scheduling is not implemented yet.
 - PM2 ecosystem config is not added yet.
 - Postgres integration tests are not added yet.
@@ -53,7 +56,6 @@ It is intended for repo users who need to know what can run today and what still
 ## Run Notes
 
 - Set `ALBEDO_EVAL_DATASET_MANIFEST_PATH` to a local SWE-ZERO `manifest.json` to include deterministic `sample_ids` in eval requests.
-
 - Install/sync dependencies with `uv sync` once network/package access is available.
 - Run API: `uv run albedo-eval-api`.
 - Run dispatcher once: `uv run albedo-eval-dispatcher --once`.
