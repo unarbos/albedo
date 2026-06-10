@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from .artifacts import artifact_records_from_verdict
 from .models import EvalRequest, RemoteHost, SubmissionStatus
 
 
@@ -209,6 +210,29 @@ class EvalRepository:
                     data=event,
                 )
 
+    def heartbeat_attempt(self, *, attempt_id: UUID, lease_seconds: int) -> None:
+        lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE stage_attempts
+                SET lease_expires_at = %s
+                WHERE id = %s AND state = 'RUNNING'
+                """,
+                (lease_expires_at, attempt_id),
+            )
+
+    def set_remote_run_id(self, *, eval_run_id: UUID, remote_run_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE eval_runs
+                SET remote_run_id = %s
+                WHERE id = %s
+                """,
+                (remote_run_id, eval_run_id),
+            )
+
     def mark_eval_succeeded(
         self,
         *,
@@ -272,6 +296,7 @@ class EvalRepository:
                     """,
                     (next_state, next_state, submission_id),
                 )
+                self._insert_artifacts_from_verdict_inside_tx(conn, submission_id, attempt_id, verdict)
                 self.record_event_inside_tx(
                     conn,
                     submission_id=submission_id,
@@ -356,6 +381,42 @@ class EvalRepository:
             """,
             (uuid4(), submission_id, stage_attempt_id, event_type, severity, message, Jsonb(data)),
         )
+
+
+    @staticmethod
+    def _insert_artifacts_from_verdict_inside_tx(
+        conn: psycopg.Connection,
+        submission_id: UUID,
+        attempt_id: UUID,
+        verdict: dict[str, Any],
+    ) -> None:
+        artifacts = verdict.get("artifacts")
+        if not isinstance(artifacts, dict):
+            return
+        for artifact in artifact_records_from_verdict(
+            submission_id=submission_id,
+            stage_attempt_id=attempt_id,
+            artifacts=artifacts,
+        ):
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    id, submission_id, stage_attempt_id, artifact_type,
+                    storage_backend, uri, bucket, object_key
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    uuid4(),
+                    artifact.submission_id,
+                    artifact.stage_attempt_id,
+                    artifact.artifact_type,
+                    artifact.storage_backend,
+                    artifact.uri,
+                    artifact.bucket,
+                    artifact.object_key,
+                ),
+            )
 
     @staticmethod
     def _next_attempt_number(conn: psycopg.Connection, submission_id: UUID, stage: str) -> int:
