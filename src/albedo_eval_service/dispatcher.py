@@ -12,7 +12,7 @@ from .dataset_manifest import load_manifest_file
 from .faults import broken_stream_fault, classify_failure_verdict
 from .models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
 from .remote_client import RemoteEvalClient
-from .repository import ClaimedEval, EvalRepository
+from .repository import ActiveEval, ClaimedEval, EvalRepository
 from .sampling import swe_zero_manifest_sample_ids
 
 
@@ -105,25 +105,18 @@ class EvalDispatcher:
             remote_run_id = str(start_response.get("remote_run_id") or claimed.eval_run_id)
             self.repository.set_remote_run_id(eval_run_id=claimed.eval_run_id, remote_run_id=remote_run_id)
             self.repository.heartbeat_attempt(attempt_id=claimed.attempt_id, lease_seconds=self.settings.lease_seconds)
-            verdict = await self._follow_until_verdict(client, claimed, remote_run_id)
-            if verdict.get("state") == "succeeded":
-                self.repository.mark_eval_succeeded(
-                    submission_id=claimed.submission_id,
-                    attempt_id=claimed.attempt_id,
-                    eval_run_id=claimed.eval_run_id,
-                    verdict=verdict,
-                )
-            else:
-                fault = classify_failure_verdict(verdict)
-                self.repository.mark_eval_failed(
-                    submission_id=claimed.submission_id,
-                    attempt_id=claimed.attempt_id,
-                    eval_run_id=claimed.eval_run_id,
-                    fault_class=fault.fault_class,
-                    fault_code=fault.fault_code,
-                    fault_message=fault.fault_message,
-                    retryable=fault.retryable,
-                )
+            verdict = await self._follow_until_verdict(
+                client,
+                submission_id=claimed.submission_id,
+                attempt_id=claimed.attempt_id,
+                remote_run_id=remote_run_id,
+            )
+            self._complete_eval(
+                submission_id=claimed.submission_id,
+                attempt_id=claimed.attempt_id,
+                eval_run_id=claimed.eval_run_id,
+                verdict=verdict,
+            )
             return True
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
             fault = broken_stream_fault(str(exc))
@@ -140,19 +133,79 @@ class EvalDispatcher:
         finally:
             await client.aclose()
 
+
+    async def reconcile_once(self, *, limit: int = 10) -> int:
+        reconciled = 0
+        for active in self.repository.list_reconcilable_eval_runs(limit=limit):
+            client = RemoteEvalClient(
+                base_url=active.remote_host.base_url,
+                auth_token=self.settings.remote_auth_token,
+                timeout_seconds=self.settings.remote_event_timeout_seconds,
+            )
+            try:
+                verdict = await self._follow_until_verdict(
+                    client,
+                    submission_id=active.submission_id,
+                    attempt_id=active.attempt_id,
+                    remote_run_id=active.remote_run_id,
+                )
+            except (httpx.HTTPError, asyncio.TimeoutError):
+                continue
+            finally:
+                await client.aclose()
+
+            if verdict.get("type") == "verdict" or verdict.get("state") in {"succeeded", "failed"}:
+                self._complete_eval(
+                    submission_id=active.submission_id,
+                    attempt_id=active.attempt_id,
+                    eval_run_id=active.eval_run_id,
+                    verdict=verdict,
+                )
+                reconciled += 1
+        return reconciled
+
+    def _complete_eval(
+        self,
+        *,
+        submission_id: UUID,
+        attempt_id: UUID,
+        eval_run_id: UUID,
+        verdict: dict[str, Any],
+    ) -> None:
+        if verdict.get("state") == "succeeded":
+            self.repository.mark_eval_succeeded(
+                submission_id=submission_id,
+                attempt_id=attempt_id,
+                eval_run_id=eval_run_id,
+                verdict=verdict,
+            )
+        else:
+            fault = classify_failure_verdict(verdict)
+            self.repository.mark_eval_failed(
+                submission_id=submission_id,
+                attempt_id=attempt_id,
+                eval_run_id=eval_run_id,
+                fault_class=fault.fault_class,
+                fault_code=fault.fault_code,
+                fault_message=fault.fault_message,
+                retryable=fault.retryable,
+            )
+
     async def _follow_until_verdict(
         self,
         client: RemoteEvalClient,
-        claimed: ClaimedEval,
+        *,
+        submission_id: UUID,
+        attempt_id: UUID,
         remote_run_id: str,
     ) -> dict[str, Any]:
         async for event in client.iter_events(remote_run_id):
             self.repository.record_remote_event(
-                submission_id=claimed.submission_id,
-                attempt_id=claimed.attempt_id,
+                submission_id=submission_id,
+                attempt_id=attempt_id,
                 event=event,
             )
-            self.repository.heartbeat_attempt(attempt_id=claimed.attempt_id, lease_seconds=self.settings.lease_seconds)
+            self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
             if event.get("type") == "verdict":
                 return event
 
@@ -172,6 +225,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Albedo eval dispatcher.")
     parser.add_argument("--once", action="store_true", help="Claim and dispatch at most one eval.")
     parser.add_argument("--sweep-abandoned", action="store_true", help="Mark expired EVAL attempts abandoned and retryable.")
+    parser.add_argument("--reconcile-running", action="store_true", help="Replay remote state for active eval runs with remote_run_id.")
+    parser.add_argument("--limit", type=int, default=10, help="Maximum active eval runs to reconcile.")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -182,6 +237,9 @@ def main() -> None:
     if args.sweep_abandoned:
         abandoned = dispatcher.repository.sweep_abandoned_eval_attempts(worker_id=settings.worker_id)
         print(f"abandoned_eval_attempts={abandoned}")
+    elif args.reconcile_running:
+        reconciled = asyncio.run(dispatcher.reconcile_once(limit=args.limit))
+        print(f"reconciled_eval_runs={reconciled}")
     elif args.once:
         asyncio.run(dispatcher.dispatch_once())
     else:

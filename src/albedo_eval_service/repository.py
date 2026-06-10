@@ -22,6 +22,15 @@ class ClaimedEval:
     request: EvalRequest
 
 
+@dataclass(frozen=True)
+class ActiveEval:
+    submission_id: UUID
+    attempt_id: UUID
+    eval_run_id: UUID
+    remote_run_id: str
+    remote_host: RemoteHost
+
+
 class EvalRepository:
     """Postgres access for eval dispatching.
 
@@ -209,6 +218,52 @@ class EvalRepository:
                     message=str(event.get("message") or event.get("type") or "Remote eval event"),
                     data=event,
                 )
+
+
+    def list_reconcilable_eval_runs(self, *, limit: int = 10) -> list[ActiveEval]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT er.id AS eval_run_id, er.remote_run_id, er.submission_id,
+                       er.stage_attempt_id AS attempt_id,
+                       h.id, h.base_url, h.role, h.state, h.gpu_count,
+                       h.free_gpu_count, h.accelerator_type, h.capabilities,
+                       h.last_heartbeat_at
+                FROM eval_runs er
+                JOIN stage_attempts sa ON sa.id = er.stage_attempt_id
+                JOIN model_submissions ms ON ms.id = er.submission_id
+                JOIN remote_gpu_hosts h ON h.id = er.remote_host_id
+                WHERE er.remote_run_id IS NOT NULL
+                  AND er.state IN ('DISPATCHED', 'GENERATING', 'SCORING', 'VERDICT_READY')
+                  AND sa.state = 'RUNNING'
+                  AND ms.state = 'EVAL_RUNNING'
+                ORDER BY er.started_at ASC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        active: list[ActiveEval] = []
+        for row in rows:
+            active.append(
+                ActiveEval(
+                    submission_id=row["submission_id"],
+                    attempt_id=row["attempt_id"],
+                    eval_run_id=row["eval_run_id"],
+                    remote_run_id=row["remote_run_id"],
+                    remote_host=RemoteHost(
+                        id=row["id"],
+                        base_url=row["base_url"],
+                        role=row["role"],
+                        state=row["state"],
+                        gpu_count=row["gpu_count"],
+                        free_gpu_count=row["free_gpu_count"],
+                        accelerator_type=row["accelerator_type"],
+                        capabilities=row["capabilities"] or {},
+                        last_heartbeat_at=row["last_heartbeat_at"],
+                    ),
+                )
+            )
+        return active
 
     def heartbeat_attempt(self, *, attempt_id: UUID, lease_seconds: int) -> None:
         lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
