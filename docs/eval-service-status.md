@@ -6,7 +6,14 @@ It is intended for repo users who need to know what can run today and what still
 ## Finished
 
 - Python package scaffold for the backend-side eval service under `src/albedo_eval_service`.
-- `uv`/Python project metadata in `pyproject.toml` and example runtime settings in `.env.example`.
+- `uv`/Python project metadata in `pyproject.toml`, filled local `.env`, and example runtime settings in `.env.example`.
+- Postgres migrations:
+  - `001_eval_service.sql` creates the eval-service base schema.
+  - `002_full_system_schema.sql` completes the full `Systemdesign.md` schema with weight epochs, weight transactions, stricter state/fault constraints, and operational indexes.
+  - `albedo-db-migrate` applies migrations idempotently.
+- Docker Compose Postgres uses only `.env` values and non-default local credentials/port.
+- PM2 ecosystem files are split by service: backend API, dispatcher, reconciler, sweeper, remote eval API, and GPU-host tunnels.
+- Two-way SSH tunnel PM2 config supports backend-to-GPU remote API access and GPU-to-backend access.
 - Postgres migration for the eval-service slice:
   - Minimal shared dependencies: `chain_commits`, `miners`, and `model_submissions`.
   - Eval state: `stage_attempts`, `remote_gpu_hosts`, `eval_runs`, `artifacts`, and `events`.
@@ -39,7 +46,7 @@ It is intended for repo users who need to know what can run today and what still
 - Minimal backend FastAPI surface: `/health`, `/ready`, and `/submissions/{id}`.
 - Minimal remote eval smoke API: `/health`, `/ready`, `/capacity`, `/eval-runs`, event replay, status lookup, and cancel.
 - Remote smoke mode can emit a deterministic mock verdict for dispatcher/tunnel testing before GPU generation is implemented.
-- Focused tests for SWE-ZERO sampling, manifest verification, dispatcher request building, artifact mapping, and fault classification.
+- Focused tests for SWE-ZERO sampling, manifest verification, dispatcher request building, artifact mapping, remote smoke API, fault classification, and Postgres claim/sequential/recovery behavior.
 
 ## Unfinished
 
@@ -50,17 +57,19 @@ It is intended for repo users who need to know what can run today and what still
 - S3/Hippius artifact upload is not implemented yet. Remote-produced verdict artifact links are recorded after successful eval completion.
 - S3 dataset manifest fetching is not implemented yet. The dispatcher can generate `sample_ids` only when a local `ALBEDO_EVAL_DATASET_MANIFEST_PATH` is configured.
 - Retry backoff/requeue scheduling is not implemented yet.
-- PM2 ecosystem config is not added yet.
-- Postgres integration tests are not added yet.
 - Other subnet services remain out of this eval-service-only slice: chain reader, Hippius validation worker, pre-eval dispatcher, set reign worker, and weight setter.
 
 ## Run Notes
 
 - Set `ALBEDO_EVAL_DATASET_MANIFEST_PATH` to a local SWE-ZERO `manifest.json` to include deterministic `sample_ids` in eval requests.
+- Start local Postgres: `docker compose up -d albedo-postgres`.
+- Apply migrations: `uv run albedo-db-migrate`.
 - Install/sync dependencies with `uv sync` once network/package access is available.
 - Run backend API: `uv run albedo-eval-api`.
 - Run remote eval smoke API: `uv run albedo-remote-eval-api`.
 - Run dispatcher once: `uv run albedo-eval-dispatcher --once`.
 - Sweep expired eval leases: `uv run albedo-eval-dispatcher --sweep-abandoned`.
 - Reconcile active remote runs: `uv run albedo-eval-dispatcher --reconcile-running`.
-- Run focused tests: `uv run pytest -q`.
+- Run unit tests: `uv run pytest -q`.
+- Run Postgres integration tests: `ALBEDO_TEST_DATABASE_URL= uv run pytest -q tests/integration`.
+- Start PM2 service files individually from `pm2/`, for example `pm2 start pm2/ecosystem.eval-dispatcher.config.js`.

@@ -1,4 +1,31 @@
+# Local runtime configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Local caches and tool output
 .cache/
-Systemdesign.md
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Python bytecode and virtualenvs
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local database/runtime files
+*.sqlite
+*.db
+postgres-data/
+
+# Design scratch/source doc is intentionally local-only for now
+Systemdesign.md

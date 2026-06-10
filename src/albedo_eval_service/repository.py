@@ -79,7 +79,7 @@ class EvalRepository:
                     WHERE ms.state = 'EVAL_QUEUED'
                       AND cc.block_hash IS NOT NULL
                     ORDER BY ms.priority ASC, ms.created_at ASC
-                    FOR UPDATE SKIP LOCKED
+                    FOR UPDATE OF ms SKIP LOCKED
                     LIMIT 1
                     """
                 ).fetchone()
@@ -302,7 +302,7 @@ class EvalRepository:
                       AND sa.state = 'RUNNING'
                       AND sa.lease_expires_at < now()
                       AND ms.state = 'EVAL_RUNNING'
-                    FOR UPDATE SKIP LOCKED
+                    FOR UPDATE OF sa, ms SKIP LOCKED
                     """
                 ).fetchall()
                 for row in rows:
