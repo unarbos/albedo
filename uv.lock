@@ -178,13 +178,14 @@ wheels = [
 ]
 
 [[package]]
-name = "albedo-eval-service"
+name = "albedo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
     { name = "bittensor" },
     { name = "boto3" },
+    { name = "config-validation" },
     { name = "datasets" },
     { name = "fastapi" },
     { name = "hf-transfer" },
@@ -195,6 +196,7 @@ dependencies = [
     { name = "numpy" },
     { name = "opensearch-py" },
     { name = "pandas" },
+    { name = "prompt-toolkit" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -226,6 +228,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "bittensor", specifier = ">=10.3,<11" },
     { name = "boto3", specifier = ">=1.35.0" },
+    { name = "config-validation", editable = "../config_validation" },
     { name = "datasets" },
     { name = "deepspeed", marker = "extra == 'train'" },
     { name = "fastapi", specifier = ">=0.115.0" },
@@ -237,6 +240,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opensearch-py", specifier = ">=2,<3" },
     { name = "pandas" },
+    { name = "prompt-toolkit", specifier = ">=3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "pyarrow", specifier = ">=16.0.0" },
     { name = "pydantic", specifier = ">=2.8.0" },
@@ -598,6 +602,27 @@ sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
 ]
+
+[[package]]
+name = "config-validation"
+version = "0.1.0"
+source = { editable = "../config_validation" }
+dependencies = [
+    { name = "bittensor" },
+    { name = "boto3" },
+    { name = "hippius-hub" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bittensor", specifier = ">=10.3,<11" },
+    { name = "boto3" },
+    { name = "hippius-hub" },
+    { name = "numpy" },
+    { name = "opensearch-py", marker = "extra == 'opensearch'" },
+]
+provides-extras = ["opensearch"]
 
 [[package]]
 name = "cuda-bindings"
@@ -1863,6 +1888,18 @@ wheels = [
 ]
 
 [[package]]
+name = "prompt-toolkit"
+version = "3.0.52"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a1/96/06e01a7b38dce6fe1db213e061a4602dd6032a8a97ef6c1a862537732421/prompt_toolkit-3.0.52.tar.gz", hash = "sha256:28cde192929c8e7321de85de1ddbe736f1375148b02f2e17edd840042b1be855", size = 434198, upload-time = "2025-08-27T15:24:02.057Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl", hash = "sha256:9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955", size = 391431, upload-time = "2025-08-27T15:23:59.498Z" },
+]
+
+[[package]]
 name = "propcache"
 version = "0.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3026,6 +3063,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/27/0b/a54103cfd732bb703c7a749222011a0483ef3705948dae3b203158601119/watchfiles-1.2.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:094b9b70103d4e963499bdea001ee3c2697b144cd9ae6218a62c0f89ec9e31db", size = 396629, upload-time = "2026-05-18T04:32:03.268Z" },
     { url = "https://files.pythonhosted.org/packages/5e/2c/73f31a3b893886206c3f54d73e8ad8dee58cdb2f69ad2622e0a8a9e07f4e/watchfiles-1.2.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b0ef001f8c25ad0fa9529f914c1600647ecd0f542d11c19b7894768c67b6acb7", size = 457318, upload-time = "2026-05-18T04:31:01.932Z" },
     { url = "https://files.pythonhosted.org/packages/e9/f9/45d021e4a5cc7b9dd567f7cbb06d3b75f751a690063fb6cc7ec60f4e46b7/watchfiles-1.2.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a88fc94e647bc4eec523f1caa540258eb71d14278b9daf72fa1e2658a98df0f0", size = 457771, upload-time = "2026-05-18T04:30:56.331Z" },
+]
+
+[[package]]
+name = "wcwidth"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/b4/51fe890511f0f242d07cb1ebe6a5b6db417262b9d2568b460347c57d95cc/wcwidth-0.8.1.tar.gz", hash = "sha256:faf5b4a5366a72dc49cad48cdf21f52bdf63bdda995178e483ba247ff79089b9", size = 1466072, upload-time = "2026-06-08T05:57:23.146Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/6e/95b0e537de1f4d4301f76f944642c6da50d1511cc7b3d64dc418a66c7509/wcwidth-0.8.1-py3-none-any.whl", hash = "sha256:f453740b1e4a4f3291faa37944c555d71056c4da08d59809b307ef4feba695c8", size = 323092, upload-time = "2026-06-08T05:57:21.413Z" },
 ]
 
 [[package]]

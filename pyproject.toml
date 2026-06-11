@@ -1,13 +1,14 @@
 [project]
-name = "albedo-eval-service"
+name = "albedo"
 version = "0.1.0"
-description = "Backend-side eval, validation, and chain-reader services for the Albedo subnet."
+description = "Albedo subnet: backend eval/validation/chain-reader services + the miner `albedo` CLI."
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "asyncpg>=0.29",
     "bittensor>=10.3,<11",
     "boto3>=1.35.0",
+    "config_validation",
     "datasets",
     "fastapi>=0.115.0",
     "hf_transfer>=0.1",
@@ -18,6 +19,7 @@ dependencies = [
     "numpy",
     "opensearch-py>=2,<3",
     "pandas",
+    "prompt_toolkit>=3",
     "psycopg[binary]>=3.2.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
@@ -43,11 +45,17 @@ albedo-db-migrate = "albedo_eval_service.db_migrate:main"
 chain-reader = "chain_reader.reader:main"
 hippius-validation = "hippius_validation.validate_worker:main"
 sanity-service = "sanity_service.__main__:main"
+albedo = "miner.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.2.0",
 ]
+
+# config_validation is not on an index; resolve it from the sibling repo (relative path,
+# editable) so `uv sync` / `uv pip install -e .` provision it into the project venv and lock it.
+[tool.uv.sources]
+config_validation = { path = "../config_validation", editable = true }
 
 [build-system]
 requires = ["hatchling"]
@@ -59,6 +67,7 @@ packages = [
     "src/chain_reader",
     "src/hippius_validation",
     "src/sanity_service",
+    "miner",
 ]
 
 [tool.pytest.ini_options]
