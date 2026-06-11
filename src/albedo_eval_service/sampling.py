@@ -26,7 +26,7 @@ def swe_zero_manifest_sample_ids(
 
     Implements `swe-zero-manifest-sample-v1` from Systemdesign.md. The
     manifest is expected to have the shape:
-    {"shards": [{"name": "data/train-....parquet", "rows": N}], "total_rows": N}
+    {"shards": [{"name" or "path": "data/train-....parquet", "rows": N}], "total_rows": N}
 
     The backend only needs deterministic coordinate IDs. The remote eval host
     reads the parquet rows and can skip non-assistant turns while preserving the
@@ -86,7 +86,7 @@ def _normalized_shards(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     for shard in shards:
         if not isinstance(shard, dict):
             raise ValueError("manifest shard entries must be objects")
-        name = shard.get("name")
+        name = shard.get("name") or shard.get("path")
         rows = shard.get("rows")
         if not isinstance(name, str) or not name.startswith("data/train-") or not name.endswith(".parquet"):
             raise ValueError("manifest shards must be data/train-*.parquet files")
