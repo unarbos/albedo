@@ -1,7 +1,7 @@
-"""Bittensor chain reading — discover v4 model commits as Commit records.
+"""Bittensor chain reading — discover v5 model commits as Commit records.
 
-Self-contained (no external albedo imports). A v4 commitment is a pipe-delimited
-reveal string: ``v4|<repo>|<sha256:digest>``.
+Self-contained (no external albedo imports). A v5 commitment is a pipe-delimited
+reveal string: ``v5|<repo>|<sha256:digest>``.
 """
 from __future__ import annotations
 
@@ -101,26 +101,22 @@ def _block_hash(subtensor: Any, block: int) -> str | None:
         return None
 
 
-def _parse_v4(data: str, chain_hotkey: str) -> dict[str, Any] | None:
-    """Parse a v4 reveal into a payload dict, or None if not a well-formed v4 reveal."""
-    if not data.startswith("v4|"):
+def _parse_v5(data: str, chain_hotkey: str) -> dict[str, Any] | None:
+    """Parse a v5 reveal into a payload dict, or None if not a well-formed v5 reveal."""
+    if not data.startswith("v5|"):
         return None
     parts = data.split("|")
-    if len(parts) == 4:
-        _, repo, digest, author = parts
-    elif len(parts) == 3:
-        _, repo, digest = parts
-        author = chain_hotkey
-    else:
+    if len(parts) != 3:
         return None
+    _, repo, digest = parts
     if "/" not in repo or not digest.startswith("sha256:"):
         return None
     return {
-        "version": "v4",
+        "version": "v5",
         "repo": repo,
         "digest": digest,
-        "author_hotkey": author,
-        "spoofed": author != chain_hotkey,
+        "author_hotkey": chain_hotkey,
+        "spoofed": False,
     }
 
 
@@ -130,7 +126,7 @@ def _payload_hash(payload: dict[str, Any]) -> str:
 
 
 def scan_commitments(subtensor: Any, netuid: int) -> list[Commit]:
-    """Read all current v4 commitments on ``netuid`` and return Commit records."""
+    """Read all current v5 commitments on ``netuid`` and return Commit records."""
     raw = subtensor.get_all_commitments(netuid=netuid)
     blocks = _commitment_blocks(subtensor, netuid)
     uids = _uid_map(subtensor, netuid)
@@ -139,7 +135,7 @@ def scan_commitments(subtensor: Any, netuid: int) -> list[Commit]:
     n_total = n_skipped = 0
     for hotkey, block, data in _iter_commitments(raw):
         n_total += 1
-        payload = _parse_v4(data, hotkey)
+        payload = _parse_v5(data, hotkey)
         if payload is None:
             n_skipped += 1
             continue
@@ -149,17 +145,22 @@ def scan_commitments(subtensor: Any, netuid: int) -> list[Commit]:
             log.warning("no commit block for hotkey={}; skipping", hotkey)
             n_skipped += 1
             continue
+        uid = uids.get(hotkey)
+        if uid is None:
+            log.warning("no uid for hotkey={}; skipping", hotkey)
+            n_skipped += 1
+            continue
         commits.append(Commit(
             netuid=netuid,
             block_number=block,
             block_hash=_block_hash(subtensor, block),
             extrinsic_hash=None,
-            uid=uids.get(hotkey),
+            uid=uid,
             hotkey=hotkey,
             commit_payload=payload,
             model_uri=f"{payload['repo']}@{payload['digest']}",
             payload_hash=_payload_hash(payload),
         ))
 
-    log.info("scan: total={} v4_commits={} skipped={}", n_total, len(commits), n_skipped)
+    log.info("scan: total={} v5_commits={} skipped={}", n_total, len(commits), n_skipped)
     return commits

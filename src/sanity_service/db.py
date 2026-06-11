@@ -11,15 +11,17 @@ _pool: asyncpg.Pool | None = None
 
 _CREATE_TABLE = """
     CREATE TABLE IF NOT EXISTS sanity_results (
-        id          SERIAL       PRIMARY KEY,
+        id          BIGSERIAL    PRIMARY KEY,
         repo        TEXT         NOT NULL,
         digest      TEXT         NOT NULL UNIQUE,
         passed      BOOLEAN      NOT NULL,
         reason      TEXT         NOT NULL DEFAULT '',
-        responses   JSONB        NOT NULL DEFAULT '[]',
-        timing      JSONB        NOT NULL DEFAULT '{}',
+        responses   JSONB        NOT NULL DEFAULT '[]'::jsonb,
+        timing      JSONB        NOT NULL DEFAULT '{}'::jsonb,
         checked_at  TIMESTAMPTZ  NOT NULL
-    )
+    );
+    CREATE INDEX IF NOT EXISTS sanity_results_passed_checked_idx
+        ON sanity_results (passed, checked_at DESC);
 """
 
 
