@@ -1,18 +1,32 @@
-// PM2 process file for chain_reader.
-// Start:  pm2 start chain_reader/ecosystem.config.js
-// Logs:   pm2 logs chain_reader
-//
-// Runs `python -m chain_reader` from the albedo root so the chain_reader package
-// imports cleanly. Uses the albedo-old venv (bittensor 10.4 + asyncpg). Env values
-// are read from albedo/.env by config.py.
+const fs = require("fs");
+const path = require("path");
+
+function loadEnv() {
+  const envPath = path.resolve(__dirname, ".env");
+  const env = { ...process.env, PYTHONPATH: path.resolve(__dirname, "src") };
+  if (!fs.existsSync(envPath)) return env;
+  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const index = trimmed.indexOf("=");
+    if (index === -1) continue;
+    const key = trimmed.slice(0, index);
+    const value = trimmed.slice(index + 1);
+    if (value !== "") env[key] = value;
+  }
+  return env;
+}
+
+const env = loadEnv();
+
 module.exports = {
   apps: [
     {
       name: "chain_reader",
-      cwd: "",
-      script: "",
-      args: "-m chain_reader",
-      interpreter: "none",
+      cwd: __dirname,
+      script: "uv",
+      args: "run chain-reader",
+      env,
       autorestart: true,
       max_restarts: 20,
       restart_delay: 5000,
@@ -20,10 +34,10 @@ module.exports = {
     },
     {
       name: "hippius_validation",
-      cwd: "",
-      script: "",
-      args: "-m hippius_validation",
-      interpreter: "none",
+      cwd: __dirname,
+      script: "uv",
+      args: "run hippius-validation",
+      env,
       autorestart: true,
       max_restarts: 20,
       restart_delay: 5000,

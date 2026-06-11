@@ -9,6 +9,7 @@ module.exports = {
       restart_delay: 5000,
       max_restarts: 50,
       env: {
+        PYTHONPATH:              "/root/albedo/src",
         SANITY_PORT:             "9100",
         SANITY_VLLM_PORT:        "9101",
         SANITY_GPUS:             "0",
