@@ -100,4 +100,24 @@ async def insert_new_commits(pool: asyncpg.Pool, commits: list[Commit]) -> int:
                     submission_id,
                     row["id"],
                 )
+                await conn.execute(
+                    """
+                    INSERT INTO events (submission_id, event_type, severity, message, data)
+                    VALUES ($1, $2, $3, $4, $5::jsonb)
+                    """,
+                    submission_id,
+                    "chain_commit_discovered",
+                    "INFO",
+                    "Chain reader discovered model commit and created submission",
+                    json.dumps({
+                        "chain_commit_id": str(row["id"]),
+                        "netuid": c.netuid,
+                        "block_number": c.block_number,
+                        "block_hash": c.block_hash,
+                        "hotkey": c.hotkey,
+                        "uid": c.uid,
+                        "model_uri": c.model_uri,
+                        "payload_hash": c.payload_hash,
+                    }),
+                )
     return inserted

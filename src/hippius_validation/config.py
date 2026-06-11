@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from urllib.parse import quote_plus
 
-_ROOT = Path(__file__).resolve().parent.parent          # albedo repo root
+_ROOT = Path(__file__).resolve().parents[2]          # albedo repo root
 _PKG = Path(__file__).resolve().parent                  # hippius_validation/
 _ENV_PATH = _ROOT / ".env"
 

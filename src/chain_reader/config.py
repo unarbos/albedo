@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from urllib.parse import quote_plus
 
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
 def _load_dotenv(path: Path) -> None:
