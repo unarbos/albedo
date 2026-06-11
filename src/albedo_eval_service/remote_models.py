@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 
+from .canonical_model_config import apply_canonical_model_config
 from .remote_config import RemoteSettings
 
 
@@ -78,6 +79,7 @@ class ModelArtifactResolver:
         )
 
     def _resolved_local(self, original_ref: str, path: Path, *, source: str) -> ResolvedModel:
+        self._apply_canonical_config(path)
         file_count, total_size_bytes = _tree_stats(path)
         return ResolvedModel(
             original_ref=original_ref,
@@ -93,6 +95,7 @@ class ModelArtifactResolver:
         cache_dir = self.cache_root / "s3" / bucket / prefix.strip("/")
         done_marker = cache_dir / ".albedo-model-cache.json"
         if done_marker.exists():
+            self._apply_canonical_config(cache_dir)
             file_count, total_size_bytes = _tree_stats(cache_dir)
             return ResolvedModel(model_ref, str(cache_dir), "s3", True, file_count, total_size_bytes)
 
@@ -128,6 +131,7 @@ class ModelArtifactResolver:
         if not found:
             raise FileNotFoundError(f"no model objects found under {model_ref}")
         done_marker.write_text(json.dumps({"source": model_ref}, sort_keys=True) + "\n", encoding="utf-8")
+        self._apply_canonical_config(cache_dir)
         file_count, total_size_bytes = _tree_stats(cache_dir)
         return ResolvedModel(model_ref, str(cache_dir), "s3", False, file_count, total_size_bytes)
 
@@ -135,6 +139,7 @@ class ModelArtifactResolver:
         cache_dir = self.cache_root / "oci" / registry / repository.replace("/", "__") / digest.removeprefix("sha256:")
         done_marker = cache_dir / ".albedo-model-cache.json"
         if done_marker.exists():
+            self._apply_canonical_config(cache_dir)
             file_count, total_size_bytes = _tree_stats(cache_dir)
             return ResolvedModel(original_ref, str(cache_dir), "oci", True, file_count, total_size_bytes)
 
@@ -173,8 +178,16 @@ class ModelArtifactResolver:
         (temp_dir / ".albedo-model-cache.json").write_text(json.dumps(done_marker_payload, sort_keys=True) + "\n", encoding="utf-8")
         cache_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_dir.replace(cache_dir)
+        self._apply_canonical_config(cache_dir)
         file_count, total_size_bytes = _tree_stats(cache_dir)
         return ResolvedModel(original_ref, str(cache_dir), "oci", False, file_count, total_size_bytes)
+
+    def _apply_canonical_config(self, model_dir: Path) -> None:
+        if not self.settings.use_canonical_model_config:
+            return
+        if not model_dir.is_dir():
+            return
+        apply_canonical_model_config(model_dir)
 
 
 def _stream_blob_to_file(

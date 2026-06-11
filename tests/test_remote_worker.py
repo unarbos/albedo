@@ -6,6 +6,7 @@ from uuid import uuid4
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from albedo_eval_service.canonical_model_config import canonical_max_model_len
 from albedo_eval_service.models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_generation import GenerationResult
@@ -124,3 +125,17 @@ def test_remote_worker_rejects_overlapping_gpu_groups(tmp_path):
     assert verdict is not None
     assert verdict["fault_code"] == "remote_worker_failed"
     assert "GPU groups overlap" in verdict["fault_message"]
+
+
+def test_vllm_generator_uses_canonical_max_model_len_even_when_env_is_lower(tmp_path):
+    settings = RemoteSettings(
+        dataset_root=str(tmp_path),
+        upload_artifacts=False,
+        max_model_len=4096,
+    )
+
+    worker = RemoteEvalWorker(settings, generator_factory=None)
+    generator = worker._vllm_generator("challenger", ["4", "5", "6", "7"], "/models/challenger")
+
+    assert generator.max_model_len == canonical_max_model_len()
+    assert generator.max_new_tokens == settings.max_new_tokens

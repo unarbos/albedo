@@ -4,6 +4,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .canonical_model_config import GENESIS_MODEL_CONFIG_REF
+
 
 class RemoteSettings(BaseSettings):
     """Runtime configuration for the remote eval control-plane API."""
@@ -32,11 +34,13 @@ class RemoteSettings(BaseSettings):
     challenger_model: str | None = None
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
-    max_new_tokens: int = 128
+    max_new_tokens: int = 1024
     temperature: float = 0.0
     top_p: float = 1.0
     max_model_len: int | None = None
     enforce_eager: bool = False
+    use_canonical_model_config: bool = True
+    canonical_model_config_ref: str = GENESIS_MODEL_CONFIG_REF
 
     resolve_model_artifacts: bool = True
     model_cache_dir: str = "/tmp/albedo-remote-models"

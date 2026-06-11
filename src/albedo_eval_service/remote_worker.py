@@ -6,6 +6,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Callable, Protocol, TypeVar
 
+from .canonical_model_config import canonical_max_model_len
 from .dataset_manifest import load_manifest_file
 from .models import EvalRequest
 from .remote_artifacts import ArtifactUploader, RunArtifactSpool, build_artifact_uploader
@@ -179,9 +180,14 @@ class RemoteEvalWorker:
             max_new_tokens=self.settings.max_new_tokens,
             temperature=self.settings.temperature,
             top_p=self.settings.top_p,
-            max_model_len=self.settings.max_model_len,
+            max_model_len=self._effective_max_model_len(),
             enforce_eager=self.settings.enforce_eager,
         )
+
+    def _effective_max_model_len(self) -> int | None:
+        if self.settings.use_canonical_model_config:
+            return canonical_max_model_len()
+        return self.settings.max_model_len
 
     def _topology(self, request: EvalRequest) -> GpuTopology:
         previous_king = _parse_gpu_ids(self.settings.previous_king_gpu_ids)

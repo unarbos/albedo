@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from albedo_eval_service.canonical_model_config import canonical_max_model_len
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_models import ModelArtifactResolver, parse_oci_ref
 
@@ -23,13 +24,17 @@ def test_parse_oci_ref_accepts_hippius_registry_digest():
 def test_model_resolver_passes_through_existing_local_path(tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()
-    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "config.json").write_text('{"model_type":"bad","max_position_embeddings":4096,"auto_map":{"x":"y"}}', encoding="utf-8")
 
     resolved = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache"))).resolve(str(model_dir))
 
     assert resolved.local_path == str(model_dir)
     assert resolved.source == "local"
     assert resolved.file_count == 1
+    rewritten = json.loads(Path(resolved.local_path, "config.json").read_text(encoding="utf-8"))
+    assert rewritten["model_type"] == "qwen3"
+    assert rewritten["max_position_embeddings"] == canonical_max_model_len()
+    assert "auto_map" not in rewritten
 
 
 def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, monkeypatch):
@@ -89,6 +94,8 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
 
     resolved = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache"))).resolve(ref)
 
-    assert Path(resolved.local_path, "config.json").read_bytes() == layer_payload
+    rewritten = json.loads(Path(resolved.local_path, "config.json").read_text(encoding="utf-8"))
+    assert rewritten["model_type"] == "qwen3"
+    assert rewritten["max_position_embeddings"] == canonical_max_model_len()
     assert resolved.source == "oci"
     assert resolved.cache_hit is False
