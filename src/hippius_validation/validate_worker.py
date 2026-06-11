@@ -189,11 +189,17 @@ async def run() -> None:
             log.info("claim — block={} hotkey={} {}", attempt["block_number"],
                      attempt["hotkey"][:10], attempt["model_uri"])
 
-            # success_validated gate (read-only): one evaluation per hotkey.
+            # One passed Hippius validation per hotkey. A later commit is a miner-side duplicate.
             if await db.hotkey_validated(pool, attempt["hotkey"]):
-                await db.mark_done(pool, attempt["id"],
-                                   {"skipped": "hotkey_already_evaluated"})
-                log.info("skip — hotkey already evaluated: {}", attempt["hotkey"][:10])
+                await db.mark_failed(
+                    pool,
+                    attempt["id"],
+                    fault_class="MINER_FAULT",
+                    fault_code="hotkey_already_validated",
+                    fault_message="hotkey already has a validated model submission",
+                    result_summary={"hotkey": attempt["hotkey"]},
+                )
+                log.info("skip — hotkey already validated: {}", attempt["hotkey"][:10])
                 continue
 
             hb = asyncio.create_task(_heartbeat_loop(pool, attempt["id"]))

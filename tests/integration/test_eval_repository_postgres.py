@@ -31,6 +31,7 @@ def db_url() -> str:
     with psycopg.connect(database_url) as conn:
         with conn.transaction():
             for table in (
+                "sanity_results",
                 "weight_transactions",
                 "weight_epochs",
                 "events",
