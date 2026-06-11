@@ -353,6 +353,7 @@ async def run_duel(
 
     # Aggregate metric-first: per judge mean each metric over tasks → mean the 5 →
     # judge score; then mean across judges.
+    results=[r for r in results if r.parse_ok]
     per_judge_metric = _collect_aggregation_inputs(results, judge_models)
     challenger_score, king_score, by_judge, by_metric, winner = aggregate_duel(
         per_judge_metric
