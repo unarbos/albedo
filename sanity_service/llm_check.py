@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 
 import httpx
 from loguru import logger
 
-# Fast cheap model - no reasoning needed, just binary coherence judgement.
-_OR_MODEL    = os.environ.get("SANITY_OR_MODEL", "deepseek/deepseek-v4-flash")
+from sanity_service import config as _cfg
+
+_OR_MODEL = _cfg.OR_MODEL
 _OR_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 _OR_TIMEOUT  = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
 
@@ -47,12 +47,12 @@ async def llm_check(
     prompts: list[str],
     responses: list[str],
     api_key: str,
-    min_pass: int = 2,
-) -> tuple[bool, str]:
-    """Send all prompt/response pairs to OR in one call and check for coherence.
-
-    Returns (passed, reason). Fails open if OR is unreachable or returns garbage.
-    """
+    min_pass: int | None = None,
+) -> tuple[bool, str, str]:
+    # Batches pairs to OR; returns (passed, reason, status) where status is passed|failed|skipped.
+    # Fails open (skipped) if OR breaks; min_pass defaults to at-least-half of the prompt count.
+    if min_pass is None:
+        min_pass = (len(prompts) + 1) // 2
     user_msg = _build_user_message(prompts, responses)
     try:
         async with httpx.AsyncClient(timeout=_OR_TIMEOUT) as c:
@@ -74,18 +74,20 @@ async def llm_check(
     except Exception as exc:
         # Fail open - OR unreachable should not block a valid challenger.
         logger.warning("[sanity/llm] OR call failed: {} - skipping LLM gate", exc)
-        return True, ""
+        return True, "", "skipped"
 
     verdicts = _parse_verdicts(raw, len(prompts))
     if verdicts is None:
         logger.warning("[sanity/llm] unparseable response: {!r} - skipping LLM gate", raw[:120])
-        return True, ""
+        return True, "", "skipped"
 
     passed_count = sum(verdicts)
     logger.info("[sanity/llm] verdicts={} ({}/{} coherent)", verdicts, passed_count, len(verdicts))
 
     if passed_count < min_pass:
         failed = [i + 1 for i, v in enumerate(verdicts) if not v]
-        return False, f"LLM judge: {passed_count}/{len(verdicts)} responses coherent (failed prompts: {failed})"
+        reason = (f"LLM judge: {passed_count}/{len(verdicts)} responses coherent "
+                  f"(failed prompts: {failed})")
+        return False, reason, "failed"
 
-    return True, ""
+    return True, "", "passed"

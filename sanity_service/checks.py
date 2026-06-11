@@ -1,14 +1,10 @@
 """Response quality heuristics - pure text analysis, no LLM judge."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 # Keywords expected in at least one response for a coding task.
 _CODE_KEYWORDS = {"def", "class", "import", "return", "if", "for", "while", "print", "="}
-
-# Regex matching code-like syntax tokens used by check_code_syntax.
-_SYNTAX_HINTS  = re.compile(r"(return|:|\(|\)|def |=|#)", re.IGNORECASE)
 
 
 @dataclass
@@ -55,21 +51,13 @@ def check_encoding(text: str) -> CheckResult:
 
 
 def check_vocabulary(text: str, min_ratio: float = 0.3) -> CheckResult:
-    # Fails if unique/total token ratio is below 30% - catches low-variety outputs like "the the the".
+    # Fails if unique/total token ratio is below 30% - catches low-variety "the the the" outputs.
     tokens = text.lower().split()
     if len(tokens) < 8:
         return CheckResult(True)
     ratio = len(set(tokens)) / len(tokens)
     if ratio < min_ratio:
         return CheckResult(False, f"low vocabulary diversity ({ratio:.2f}, min={min_ratio})")
-    return CheckResult(True)
-
-
-def check_code_syntax(text: str) -> CheckResult:
-    # Fails if response contains no code-like syntax (return/def/:/=); for completion prompts only.
-    # Not used in check_all - call directly when the prompt is known to be a completion task.
-    if not _SYNTAX_HINTS.search(text):
-        return CheckResult(False, "no code syntax found (return/def/:/= expected)")
     return CheckResult(True)
 
 
@@ -105,7 +93,7 @@ def check_collapsed(responses: list[str]) -> CheckResult:
 def check_uniform_length(responses: list[str]) -> CheckResult:
     # Fails if all responses have the exact same token count - a hidden collapse signal.
     lengths = [len(r.split()) for r in responses]
-    if len(responses) >= 2 and len(set(lengths)) == 1:
+    if len(responses) >= 3 and len(set(lengths)) == 1:
         return CheckResult(False,
             f"all responses identical length ({lengths[0]} tokens) - possible collapse")
     return CheckResult(True)

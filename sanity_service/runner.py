@@ -16,16 +16,17 @@ from pathlib import Path
 import httpx
 from loguru import logger
 
+from sanity_service import config as _cfg
 from sanity_service.checks import check_all
 from sanity_service.llm_check import llm_check
 
-_SANITY_PORT      = int(os.environ.get("SANITY_VLLM_PORT", "9101"))
-_SANITY_GPUS      = os.environ.get("SANITY_GPUS", "0")
-_GPU_UTIL         = float(os.environ.get("SANITY_GPU_UTIL", "0.15"))
-_VLLM_DTYPE       = os.environ.get("SANITY_VLLM_DTYPE", "bfloat16")
-_DOWNLOAD_TIMEOUT = float(os.environ.get("SANITY_DOWNLOAD_TIMEOUT", "300"))
-_VLLM_STARTUP_S   = float(os.environ.get("SANITY_VLLM_STARTUP_S", "120"))
-_OR_API_KEY       = os.environ.get("SANITY_OR_API_KEY", "")  # optional; LLM gate skipped if empty
+_SANITY_PORT      = _cfg.VLLM_PORT
+_SANITY_GPUS      = _cfg.GPUS
+_GPU_UTIL         = _cfg.GPU_UTIL
+_VLLM_DTYPE       = _cfg.VLLM_DTYPE
+_DOWNLOAD_TIMEOUT = _cfg.DOWNLOAD_TIMEOUT
+_VLLM_STARTUP_S   = _cfg.VLLM_STARTUP_S
+_OR_API_KEY       = _cfg.OR_API_KEY
 
 # Prompts loaded from JSON so they can be edited without touching Python code.
 _PROMPTS_FILE = Path(__file__).parent / "prompts.json"
@@ -53,6 +54,13 @@ class SanityResult:
     model_repo:    str             = ""
     model_digest:  str             = ""
     checked_at:    str             = ""
+    infra_fault:   bool            = False
+    llm_gate:      str             = "not_run"
+
+
+class RunnerBusy(Exception):
+    # Raised when a check is requested while another is already in progress.
+    pass
 
 
 class SanityRunner:
@@ -100,6 +108,13 @@ class SanityRunner:
         min_vocab_ratio: float = 0.3,
     ) -> SanityResult:
         # Runs the full check pipeline and returns a SanityResult regardless of outcome.
+        # Reject before touching the lock so a racing caller gets busy instead of blocking;
+        # no await between the check and acquire keeps this atomic under asyncio.
+        if self._lock.locked():
+            raise RunnerBusy(self._current or "in-progress check")
+        if n_prompts > len(SANITY_PROMPTS):
+            logger.warning("[sanity] n_prompts={} clamped to {}", n_prompts, len(SANITY_PROMPTS))
+            n_prompts = len(SANITY_PROMPTS)
         async with self._lock:
             self._current = f"{repo}@{digest[:16]}"
             t_total = time.monotonic()
@@ -128,11 +143,18 @@ class SanityRunner:
 
                     t1 = time.monotonic()
                     await self._kill_vllm()
-                    if self._loaded_dir and self._loaded_dir != model_dir:
-                        await asyncio.to_thread(shutil.rmtree, self._loaded_dir, True)
-                    await self._start_vllm(model_dir, digest)
-                    self._loaded_digest = digest
-                    self._loaded_dir    = model_dir
+                    # The old model's server is dead now, so reclaim its dir whether or not the
+                    # new one boots; keep the new dir on failure so a retry reuses the download.
+                    old_dir = self._loaded_dir
+                    self._loaded_digest = ""
+                    self._loaded_dir    = ""
+                    try:
+                        await self._start_vllm(model_dir, digest)
+                        self._loaded_digest = digest
+                        self._loaded_dir    = model_dir
+                    finally:
+                        if old_dir and old_dir != model_dir:
+                            await asyncio.to_thread(shutil.rmtree, old_dir, True)
                     timing.vllm_s = round(time.monotonic() - t1, 1)
 
                 t2 = time.monotonic()
@@ -148,19 +170,26 @@ class SanityRunner:
 
                 # Step 7: LLM coherence gate (only if heuristics passed and OR key is set)
                 if result.passed and _OR_API_KEY:
-                    llm_passed, llm_reason = await llm_check(
+                    llm_passed, llm_reason, result.llm_gate = await llm_check(
                         SANITY_PROMPTS[:n_prompts], responses, _OR_API_KEY
                     )
-                    if not llm_passed:
+                    if result.llm_gate == "skipped":
+                        # Gate unavailable (OR down/garbled) - defer rather than admit or reject.
+                        result.passed      = False
+                        result.infra_fault = True
+                        result.reason      = "llm gate unavailable"
+                    elif not llm_passed:
                         result.passed = False
                         result.reason = llm_reason
 
             except asyncio.TimeoutError:
-                result.reason = "timed out"
+                result.reason      = "timed out"
+                result.infra_fault = True
                 self._loaded_digest = ""
                 self._loaded_dir    = ""
             except Exception as exc:
-                result.reason = f"runner error: {exc}"
+                result.reason      = f"runner error: {exc}"
+                result.infra_fault = True
                 logger.exception("[sanity] check failed for {}", repo)
                 self._loaded_digest = ""
                 self._loaded_dir    = ""
@@ -184,10 +213,10 @@ class SanityRunner:
 
     async def _materialize(self, repo: str, digest: str) -> str:
         # Downloads the model from Hippius and returns the local directory path.
-        from albedo.models import ModelRef, materialize_model
-        ref = ModelRef(repo=repo, digest=digest)
+        from hippius_validation.hippius import download_full, make_ref
+        ref = make_ref(repo, digest)
         return await asyncio.wait_for(
-            asyncio.to_thread(materialize_model, ref),
+            asyncio.to_thread(download_full, ref),
             timeout=_DOWNLOAD_TIMEOUT,
         )
 
@@ -201,7 +230,6 @@ class SanityRunner:
             "--gpu-memory-utilization", str(_GPU_UTIL),
             "--dtype",                  _VLLM_DTYPE,
             "--max-model-len",          "4096",
-            "--trust-remote-code",
         ]
         self._proc = subprocess.Popen(
             cmd,
@@ -234,21 +262,23 @@ class SanityRunner:
         timeout = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
 
         async def _one(prompt: str) -> str:
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as c:
-                    r = await c.post(url, json={
-                        "model":       model_name,
-                        "messages":    [{"role": "user", "content": prompt}],
-                        "max_tokens":  128,
-                        "temperature": 0.0,
-                    })
-                    r.raise_for_status()
-                    return r.json()["choices"][0]["message"]["content"] or ""
-            except Exception as exc:
-                logger.warning("[sanity] prompt failed: {}", exc)
-                return ""
+            # Transport/HTTP errors propagate as infra faults; only true empty content returns "".
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.post(url, json={
+                    "model":       model_name,
+                    "messages":    [{"role": "user", "content": prompt}],
+                    "max_tokens":  128,
+                    "temperature": 0.0,
+                })
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"] or ""
 
-        return list(await asyncio.gather(*[_one(p) for p in prompts]))
+        # Wait for every prompt so none is orphaned; re-raise the first transport error as infra.
+        results = await asyncio.gather(*[_one(p) for p in prompts], return_exceptions=True)
+        for res in results:
+            if isinstance(res, Exception):
+                raise res
+        return list(results)
 
     async def _kill_vllm(self) -> None:
         # Kills the vLLM process group; retries if it doesn't exit within 5 seconds.

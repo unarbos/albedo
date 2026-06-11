@@ -1,6 +1,7 @@
 """Sanity service API - two endpoints: /health and /check."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
@@ -8,9 +9,19 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from sanity_service.runner import RUNNER
+from sanity_service import config, db
+from sanity_service.runner import RUNNER, SANITY_PROMPTS, RunnerBusy
 
-app = FastAPI(title="Albedo Sanity Service", version="1.0")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Connect to Postgres on startup; close on shutdown.
+    await db.init(config.DB_URL)
+    yield
+    await db.close()
+
+
+app = FastAPI(title="Albedo Sanity Service", version="1.0", lifespan=_lifespan)
 
 
 class CheckRequest(BaseModel):
@@ -31,28 +42,36 @@ async def health() -> JSONResponse:
         "busy":         RUNNER.is_busy,
         "loaded_model": RUNNER.loaded_digest[:20] + "..." if RUNNER.loaded_digest else None,
         "current_job":  RUNNER.current_model or None,
+        "db_connected": db.is_connected(),
         "ts_iso":       datetime.now(timezone.utc).isoformat(),
     })
 
 
 @app.post("/check")
 async def check(req: CheckRequest) -> JSONResponse:
-    # Runs a full sanity check; blocks until complete and returns 409 if already busy.
-    if RUNNER.is_busy:
-        raise HTTPException(
-            status_code=409,
-            detail=f"busy checking {RUNNER.current_model}",
-        )
+    # Returns a cached result immediately if this digest was checked before.
+    cached = await db.get_cached(req.digest)
+    if cached:
+        logger.info("[sanity] cache hit digest={:.16} passed={}", req.digest, cached["passed"])
+        return JSONResponse({**cached, "prompts": SANITY_PROMPTS[:req.n_prompts]})
 
     logger.info("check requested repo={} digest={:.16}", req.repo, req.digest)
-    result = await RUNNER.check(
-        repo=req.repo,
-        digest=req.digest,
-        n_prompts=req.n_prompts,
-        min_tokens=req.min_tokens,
-        max_repetition=req.max_repetition,
-        min_vocab_ratio=req.min_vocab_ratio,
-    )
+    try:
+        result = await RUNNER.check(
+            repo=req.repo,
+            digest=req.digest,
+            n_prompts=req.n_prompts,
+            min_tokens=req.min_tokens,
+            max_repetition=req.max_repetition,
+            min_vocab_ratio=req.min_vocab_ratio,
+        )
+    except RunnerBusy as exc:
+        # Another check slipped in between the cache lookup and the lock - reject as busy.
+        raise HTTPException(status_code=409, detail=f"busy checking {exc}") from None
+
+    # Skip caching transient infra failures so they stay retryable rather than permanently failed.
+    if not result.infra_fault:
+        await db.insert_result(result)
 
     return JSONResponse({
         "passed":       result.passed,
@@ -60,6 +79,10 @@ async def check(req: CheckRequest) -> JSONResponse:
         "model_repo":   result.model_repo,
         "model_digest": result.model_digest,
         "checked_at":   result.checked_at,
+        "responses":    result.responses,
+        "prompts":      SANITY_PROMPTS[:req.n_prompts],
+        "infra_fault":  result.infra_fault,
+        "llm_gate":     result.llm_gate,
         "timing": {
             "total_s":      result.timing.total_s,
             "download_s":   result.timing.download_s,
@@ -68,5 +91,5 @@ async def check(req: CheckRequest) -> JSONResponse:
             "model_cached": result.timing.model_cached,
             "vllm_reused":  result.timing.vllm_reused,
         },
-        "n_responses":  len(result.responses),
+        "cached": False,
     })
