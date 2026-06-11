@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, WebSocket
 
 from .models import EvalRequest
 from .remote_config import RemoteSettings, get_remote_settings
 from .remote_state import RemoteRun, RemoteRunStore
 from .remote_worker import RemoteEvalWorker
+from .score_bridge import score_bridge_hub
 
 
 app = FastAPI(title="Albedo Remote Eval API", version="0.1.0")
@@ -44,6 +45,7 @@ def ready(settings: RemoteSettings = Depends(get_remote_settings), _: None = Dep
         "free_gpu_count": settings.free_gpu_count,
         "generation_backend": settings.generation_backend,
         "warnings": warnings,
+        "score_bridge_connected": score_bridge_hub.connected,
     }
 
 
@@ -57,7 +59,18 @@ def capacity(settings: RemoteSettings = Depends(get_remote_settings), _: None = 
         "active_runs": len(store.list_active()),
         "accelerator_type": settings.accelerator_type,
         "generation_backend": settings.generation_backend,
+        "score_bridge_connected": score_bridge_hub.connected,
     }
+
+
+@app.websocket("/score-bridge")
+async def score_bridge(websocket: WebSocket, settings: RemoteSettings = Depends(get_remote_settings)) -> None:
+    if settings.auth_token:
+        expected = f"Bearer {settings.auth_token}"
+        if websocket.headers.get("authorization") != expected:
+            await websocket.close(code=1008)
+            return
+    await score_bridge_hub.attach(websocket)
 
 
 @app.post("/eval-runs")

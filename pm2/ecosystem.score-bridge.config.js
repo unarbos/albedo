@@ -17,28 +17,15 @@ function loadEnv() {
   return env;
 }
 
-const env = loadEnv();
-const sshTarget = `${env.ALBEDO_GPU_HOST_USER}@${env.ALBEDO_GPU_HOST_SSH_HOST}`;
-
 module.exports = {
   apps: [
     {
-      name: "albedo-backend-to-gpu-api-tunnel",
-      script: "ssh",
-      args: [
-        "-N",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-L",
-        `${env.ALBEDO_TUNNEL_BACKEND_LOCAL_GPU_PORT}:127.0.0.1:${env.ALBEDO_REMOTE_EVAL_API_PORT}`,
-        sshTarget,
-      ].join(" "),
+      name: "albedo-score-bridge",
+      cwd: path.resolve(__dirname, ".."),
+      script: "uv",
+      args: "run albedo-score-bridge",
       autorestart: true,
-      env,
+      env: loadEnv(),
     },
   ],
 };

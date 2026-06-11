@@ -1,3 +1,4 @@
+from threading import Thread
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -5,6 +6,7 @@ from fastapi.testclient import TestClient
 from albedo_eval_service.models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
 from albedo_eval_service.remote_api import app, store
 from albedo_eval_service.remote_config import RemoteSettings, get_remote_settings
+from albedo_eval_service.score_bridge import score_bridge_hub
 
 
 def _settings() -> RemoteSettings:
@@ -79,3 +81,29 @@ def test_remote_api_capacity_reports_active_runs():
     assert response.status_code == 200
     assert response.json()["gpu_count"] == 8
     assert response.json()["active_runs"] == 0
+
+
+def test_remote_api_score_bridge_round_trips_backend_initiated_socket():
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer secret"}
+    result = {}
+
+    with client.websocket_connect("/score-bridge", headers=headers) as websocket:
+        def call_hub():
+            result["body"] = score_bridge_hub.request({"batch_id": "score-0001"}, timeout_seconds=2)
+
+        thread = Thread(target=call_hub)
+        thread.start()
+        request_message = websocket.receive_json()
+        assert request_message["type"] == "score_request"
+        assert request_message["payload"] == {"batch_id": "score-0001"}
+        websocket.send_json(
+            {
+                "type": "score_response",
+                "request_id": request_message["request_id"],
+                "body": {"scoring_records": [], "summary": {"state": "succeeded"}},
+            }
+        )
+        thread.join(timeout=2)
+
+    assert result["body"] == {"scoring_records": [], "summary": {"state": "succeeded"}}
