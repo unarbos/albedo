@@ -22,6 +22,7 @@ class ScoreBridgeClientSettings(BaseSettings):
     reconnect_max_seconds: float = 30.0
     ping_interval_seconds: float = 20.0
     ping_timeout_seconds: float = 20.0
+    websocket_max_size_bytes: int = 2048 * 1024 * 1024
 
 
 async def run_bridge(settings: ScoreBridgeClientSettings) -> None:
@@ -57,6 +58,7 @@ async def _run_once(settings: ScoreBridgeClientSettings, *, headers: dict[str, s
             additional_headers=headers,
             ping_interval=settings.ping_interval_seconds,
             ping_timeout=settings.ping_timeout_seconds,
+            max_size=settings.websocket_max_size_bytes,
         ) as websocket:
             print(f"score bridge connected: {settings.remote_ws_url}", flush=True)
             async for raw_message in websocket:
