@@ -10,6 +10,7 @@ from .models import EvalRequest
 from .remote_config import RemoteSettings
 from .remote_dataset import EvalSample
 from .remote_generation import GenerationResult
+from .score_bridge import score_bridge_hub
 
 
 @dataclass(frozen=True)
@@ -46,16 +47,6 @@ class HttpScoringClient:
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
     ) -> ScoringResult:
-        king_by_id = {result.sample_id: result for result in king_results}
-        challenger_by_id = {result.sample_id: result for result in challenger_results}
-        valid_samples = [
-            (index, sample)
-            for index, sample in enumerate(samples)
-            if sample.sample_id in king_by_id
-            and sample.sample_id in challenger_by_id
-            and not king_by_id[sample.sample_id].error
-            and not challenger_by_id[sample.sample_id].error
-        ]
         all_records: list[dict[str, Any]] = []
         summaries: list[dict[str, Any]] = []
         with httpx.Client(
@@ -63,23 +54,7 @@ class HttpScoringClient:
             headers={"Authorization": f"Bearer {self.settings.scoring_auth_token}"},
             timeout=httpx.Timeout(self.settings.scoring_timeout_seconds),
         ) as client:
-            for batch_idx, batch in enumerate(_chunks(valid_samples, request.dataset.scoring_batch_size), start=1):
-                payload = {
-                    "eval_run_id": str(request.eval_run_id),
-                    "batch_id": f"score-{batch_idx:04d}",
-                    "judge_models": list(JUDGE_MODELS[: request.scoring.judge_count]),
-                    "total_sample_count": len(samples),
-                    "samples": [
-                        {
-                            "sample_id": sample.sample_id,
-                            "prompt": sample.prompt,
-                            "previous_king_output": king_by_id[sample.sample_id].text,
-                            "challenger_output": challenger_by_id[sample.sample_id].text,
-                            "sample_index": sample_index,
-                        }
-                        for sample_index, sample in batch
-                    ],
-                }
+            for payload in _score_batch_payloads(request, samples, king_results, challenger_results):
                 response = client.post("/score-batch", json=payload)
                 response.raise_for_status()
                 body = response.json()
@@ -90,6 +65,35 @@ class HttpScoringClient:
                 summary = body.get("summary", {})
                 if isinstance(summary, dict):
                     summaries.append(summary)
+        return ScoringResult(
+            records=all_records,
+            summary=_merge_summaries(all_records, summaries, min_valid_fraction=self.settings.scoring_min_valid_fraction),
+        )
+
+
+class WebSocketScoringClient:
+    def __init__(self, settings: RemoteSettings):
+        self.settings = settings
+
+    def score(
+        self,
+        *,
+        request: EvalRequest,
+        samples: list[EvalSample],
+        king_results: list[GenerationResult],
+        challenger_results: list[GenerationResult],
+    ) -> ScoringResult:
+        all_records: list[dict[str, Any]] = []
+        summaries: list[dict[str, Any]] = []
+        for payload in _score_batch_payloads(request, samples, king_results, challenger_results):
+            body = score_bridge_hub.request(payload, timeout_seconds=self.settings.scoring_timeout_seconds)
+            records = body.get("scoring_records", [])
+            if not isinstance(records, list):
+                raise ValueError("score bridge returned non-list scoring_records")
+            all_records.extend(records)
+            summary = body.get("summary", {})
+            if isinstance(summary, dict):
+                summaries.append(summary)
         return ScoringResult(
             records=all_records,
             summary=_merge_summaries(all_records, summaries, min_valid_fraction=self.settings.scoring_min_valid_fraction),
@@ -152,9 +156,50 @@ class MockScoringClient:
 def build_scorer(settings: RemoteSettings) -> Scorer:
     if settings.scoring_backend == "http":
         return HttpScoringClient(settings)
+    if settings.scoring_backend == "websocket":
+        return WebSocketScoringClient(settings)
     if settings.scoring_backend == "mock":
         return MockScoringClient(settings)
     raise ValueError(f"unsupported scoring backend: {settings.scoring_backend}")
+
+
+def _score_batch_payloads(
+    request: EvalRequest,
+    samples: list[EvalSample],
+    king_results: list[GenerationResult],
+    challenger_results: list[GenerationResult],
+) -> list[dict[str, Any]]:
+    king_by_id = {result.sample_id: result for result in king_results}
+    challenger_by_id = {result.sample_id: result for result in challenger_results}
+    valid_samples = [
+        (index, sample)
+        for index, sample in enumerate(samples)
+        if sample.sample_id in king_by_id
+        and sample.sample_id in challenger_by_id
+        and not king_by_id[sample.sample_id].error
+        and not challenger_by_id[sample.sample_id].error
+    ]
+    payloads = []
+    for batch_idx, batch in enumerate(_chunks(valid_samples, request.dataset.scoring_batch_size), start=1):
+        payloads.append(
+            {
+                "eval_run_id": str(request.eval_run_id),
+                "batch_id": f"score-{batch_idx:04d}",
+                "judge_models": list(JUDGE_MODELS[: request.scoring.judge_count]),
+                "total_sample_count": len(samples),
+                "samples": [
+                    {
+                        "sample_id": sample.sample_id,
+                        "prompt": sample.prompt,
+                        "previous_king_output": king_by_id[sample.sample_id].text,
+                        "challenger_output": challenger_by_id[sample.sample_id].text,
+                        "sample_index": sample_index,
+                    }
+                    for sample_index, sample in batch
+                ],
+            }
+        )
+    return payloads
 
 
 def _merge_summaries(
