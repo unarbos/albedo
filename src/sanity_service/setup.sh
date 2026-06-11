@@ -36,6 +36,6 @@ uv pip install -e . vllm hf_transfer loguru
 mkdir -p /root/sanity/models /var/log/sanity
 
 # Start
-pm2 start src/sanity_service/ecosystem.config.js
+pm2 start pm2/ecosystem.sanity-service.config.js
 pm2 save
 echo "Sanity service started. Health: curl http://localhost:9100/health"
