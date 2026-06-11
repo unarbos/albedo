@@ -21,9 +21,12 @@ dependencies = [
     "huggingface-hub",
     "hf_transfer>=0.1",
     "hippius-hub",
-    # chain_reader service
+    # chain_reader + hippius_validation services
     "asyncpg>=0.29",
     "loguru>=0.7",
+    "opensearch-py>=2,<3",
+    # config_validation (shared fingerprint/architecture/hippius logic) is installed
+    # editable via scripts/install_deps.sh — it is not published to an index.
 ]
 
 [project.optional-dependencies]
@@ -33,6 +36,7 @@ dev = ["ruff"]
 
 [project.scripts]
 chain-reader = "chain_reader.reader:main"
+hippius-validation = "hippius_validation.validate_worker:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -41,7 +45,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # The package is the `albedo/` tree; `archs/` ships the Qwen3 shim + chat templates;
 # `chain_reader/` is the per-block commit→Postgres ingest service.
-packages = ["albedo", "archs", "chain_reader"]
+packages = ["albedo", "archs", "chain_reader", "hippius_validation"]
 
 # chain.toml is the single source of truth and is read from the repo root at import
 # time (albedo/config.py). Bundle it so non-editable installs still resolve it.
