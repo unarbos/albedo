@@ -17,6 +17,9 @@ module.exports = {
         SANITY_VLLM_STARTUP_S:   "120",
         // Model weights cached here - shared between download and vLLM
         ALBEDO_MODEL_CACHE_DIR:  "/root/sanity/models",
+        // Optional: set to enable LLM coherence gate (step 7)
+        SANITY_OR_API_KEY:       "",
+        SANITY_OR_MODEL:         "deepseek/deepseek-v4-flash",
         // Hippius credentials - fill via doppler or export
         HIPPIUS_HUB_TOKEN:       "",
       },
