@@ -17,7 +17,7 @@ from pathlib import Path
 from config_validation.config import ALL_LOCK_KEYS
 from config_validation.pipeline import load_seed_config
 
-_DEFAULT_OUT = Path(__file__).resolve().parent.parent / "hippius_validation" / "validate" / "architecture_spec.json"
+_DEFAULT_OUT = Path(__file__).resolve().parent.parent / "src" / "hippius_validation" / "validate" / "architecture_spec.json"
 _FORBIDDEN = ["auto_map", "quantization_config"]
 
 
