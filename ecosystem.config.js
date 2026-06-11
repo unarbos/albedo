@@ -18,5 +18,16 @@ module.exports = {
       restart_delay: 5000,
       time: true,
     },
+    {
+      name: "hippius_validation",
+      cwd: "",
+      script: "",
+      args: "-m hippius_validation",
+      interpreter: "none",
+      autorestart: true,
+      max_restarts: 20,
+      restart_delay: 5000,
+      time: true,
+    },
   ],
 };
