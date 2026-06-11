@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 
 function loadEnv() {
-  const envPath = path.resolve(__dirname, ".env");
-  const env = { ...process.env, PYTHONPATH: path.resolve(__dirname, "src") };
+  const repoRoot = path.resolve(__dirname, "..");
+  const envPath = path.resolve(repoRoot, ".env");
+  const env = { ...process.env, PYTHONPATH: path.resolve(repoRoot, "src") };
   if (!fs.existsSync(envPath)) return env;
   for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -23,7 +24,7 @@ module.exports = {
   apps: [
     {
       name: "chain_reader",
-      cwd: __dirname,
+      cwd: path.resolve(__dirname, ".."),
       script: "uv",
       args: "run chain-reader",
       env,
@@ -34,7 +35,7 @@ module.exports = {
     },
     {
       name: "hippius_validation",
-      cwd: __dirname,
+      cwd: path.resolve(__dirname, ".."),
       script: "uv",
       args: "run hippius-validation",
       env,
