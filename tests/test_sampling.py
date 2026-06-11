@@ -58,3 +58,19 @@ def test_manifest_total_rows_is_validated():
 
     with pytest.raises(ValueError, match="total_rows"):
         swe_zero_manifest_sample_ids(bad_manifest, block_hash="0xabc", sample_count=1)
+
+
+def test_sampling_accepts_real_manifest_path_key():
+    manifest = {
+        "shards": [{"path": "data/train-00000.parquet", "rows": 2, "sha256": "abc"}],
+        "total_rows": 2,
+    }
+
+    sample_ids = swe_zero_manifest_sample_ids(
+        manifest,
+        block_hash="0xabc",
+        sample_count=2,
+        max_turns_per_sample=1,
+    )
+
+    assert all(sample_id.startswith("data/train-00000.parquet:") for sample_id in sample_ids)
