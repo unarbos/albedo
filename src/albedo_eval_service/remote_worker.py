@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, TypeVar
 
-from .canonical_model_config import canonical_max_model_len
+from .canonical_model_config import canonical_generation_config, canonical_max_model_len
 from .dataset_manifest import load_manifest_file
 from .models import EvalRequest
 from .remote_artifacts import ArtifactUploader, RunArtifactSpool, build_artifact_uploader
@@ -178,12 +178,14 @@ class RemoteEvalWorker:
             raise ValueError(f"unsupported generation backend: {self.settings.generation_backend}")
         if not model:
             raise ValueError(f"missing model setting for {side}")
+        sampling_config = self._effective_sampling_config()
         return VllmProcessGenerator(
             model=model,
             gpu_ids=gpu_ids,
             max_new_tokens=self.settings.max_new_tokens,
-            temperature=self.settings.temperature,
-            top_p=self.settings.top_p,
+            temperature=sampling_config["temperature"],
+            top_p=sampling_config["top_p"],
+            top_k=sampling_config["top_k"],
             max_model_len=self._effective_max_model_len(),
             enforce_eager=self.settings.enforce_eager,
         )
@@ -192,6 +194,16 @@ class RemoteEvalWorker:
         if self.settings.use_canonical_model_config:
             return canonical_max_model_len()
         return self.settings.max_model_len
+
+    def _effective_sampling_config(self) -> dict[str, float | int | None]:
+        if not self.settings.use_canonical_model_config:
+            return {"temperature": self.settings.temperature, "top_p": self.settings.top_p, "top_k": None}
+        generation_config = canonical_generation_config()
+        return {
+            "temperature": float(generation_config["temperature"]),
+            "top_p": float(generation_config["top_p"]),
+            "top_k": int(generation_config["top_k"]),
+        }
 
     def _topology(self, request: EvalRequest) -> GpuTopology:
         previous_king = _parse_gpu_ids(self.settings.previous_king_gpu_ids)

@@ -30,6 +30,7 @@ class VllmProcessGenerator:
         max_new_tokens: int,
         temperature: float,
         top_p: float,
+        top_k: int | None = None,
         max_model_len: int | None = None,
         enforce_eager: bool = False,
     ):
@@ -38,6 +39,7 @@ class VllmProcessGenerator:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
+        self.top_k = top_k
         self.max_model_len = max_model_len
         self.enforce_eager = enforce_eager
 
@@ -57,6 +59,7 @@ class VllmProcessGenerator:
                 "max_new_tokens": self.max_new_tokens,
                 "temperature": self.temperature,
                 "top_p": self.top_p,
+                "top_k": self.top_k,
                 "max_model_len": self.max_model_len,
                 "enforce_eager": self.enforce_eager,
                 "queue": result_queue,
@@ -94,6 +97,7 @@ def _vllm_worker(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
+    top_k: int | None,
     max_model_len: int | None,
     enforce_eager: bool,
     queue,
@@ -103,13 +107,24 @@ def _vllm_worker(
 
         from vllm import LLM, SamplingParams
 
-        llm_kwargs = {"model": model, "tensor_parallel_size": len(gpu_ids), "trust_remote_code": True}
+        llm_kwargs = {
+            "model": model,
+            "tensor_parallel_size": len(gpu_ids),
+            "trust_remote_code": True,
+            # Match the benchmark eval server's `--generation-config vllm`:
+            # do not let vLLM auto-import Hugging Face generation_config.json.
+            "generation_config": "vllm",
+            "reasoning_parser": "qwen3",
+        }
         if max_model_len is not None:
             llm_kwargs["max_model_len"] = max_model_len
         if enforce_eager:
             llm_kwargs["enforce_eager"] = True
         llm = LLM(**llm_kwargs)
-        params = SamplingParams(max_tokens=max_new_tokens, temperature=temperature, top_p=top_p)
+        params_kwargs = {"max_tokens": max_new_tokens, "temperature": temperature, "top_p": top_p}
+        if top_k is not None:
+            params_kwargs["top_k"] = top_k
+        params = SamplingParams(**params_kwargs)
         outputs = llm.generate(prompts, params)
         results = []
         for sample_id, output in zip(sample_ids, outputs, strict=True):
