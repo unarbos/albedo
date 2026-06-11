@@ -3,7 +3,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean
 from typing import Callable, Protocol, TypeVar
 
 from .canonical_model_config import canonical_max_model_len
@@ -14,6 +13,7 @@ from .remote_config import RemoteSettings
 from .remote_dataset import EvalSample, load_swe_zero_samples
 from .remote_generation import GenerationResult, Generator, VllmProcessGenerator
 from .remote_models import ModelArtifactResolver, ResolvedModel
+from .remote_scoring import Scorer, build_scorer
 from .remote_state import RemoteRun
 from .sampling import swe_zero_manifest_sample_ids
 
@@ -50,11 +50,13 @@ class RemoteEvalWorker:
         generator_factory: GeneratorFactory | None = None,
         model_resolver: ModelResolver | None = None,
         artifact_uploader: ArtifactUploader | None = None,
+        scorer: Scorer | None = None,
     ):
         self.settings = settings
         self._generator_factory = generator_factory or self._vllm_generator
         self._model_resolver = model_resolver or ModelArtifactResolver(settings)
         self._artifact_uploader = artifact_uploader or build_artifact_uploader(settings)
+        self._scorer = scorer or build_scorer(settings)
 
     def execute(self, run: RemoteRun) -> None:
         try:
@@ -113,20 +115,22 @@ class RemoteEvalWorker:
                 "scoring_batch_size": request.dataset.scoring_batch_size,
             }
         )
-        scoring_records = self._mock_score_pairs(
+        scoring_result = self._score_pairs(
+            request=request,
             samples=samples,
             king_results=king_results,
             challenger_results=challenger_results,
-            judge_count=request.scoring.judge_count,
         )
+        scoring_records = scoring_result["records"]
         self._emit_scoring_batches(run, request, scoring_records)
-        verdict = self._mock_verdict(
+        verdict = self._build_verdict(
             request=request,
             topology=topology,
             samples=samples,
             king_results=king_results,
             challenger_results=challenger_results,
             scoring_records=scoring_records,
+            scoring_summary=scoring_result["summary"],
         )
         verdict = self._write_and_upload_artifacts(
             run=run,
@@ -241,7 +245,16 @@ class RemoteEvalWorker:
             )
 
     def _emit_scoring_batches(self, run: RemoteRun, request: EvalRequest, scoring_records: list[dict[str, object]]) -> None:
+        scored_so_far = 0
         for batch_idx, batch in enumerate(_chunks(scoring_records, request.dataset.scoring_batch_size), start=1):
+            batch_scored = sum(1 for record in batch if record.get("scored"))
+            scored_so_far += batch_scored
+            judge_errors = sum(
+                1
+                for record in batch
+                for result in record.get("judge_results", [])
+                if isinstance(result, dict) and not result.get("parse_ok")
+            )
             run.append_event(
                 {
                     "type": "scoring_batch_done",
@@ -251,38 +264,67 @@ class RemoteEvalWorker:
                     "judge_config_hash": request.scoring.judge_config_hash,
                     "judge_count": request.scoring.judge_count,
                     "allowed_scores": request.scoring.allowed_scores,
-                    "scored_sample_count": min(batch_idx * request.dataset.scoring_batch_size, len(scoring_records)),
-                    "state": "succeeded",
+                    "scored_sample_count": scored_so_far,
+                    "judge_errors": judge_errors,
+                    "state": "succeeded" if batch_scored == len(batch) and judge_errors == 0 else "failed",
                 }
             )
 
-    def _mock_score_pairs(
+    def _score_pairs(
         self,
         *,
+        request: EvalRequest,
         samples: list[EvalSample],
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
-        judge_count: int,
-    ) -> list[dict[str, object]]:
-        king_by_id = {result.sample_id: result for result in king_results}
-        challenger_by_id = {result.sample_id: result for result in challenger_results}
-        records: list[dict[str, object]] = []
-        for sample in samples:
-            king = king_by_id[sample.sample_id]
-            challenger = challenger_by_id[sample.sample_id]
-            if king.error or challenger.error:
-                continue
-            score = 1.0 if len(challenger.text) > len(king.text) else 0.5 if len(challenger.text) == len(king.text) else 0.0
-            records.append(
-                {
-                    "sample_id": sample.sample_id,
-                    "judge_scores": [score] * judge_count,
-                    "sample_score": score,
-                }
+    ) -> dict[str, object]:
+        valid_pair_count = _valid_generated_pair_count(samples, king_results, challenger_results)
+        if valid_pair_count == 0:
+            return {
+                "records": [],
+                "summary": {
+                    "state": "failed",
+                    "score_challenger": None,
+                    "score_king": None,
+                    "challenger_won": None,
+                    "valid_turns": 0,
+                    "total_turns": 0,
+                    "judge_errors": 0,
+                    "scored_sample_count": 0,
+                    "fault_class": "REMOTE_EVAL_FAULT",
+                    "fault_code": "no_valid_generated_pairs",
+                    "fault_message": "No sample pair had both king and challenger output",
+                    "retryable": True,
+                },
+            }
+        try:
+            result = self._scorer.score(
+                request=request,
+                samples=samples,
+                king_results=king_results,
+                challenger_results=challenger_results,
             )
-        return records
+        except Exception as exc:
+            return {
+                "records": [],
+                "summary": {
+                    "state": "failed",
+                    "score_challenger": None,
+                    "score_king": None,
+                    "challenger_won": None,
+                    "valid_turns": 0,
+                    "total_turns": valid_pair_count,
+                    "judge_errors": valid_pair_count * request.scoring.judge_count,
+                    "scored_sample_count": 0,
+                    "fault_class": "PROVIDER_FAULT",
+                    "fault_code": "judge_provider_exhausted",
+                    "fault_message": f"Judge scoring failed: {type(exc).__name__}: {exc}",
+                    "retryable": True,
+                },
+            }
+        return {"records": result.records, "summary": result.summary}
 
-    def _mock_verdict(
+    def _build_verdict(
         self,
         *,
         request: EvalRequest,
@@ -291,36 +333,47 @@ class RemoteEvalWorker:
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
         scoring_records: list[dict[str, object]],
+        scoring_summary: dict[str, object],
     ) -> dict[str, object]:
         king_errors = sum(1 for result in king_results if result.error)
         chal_errors = sum(1 for result in challenger_results if result.error)
-        sample_scores = [float(record["sample_score"]) for record in scoring_records]
-        score_challenger = mean(sample_scores) if sample_scores else 0.0
-        score_king = 1 - score_challenger
-        return {
+        state = str(scoring_summary.get("state") or "failed")
+        score_challenger = scoring_summary.get("score_challenger")
+        score_king = scoring_summary.get("score_king")
+        valid_turns = int(scoring_summary.get("valid_turns") or 0)
+        scored_sample_count = int(scoring_summary.get("scored_sample_count") or valid_turns)
+        judge_errors = int(scoring_summary.get("judge_errors") or 0)
+        verdict = {
             "type": "verdict",
             "eval_run_id": str(request.eval_run_id),
-            "state": "succeeded" if sample_scores else "failed",
-            "challenger_won": score_challenger > score_king if sample_scores else None,
-            "score_challenger": score_challenger if sample_scores else None,
-            "score_king": score_king if sample_scores else None,
+            "state": state,
+            "challenger_won": scoring_summary.get("challenger_won"),
+            "score_challenger": score_challenger,
+            "score_king": score_king,
             "judge_count": request.scoring.judge_count,
             "allowed_scores": request.scoring.allowed_scores,
-            "valid_turns": len(scoring_records),
+            "valid_turns": valid_turns,
             "total_turns": len(samples),
             "generated_sample_count": len(samples),
-            "scored_sample_count": len(scoring_records),
+            "scored_sample_count": scored_sample_count,
             "king_vllm_errors": king_errors,
             "chal_vllm_errors": chal_errors,
-            "judge_errors": 0,
+            "judge_errors": judge_errors,
             "gpu_topology": topology.as_dict(),
+            "score_breakdown": {
+                "by_judge": scoring_summary.get("by_judge", {}),
+                "by_metric": scoring_summary.get("by_metric", {}),
+            },
             "artifacts": {},
             "artifact_metadata": {},
-            "fault_class": "REMOTE_EVAL_FAULT" if not sample_scores else None,
-            "fault_code": "no_valid_generated_pairs" if not sample_scores else None,
-            "fault_message": "No sample pair had both king and challenger output" if not sample_scores else None,
-            "retryable": True if not sample_scores else None,
+            "fault_class": scoring_summary.get("fault_class") if state != "succeeded" else None,
+            "fault_code": scoring_summary.get("fault_code") if state != "succeeded" else None,
+            "fault_message": scoring_summary.get("fault_message") if state != "succeeded" else None,
+            "retryable": scoring_summary.get("retryable") if state != "succeeded" else None,
         }
+        if state == "succeeded" and score_challenger is not None and score_king is not None:
+            verdict["challenger_won"] = float(score_challenger) > float(score_king)
+        return verdict
 
     def _write_and_upload_artifacts(
         self,
@@ -352,6 +405,19 @@ class RemoteEvalWorker:
             }
             generated_rows.append(generated_row)
             transcript_rows.append({**generated_row, "target": sample.target})
+        judge_rows = []
+        for record in scoring_records:
+            for result in record.get("judge_results", []):
+                if isinstance(result, dict):
+                    judge_rows.append(
+                        {
+                            "eval_run_id": str(request.eval_run_id),
+                            "sample_id": record.get("sample_id"),
+                            "order": record.get("order"),
+                            "sample_score": record.get("sample_score"),
+                            **result,
+                        }
+                    )
         progress_rows = [{"sequence": idx, **event} for idx, event in enumerate(run.events, start=1)]
         remote_log_text = _remote_log_summary(run, verdict)
 
@@ -361,6 +427,7 @@ class RemoteEvalWorker:
             "generated_samples": spool.write_jsonl("generated-samples.jsonl", generated_rows),
             "transcript": spool.write_jsonl("duel-transcript.jsonl", transcript_rows),
             "scoring_results": spool.write_jsonl("scoring-results.jsonl", scoring_records),
+            "judge_results": spool.write_jsonl("judge-results.jsonl", judge_rows),
             "remote_logs": spool.write_text("remote-logs.txt", remote_log_text),
         }
         uploads = self._artifact_uploader.upload_run_artifacts(
@@ -399,6 +466,23 @@ def _remote_log_summary(run: RemoteRun, verdict: dict[str, object]) -> str:
         lines.append(f"fault_code={fault_code}")
         lines.append(f"fault_message={verdict.get('fault_message', '')}")
     return "\n".join(lines) + "\n"
+
+
+def _valid_generated_pair_count(
+    samples: list[EvalSample],
+    king_results: list[GenerationResult],
+    challenger_results: list[GenerationResult],
+) -> int:
+    king_by_id = {result.sample_id: result for result in king_results}
+    challenger_by_id = {result.sample_id: result for result in challenger_results}
+    return sum(
+        1
+        for sample in samples
+        if sample.sample_id in king_by_id
+        and sample.sample_id in challenger_by_id
+        and not king_by_id[sample.sample_id].error
+        and not challenger_by_id[sample.sample_id].error
+    )
 
 
 def _parse_gpu_ids(raw: str) -> list[str]:

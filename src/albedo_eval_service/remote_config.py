@@ -46,6 +46,13 @@ class RemoteSettings(BaseSettings):
     model_cache_dir: str = "/tmp/albedo-remote-models"
     artifact_spool_dir: str = "/tmp/albedo-remote-artifacts"
     remote_state_dir: str = "/tmp/albedo-remote-state"
+
+    scoring_backend: str = "http"
+    scoring_base_url: str | None = None
+    scoring_auth_token: str = ""
+    scoring_timeout_seconds: float = 300.0
+    scoring_min_valid_fraction: float = 0.5
+
     upload_artifacts: bool = True
     cleanup_local_artifacts: bool = False
     s3_endpoint_url: str | None = None

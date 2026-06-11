@@ -79,6 +79,7 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path):
         generation_backend="vllm",
         upload_artifacts=False,
         artifact_spool_dir=str(tmp_path / "artifacts"),
+        scoring_backend="mock",
     )
 
     RemoteEvalWorker(settings, generator_factory=factory).execute(run)
@@ -88,6 +89,7 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path):
     assert verdict is not None
     assert set(verdict["artifacts"]) == {
         "generated_samples",
+        "judge_results",
         "progress",
         "remote_logs",
         "request",
@@ -116,6 +118,7 @@ def test_remote_worker_rejects_overlapping_gpu_groups(tmp_path):
         challenger_gpu_ids="3,4,5,6",
         upload_artifacts=False,
         artifact_spool_dir=str(tmp_path / "artifacts"),
+        scoring_backend="mock",
     )
 
     RemoteEvalWorker(settings, generator_factory=lambda side, gpu_ids, model: RecordingGenerator(side=side, calls=[])).execute(run)
@@ -132,6 +135,7 @@ def test_vllm_generator_uses_canonical_max_model_len_even_when_env_is_lower(tmp_
         dataset_root=str(tmp_path),
         upload_artifacts=False,
         max_model_len=4096,
+        scoring_backend="mock",
     )
 
     worker = RemoteEvalWorker(settings, generator_factory=None)
