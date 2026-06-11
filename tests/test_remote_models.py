@@ -30,7 +30,8 @@ def test_model_resolver_passes_through_existing_local_path(tmp_path):
 
     assert resolved.local_path == str(model_dir)
     assert resolved.source == "local"
-    assert resolved.file_count == 1
+    assert resolved.file_count == 2
+    assert Path(resolved.local_path, "generation_config.json").exists()
     rewritten = json.loads(Path(resolved.local_path, "config.json").read_text(encoding="utf-8"))
     assert rewritten["model_type"] == "qwen3"
     assert rewritten["max_position_embeddings"] == canonical_max_model_len()
