@@ -17,6 +17,7 @@ import httpx
 from loguru import logger
 
 from sanity_service.checks import check_all
+from sanity_service.llm_check import llm_check
 
 _SANITY_PORT      = int(os.environ.get("SANITY_VLLM_PORT", "9101"))
 _SANITY_GPUS      = os.environ.get("SANITY_GPUS", "0")
@@ -24,6 +25,7 @@ _GPU_UTIL         = float(os.environ.get("SANITY_GPU_UTIL", "0.15"))
 _VLLM_DTYPE       = os.environ.get("SANITY_VLLM_DTYPE", "bfloat16")
 _DOWNLOAD_TIMEOUT = float(os.environ.get("SANITY_DOWNLOAD_TIMEOUT", "300"))
 _VLLM_STARTUP_S   = float(os.environ.get("SANITY_VLLM_STARTUP_S", "120"))
+_OR_API_KEY       = os.environ.get("SANITY_OR_API_KEY", "")  # optional; LLM gate skipped if empty
 
 # Prompts loaded from JSON so they can be edited without touching Python code.
 _PROMPTS_FILE = Path(__file__).parent / "prompts.json"
@@ -138,10 +140,20 @@ class SanityRunner:
                 timing.prompts_s = round(time.monotonic() - t2, 1)
                 result.responses = responses
 
+                # Steps 5 + 6: heuristic checks
                 check = check_all(responses, min_tokens=min_tokens,
                                   max_repetition=max_repetition, min_vocab_ratio=min_vocab_ratio)
                 result.passed = check.passed
                 result.reason = check.reason
+
+                # Step 7: LLM coherence gate (only if heuristics passed and OR key is set)
+                if result.passed and _OR_API_KEY:
+                    llm_passed, llm_reason = await llm_check(
+                        SANITY_PROMPTS[:n_prompts], responses, _OR_API_KEY
+                    )
+                    if not llm_passed:
+                        result.passed = False
+                        result.reason = llm_reason
 
             except asyncio.TimeoutError:
                 result.reason = "timed out"
