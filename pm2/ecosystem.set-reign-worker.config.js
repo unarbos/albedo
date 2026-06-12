@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-set-reign-worker",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run --no-sync set-reign-worker",
+      args: "run --no-sync python -m set_reign_worker",
       env: {
         ...loadEnv(),
         ALBEDO_SET_REIGN_WORKER_ID: "set-reign-worker",
