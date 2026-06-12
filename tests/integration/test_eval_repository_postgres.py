@@ -8,7 +8,6 @@ import psycopg
 import pytest
 
 from albedo_eval_service.config import Settings
-from albedo_eval_service.db_migrate import apply_migrations
 from albedo_eval_service.dispatcher import build_eval_request
 from albedo_eval_service.repository import EvalRepository
 
@@ -26,8 +25,11 @@ def _database_url() -> str:
 @pytest.fixture()
 def db_url() -> str:
     database_url = _database_url()
-    migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
-    apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+    schema_path = Path(__file__).resolve().parents[2] / "schema.sql"
+    with psycopg.connect(database_url) as conn:
+        has_schema = conn.execute("SELECT to_regclass('public.model_submissions')").fetchone()[0]
+        if has_schema is None:
+            conn.execute(schema_path.read_text(encoding="utf-8"))
     with psycopg.connect(database_url) as conn:
         with conn.transaction():
             for table in (

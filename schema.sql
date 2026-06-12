@@ -1,7 +1,5 @@
--- Eval service schema slice for the Albedo subnet.
--- This migration intentionally covers only the backend-side eval dispatcher
--- dependencies from Systemdesign.md. Other services can extend the shared
--- tables in later migrations.
+-- Current Albedo eval database schema.
+-- Use this file to initialize a fresh Postgres database for the eval stack.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -19,14 +17,6 @@ CREATE TABLE IF NOT EXISTS chain_commits (
     submission_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS chain_commits_netuid_extrinsic_hash_uidx
-    ON chain_commits (netuid, extrinsic_hash)
-    WHERE extrinsic_hash IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS chain_commits_netuid_hotkey_payload_hash_uidx
-    ON chain_commits (netuid, hotkey, payload_hash);
-CREATE INDEX IF NOT EXISTS chain_commits_netuid_block_idx
-    ON chain_commits (netuid, block_number);
 
 CREATE TABLE IF NOT EXISTS miners (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,7 +49,40 @@ CREATE TABLE IF NOT EXISTS model_submissions (
     idempotency_key TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    finished_at TIMESTAMPTZ
+    finished_at TIMESTAMPTZ,
+    CONSTRAINT model_submissions_state_ck CHECK (state IN (
+        'SUBMITTED',
+        'HIPPIUS_RUNNING',
+        'HIPPIUS_RETRYABLE',
+        'HIPPIUS_VALIDATED',
+        'PRE_EVAL_QUEUED',
+        'PRE_EVAL_RUNNING',
+        'PRE_EVAL_RETRYABLE',
+        'PRE_EVAL_PASSED',
+        'EVAL_QUEUED',
+        'EVAL_RUNNING',
+        'EVAL_RETRYABLE',
+        'EVAL_WIN',
+        'SET_REIGN_RUNNING',
+        'SET_REIGN_RETRYABLE',
+        'REIGN_SET',
+        'WEIGHT_SET_RUNNING',
+        'WEIGHT_SET_RETRYABLE',
+        'COMPLETE_LOSS',
+        'COMPLETE_CORONATED',
+        'TERMINAL_INVALID',
+        'TERMINAL_INFRA_FAILED'
+    )),
+    CONSTRAINT model_submissions_fault_class_ck CHECK (
+        fault_class IS NULL OR fault_class IN (
+            'MINER_FAULT',
+            'INFRA_FAULT',
+            'REMOTE_EVAL_FAULT',
+            'CHAIN_FAULT',
+            'PROVIDER_FAULT',
+            'UNKNOWN_FAULT'
+        )
+    )
 );
 
 ALTER TABLE chain_commits
@@ -67,6 +90,13 @@ ALTER TABLE chain_commits
     FOREIGN KEY (submission_id) REFERENCES model_submissions(id)
     DEFERRABLE INITIALLY DEFERRED;
 
+CREATE UNIQUE INDEX IF NOT EXISTS chain_commits_netuid_extrinsic_hash_uidx
+    ON chain_commits (netuid, extrinsic_hash)
+    WHERE extrinsic_hash IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS chain_commits_netuid_hotkey_payload_hash_uidx
+    ON chain_commits (netuid, hotkey, payload_hash);
+CREATE INDEX IF NOT EXISTS chain_commits_netuid_block_idx
+    ON chain_commits (netuid, block_number);
 CREATE INDEX IF NOT EXISTS model_submissions_state_priority_created_idx
     ON model_submissions (state, priority, created_at);
 CREATE INDEX IF NOT EXISTS model_submissions_miner_created_idx
@@ -74,6 +104,10 @@ CREATE INDEX IF NOT EXISTS model_submissions_miner_created_idx
 CREATE UNIQUE INDEX IF NOT EXISTS model_submissions_model_hash_uidx
     ON model_submissions (model_hash)
     WHERE model_hash IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS model_submissions_chain_commit_id_uidx
+    ON model_submissions (chain_commit_id);
+CREATE INDEX IF NOT EXISTS model_submissions_hotkey_state_idx
+    ON model_submissions (hotkey, state, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS stage_attempts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -90,12 +124,35 @@ CREATE TABLE IF NOT EXISTS stage_attempts (
     fault_class TEXT,
     fault_code TEXT,
     fault_message TEXT,
-    UNIQUE (submission_id, stage, attempt_number)
+    UNIQUE (submission_id, stage, attempt_number),
+    CONSTRAINT stage_attempts_stage_ck CHECK (stage IN ('HIPPIUS', 'PRE_EVAL', 'EVAL', 'SET_REIGN', 'WEIGHT_SET')),
+    CONSTRAINT stage_attempts_state_ck CHECK (state IN (
+        'PENDING',
+        'CLAIMED',
+        'RUNNING',
+        'SUCCEEDED',
+        'FAILED_RETRYABLE',
+        'FAILED_TERMINAL',
+        'ABANDONED'
+    )),
+    CONSTRAINT stage_attempts_fault_class_ck CHECK (
+        fault_class IS NULL OR fault_class IN (
+            'MINER_FAULT',
+            'INFRA_FAULT',
+            'REMOTE_EVAL_FAULT',
+            'CHAIN_FAULT',
+            'PROVIDER_FAULT',
+            'UNKNOWN_FAULT'
+        )
+    )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS stage_attempts_one_active_eval_uidx
     ON stage_attempts (submission_id, stage)
     WHERE stage = 'EVAL' AND state IN ('CLAIMED', 'RUNNING');
+CREATE UNIQUE INDEX IF NOT EXISTS stage_attempts_one_active_per_stage_uidx
+    ON stage_attempts (submission_id, stage)
+    WHERE state IN ('CLAIMED', 'RUNNING');
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,7 +166,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     sha256 TEXT,
     size_bytes BIGINT,
     content_type TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT artifacts_storage_backend_ck CHECK (storage_backend IN ('s3', 'hippius', 'local-cache'))
 );
 
 CREATE TABLE IF NOT EXISTS remote_gpu_hosts (
@@ -123,7 +181,8 @@ CREATE TABLE IF NOT EXISTS remote_gpu_hosts (
     accelerator_type TEXT,
     capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
     last_heartbeat_at TIMESTAMPTZ,
-    last_health JSONB NOT NULL DEFAULT '{}'::jsonb
+    last_health JSONB NOT NULL DEFAULT '{}'::jsonb,
+    CONSTRAINT remote_gpu_hosts_state_ck CHECK (state IN ('READY', 'DEGRADED', 'DRAINING', 'OFFLINE'))
 );
 
 CREATE INDEX IF NOT EXISTS remote_gpu_hosts_role_state_idx
@@ -167,12 +226,37 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     fault_code TEXT,
     fault_message TEXT,
     started_at TIMESTAMPTZ,
-    finished_at TIMESTAMPTZ
+    finished_at TIMESTAMPTZ,
+    CONSTRAINT eval_runs_state_ck CHECK (state IN (
+        'QUEUED',
+        'DISPATCHED',
+        'GENERATING',
+        'SCORING',
+        'VERDICT_READY',
+        'SUCCEEDED',
+        'FAILED_RETRYABLE',
+        'FAILED_TERMINAL'
+    )),
+    CONSTRAINT eval_runs_fault_class_ck CHECK (
+        fault_class IS NULL OR fault_class IN (
+            'MINER_FAULT',
+            'INFRA_FAULT',
+            'REMOTE_EVAL_FAULT',
+            'CHAIN_FAULT',
+            'PROVIDER_FAULT',
+            'UNKNOWN_FAULT'
+        )
+    )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS eval_runs_one_active_uidx
     ON eval_runs ((true))
     WHERE state IN ('QUEUED', 'DISPATCHED', 'GENERATING', 'SCORING', 'VERDICT_READY');
+CREATE INDEX IF NOT EXISTS eval_runs_submission_started_idx
+    ON eval_runs (submission_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS eval_runs_remote_run_idx
+    ON eval_runs (remote_host_id, remote_run_id)
+    WHERE remote_run_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS king_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -186,7 +270,8 @@ CREATE TABLE IF NOT EXISTS king_versions (
     retired_at TIMESTAMPTZ,
     retire_reason TEXT,
     activated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    activated_by TEXT NOT NULL
+    activated_by TEXT NOT NULL,
+    CONSTRAINT king_versions_entered_slot_ck CHECK (entered_slot BETWEEN 1 AND 5)
 );
 
 CREATE TABLE IF NOT EXISTS reigns (
@@ -198,13 +283,19 @@ CREATE TABLE IF NOT EXISTS reigns (
     previous_reign_id UUID REFERENCES reigns(id),
     state TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    activated_at TIMESTAMPTZ
+    activated_at TIMESTAMPTZ,
+    CONSTRAINT reigns_reason_ck CHECK (reason IN ('CORONATION', 'SERVICE_REPLAY', 'GENESIS')),
+    CONSTRAINT reigns_state_ck CHECK (state IN ('ACTIVE', 'SUPERSEDED', 'REPAIRING'))
 );
 
 ALTER TABLE king_versions
     ADD CONSTRAINT king_versions_entered_reign_id_fkey
     FOREIGN KEY (entered_reign_id) REFERENCES reigns(id)
     DEFERRABLE INITIALLY DEFERRED;
+
+CREATE UNIQUE INDEX IF NOT EXISTS reigns_one_active_uidx
+    ON reigns ((true))
+    WHERE state = 'ACTIVE';
 
 CREATE TABLE IF NOT EXISTS reign_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -221,6 +312,70 @@ CREATE TABLE IF NOT EXISTS reign_members (
     UNIQUE (reign_id, king_version_id)
 );
 
+CREATE TABLE IF NOT EXISTS weight_epochs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    netuid INT NOT NULL,
+    reason TEXT NOT NULL CHECK (reason IN ('CORONATION', 'PERIODIC_REFRESH', 'SERVICE_REPLAY')),
+    reign_id UUID REFERENCES reigns(id),
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'RUNNING', 'SUBMITTED', 'SUCCESS', 'FAILED_RETRYABLE', 'FAILED_TERMINAL')),
+    uids INT[] NOT NULL,
+    weights NUMERIC[] NOT NULL,
+    weight_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    weight_hash TEXT NOT NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_fault_class TEXT CHECK (
+        last_fault_class IS NULL OR last_fault_class IN (
+            'MINER_FAULT',
+            'INFRA_FAULT',
+            'REMOTE_EVAL_FAULT',
+            'CHAIN_FAULT',
+            'PROVIDER_FAULT',
+            'UNKNOWN_FAULT'
+        )
+    ),
+    last_fault_code TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    succeeded_at TIMESTAMPTZ,
+    CHECK (cardinality(uids) = cardinality(weights)),
+    UNIQUE (netuid, weight_hash)
+);
+
+CREATE INDEX IF NOT EXISTS weight_epochs_state_created_idx
+    ON weight_epochs (state, created_at);
+CREATE INDEX IF NOT EXISTS weight_epochs_reign_idx
+    ON weight_epochs (reign_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS weight_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    weight_epoch_id UUID NOT NULL REFERENCES weight_epochs(id),
+    stage_attempt_id UUID REFERENCES stage_attempts(id),
+    wallet_hotkey TEXT NOT NULL,
+    subtensor_url TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('CREATED', 'SUBMITTED', 'SUCCESS', 'FAILED_RETRYABLE', 'FAILED_TERMINAL')),
+    extrinsic_hash TEXT,
+    block_number BIGINT,
+    fault_class TEXT CHECK (
+        fault_class IS NULL OR fault_class IN (
+            'MINER_FAULT',
+            'INFRA_FAULT',
+            'REMOTE_EVAL_FAULT',
+            'CHAIN_FAULT',
+            'PROVIDER_FAULT',
+            'UNKNOWN_FAULT'
+        )
+    ),
+    fault_code TEXT,
+    fault_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS weight_transactions_epoch_created_idx
+    ON weight_transactions (weight_epoch_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS weight_transactions_state_created_idx
+    ON weight_transactions (state, created_at);
+
 CREATE TABLE IF NOT EXISTS events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     submission_id UUID REFERENCES model_submissions(id),
@@ -229,8 +384,27 @@ CREATE TABLE IF NOT EXISTS events (
     severity TEXT NOT NULL,
     message TEXT NOT NULL,
     data JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT events_severity_ck CHECK (severity IN ('DEBUG', 'INFO', 'WARN', 'ERROR'))
 );
 
 CREATE INDEX IF NOT EXISTS events_submission_created_idx
     ON events (submission_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS events_stage_attempt_created_idx
+    ON events (stage_attempt_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS events_type_created_idx
+    ON events (event_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sanity_results (
+    id BIGSERIAL PRIMARY KEY,
+    repo TEXT NOT NULL,
+    digest TEXT NOT NULL UNIQUE,
+    passed BOOLEAN NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    responses JSONB NOT NULL DEFAULT '[]'::jsonb,
+    timing JSONB NOT NULL DEFAULT '{}'::jsonb,
+    checked_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS sanity_results_passed_checked_idx
+    ON sanity_results (passed, checked_at DESC);

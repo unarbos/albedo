@@ -354,6 +354,56 @@ class EvalRepository:
                     )
                 return len(rows)
 
+    def requeue_retryable_evals(self, *, worker_id: str, limit: int = 100) -> int:
+        with self._connect() as conn:
+            with conn.transaction():
+                rows = conn.execute(
+                    """
+                    SELECT id, fault_class, fault_code, fault_message
+                    FROM model_submissions ms
+                    WHERE state = 'EVAL_RETRYABLE'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM stage_attempts sa
+                          WHERE sa.submission_id = ms.id
+                            AND sa.stage = 'EVAL'
+                            AND sa.state IN ('CLAIMED', 'RUNNING')
+                      )
+                    ORDER BY priority ASC, updated_at ASC
+                    LIMIT %s
+                    FOR UPDATE OF ms SKIP LOCKED
+                    """,
+                    (limit,),
+                ).fetchall()
+                for row in rows:
+                    conn.execute(
+                        """
+                        UPDATE model_submissions
+                        SET state = 'EVAL_QUEUED',
+                            fault_class = NULL,
+                            fault_code = NULL,
+                            fault_message = NULL,
+                            updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (row['id'],),
+                    )
+                    self.record_event_inside_tx(
+                        conn,
+                        submission_id=row['id'],
+                        stage_attempt_id=None,
+                        event_type='eval_retry_requeued',
+                        severity='INFO',
+                        message=f"Eval retry requeued by {worker_id}",
+                        data={
+                            'worker_id': worker_id,
+                            'previous_fault_class': row['fault_class'],
+                            'previous_fault_code': row['fault_code'],
+                            'previous_fault_message': row['fault_message'],
+                        },
+                    )
+                return len(rows)
+
     def mark_eval_succeeded(
         self,
         *,

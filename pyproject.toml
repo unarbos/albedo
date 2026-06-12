@@ -38,10 +38,10 @@ dev = ["ruff"]
 [project.scripts]
 albedo-eval-api = "albedo_eval_service.api:main"
 albedo-eval-dispatcher = "albedo_eval_service.dispatcher:main"
+albedo-eval-requeuer = "albedo_eval_service.requeuer:main"
 albedo-remote-eval-api = "albedo_eval_service.remote_api:main"
 albedo-judge-api = "albedo_eval_service.judge_api:main"
 albedo-score-bridge = "albedo_eval_service.score_bridge_client:main"
-albedo-db-migrate = "albedo_eval_service.db_migrate:main"
 chain-reader = "chain_reader.reader:main"
 hippius-validation = "hippius_validation.validate_worker:main"
 sanity-service = "sanity_service.__main__:main"
@@ -74,7 +74,7 @@ packages = [
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
-    "integration: requires ALBEDO_TEST_DATABASE_URL and a migrated Postgres database",
+    "integration: requires ALBEDO_TEST_DATABASE_URL and a Postgres database initialized from schema.sql",
 ]
 
 [tool.ruff]
