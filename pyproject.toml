@@ -8,7 +8,6 @@ dependencies = [
     "asyncpg>=0.29",
     "bittensor>=10.3,<11",
     "boto3>=1.35.0",
-    "config_validation",
     "datasets",
     "fastapi>=0.115.0",
     "hf_transfer>=0.1",
@@ -52,11 +51,6 @@ dev = [
     "pytest>=8.2.0",
 ]
 
-# config_validation is not on an index; resolve it from the sibling repo (relative path,
-# editable) so `uv sync` / `uv pip install -e .` provision it into the project venv and lock it.
-[tool.uv.sources]
-config_validation = { path = "../config_validation", editable = true }
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -65,6 +59,7 @@ build-backend = "hatchling.build"
 packages = [
     "src/albedo_eval_service",
     "src/chain_reader",
+    "src/config_validation",
     "src/hippius_validation",
     "src/sanity_service",
     "miner",

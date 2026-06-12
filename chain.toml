@@ -1,0 +1,58 @@
+# Subnet constants for the SN97 (Albedo) config validator.
+# Mirrors the relevant pieces of albedo/chain.toml so the seed digest, arch-lock
+# keys, dedup threshold, and the strict file allowlist live in one place.
+
+[chain]
+name         = "Albedo"
+seed_repo    = "teutonic/albedo-qwen3-4b-genesis"
+# Challengers must be named albedo-qwen3-4b-<suffix> under any Hippius namespace.
+repo_pattern = "^[^/]+/albedo-qwen3-4b-.+$"
+
+[arch]
+# Qwen3-4B identity + capacity keys. A challenger's config.json must match the
+# genesis seed on `architectures` plus every key below.
+extra_lock_keys = [
+  "max_position_embeddings",
+  "tie_word_embeddings",
+  "rope_theta",
+  "hidden_size",
+  "num_hidden_layers",
+  "num_attention_heads",
+  "num_key_value_heads",
+  "intermediate_size",
+  "head_dim",
+]
+
+[seed]
+# Genesis Qwen3-4B reference; arch check compares challengers against this.
+seed_digest = "sha256:3368b0c79b619ed90dc5610c20073cf02c3a93275ebc0c5b94a9d332fea6f606"
+
+[files]
+# Strict allowlist. A repo must contain every `required` file, must contain at least
+# one *.safetensors (single-shard or sharded) when `require_safetensors` is true, may
+# contain any `allowed` file or a file matching an `allowed_glob`, must NOT contain any
+# file matching a `forbidden_glob`, and any other file is flagged as an unexpected extra.
+required = [
+  "config.json",
+  "tokenizer_config.json",
+  "tokenizer.json",
+]
+require_safetensors = true
+allowed = [
+  "generation_config.json",
+  "special_tokens_map.json",
+  "added_tokens.json",
+  "chat_template.jinja",
+  "merges.txt",
+  "vocab.json",
+  "model.safetensors.index.json",  # present only on sharded checkpoints
+  # ubiquitous repo metadata — present on essentially every repo
+  ".gitattributes",
+  "README.md",
+]
+allowed_globs   = ["model-*-of-*.safetensors", "model.safetensors"]
+forbidden_globs = ["*.py"]
+
+[preeval]
+# Near-duplicate flag fires at/above this fingerprint similarity.
+similarity_threshold = 0.95
