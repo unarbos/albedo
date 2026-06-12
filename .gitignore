@@ -33,3 +33,4 @@ Systemdesign.md
 design/
 albedo-remote-artifacts/
 albedo-remote-models/
+src/sanity_service/rubricisity.py

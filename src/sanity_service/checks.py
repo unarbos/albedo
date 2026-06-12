@@ -93,7 +93,7 @@ def check_collapsed(responses: list[str]) -> CheckResult:
 def check_uniform_length(responses: list[str]) -> CheckResult:
     # Fails if all responses have the exact same token count - a hidden collapse signal.
     lengths = [len(r.split()) for r in responses]
-    if len(responses) >= 3 and len(set(lengths)) == 1:
+    if len(responses) >= 2 and len(set(lengths)) == 1:
         return CheckResult(False,
             f"all responses identical length ({lengths[0]} tokens) - possible collapse")
     return CheckResult(True)

@@ -45,7 +45,8 @@ albedo-judge-api = "albedo_eval_service.judge_api:main"
 albedo-score-bridge = "albedo_eval_service.score_bridge_client:main"
 chain-reader = "chain_reader.reader:main"
 hippius-validation = "hippius_validation.validate_worker:main"
-sanity-service = "sanity_service.__main__:main"
+sanity-remote = "sanity_remote.api:main"
+sanity-dispatcher = "sanity_service.dispatcher:main"
 albedo = "miner.cli:main"
 
 [dependency-groups]
@@ -66,6 +67,7 @@ packages = [
     "src/config_validation",
     "src/hippius_validation",
     "src/sanity_service",
+    "src/sanity_remote",
     "miner",
 ]
 
@@ -82,3 +84,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Judge prompts are long-form prose inside string literals; line length is not meaningful there.
+"src/sanity_service/rubric.py" = ["E501"]
+# Embedded SQL strings dominate the repository; line length is not meaningful there.
+"src/sanity_service/repository.py" = ["E501"]

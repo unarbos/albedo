@@ -46,11 +46,21 @@ class OpenRouterJudgeClient:
         async with sem:
             return await self._score_with_retries(model=model, messages=messages)
 
-    async def _score_with_retries(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
+    async def complete(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
+        # Generic completion without the pairwise scoring schema, for callers with their own rubric.
+        sem = self._semaphores.setdefault(
+            model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
+        )
+        async with sem:
+            return await self._score_with_retries(model=model, messages=messages, structured=False)
+
+    async def _score_with_retries(
+        self, *, model: str, messages: list[dict[str, str]], structured: bool = True
+    ) -> JudgeRawResponse:
         last_error = ""
         for attempt in range(self.settings.retry_count + 1):
             try:
-                return await self._score_once(model=model, messages=messages)
+                return await self._score_once(model=model, messages=messages, structured=structured)
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt >= self.settings.retry_count:
@@ -58,7 +68,9 @@ class OpenRouterJudgeClient:
                 await asyncio.sleep(self.settings.retry_backoff_seconds * (2**attempt) * random.uniform(0.8, 1.2))
         return JudgeRawResponse(model=model, provider=_provider_name(model), raw="", error=last_error)
 
-    async def _score_once(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
+    async def _score_once(
+        self, *, model: str, messages: list[dict[str, str]], structured: bool = True
+    ) -> JudgeRawResponse:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -70,7 +82,7 @@ class OpenRouterJudgeClient:
                 "require_parameters": True,
             },
         }
-        if model in JUDGE_STRUCTURED_OUTPUT_MODELS:
+        if structured and model in JUDGE_STRUCTURED_OUTPUT_MODELS:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
