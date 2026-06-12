@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from albedo_eval_service.set_reign_worker import (
+from set_reign_worker.service import (
     ReignMember,
     build_reign_plan,
     weight_bps_for_member_count,

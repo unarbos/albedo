@@ -18,13 +18,13 @@ function loadEnv() {
 module.exports = {
   apps: [
     {
-      name: "albedo-set-reign-worker",
+      name: "albedo-weight-setter",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run --no-sync set-reign-worker",
+      args: "run --no-sync weight-setter",
       env: {
         ...loadEnv(),
-        ALBEDO_SET_REIGN_WORKER_ID: "set-reign-worker",
+        ALBEDO_WEIGHT_WORKER_ID: "weight-setter",
       },
     },
   ],
