@@ -59,6 +59,7 @@ def submit(ref: ModelRef, *, coldkey: str, hotkey: str, netuid: int, network: st
     logger.info(f"submitting reveal on netuid {netuid}: {build_reveal(ref)}")
     result = st.set_reveal_commitment(
         wallet=wallet, netuid=netuid, data=build_reveal(ref),
+        blocks_until_reveal=1,
     )
     logger.info("reveal submitted")
     return result
