@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-weight-setter",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run --no-sync weight-setter",
+      args: "run --no-sync python -m weight_setter",
       env: {
         ...loadEnv(),
         ALBEDO_WEIGHT_WORKER_ID: "weight-setter",
