@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-eval-reconciler",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run albedo-eval-dispatcher --reconcile-running",
+      args: "run --no-sync albedo-eval-dispatcher --reconcile-running",
       cron_restart: "*/1 * * * *",
       autorestart: false,
       env: loadEnv(),

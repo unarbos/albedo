@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-eval-backend-api",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run albedo-eval-api",
+      args: "run --no-sync albedo-eval-api",
       env: loadEnv(),
     },
   ],
