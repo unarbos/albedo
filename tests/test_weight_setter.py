@@ -4,6 +4,7 @@ from weight_setter.service import (
     WeightMember,
     WeightPayload,
     build_weight_payload,
+    periodic_refresh_weight_hash,
     validate_weight_payload,
 )
 
@@ -58,3 +59,19 @@ def test_weight_payload_burns_empty_reign_to_uid_zero():
 def test_validate_weight_payload_rejects_bad_sum():
     with pytest.raises(ValueError, match="sum to 1.0"):
         validate_weight_payload(WeightPayload(uids=[1], weights=[0.5], policy={}))
+
+
+
+def test_periodic_refresh_hash_is_stable_within_rate_window():
+    first = periodic_refresh_weight_hash(
+        netuid=97, reign_id=None, current_block=199, rate_limit_blocks=100
+    )
+    same_window = periodic_refresh_weight_hash(
+        netuid=97, reign_id=None, current_block=150, rate_limit_blocks=100
+    )
+    next_window = periodic_refresh_weight_hash(
+        netuid=97, reign_id=None, current_block=200, rate_limit_blocks=100
+    )
+
+    assert first == same_window
+    assert first != next_window

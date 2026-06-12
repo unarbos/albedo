@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from decimal import Decimal
@@ -180,6 +182,8 @@ class WeightSetterRepository:
         subtensor_url: str,
         current_block: int,
         rate_limit_blocks: int,
+        netuid: int,
+        burn_uid: int,
     ) -> ClaimedWeightEpoch | None:
         with self._connect() as conn:
             with conn.transaction():
@@ -194,14 +198,16 @@ class WeightSetterRepository:
                     SELECT wt.block_number
                     FROM weight_transactions wt
                     JOIN weight_epochs we ON we.id = wt.weight_epoch_id
-                    WHERE (
-                        wt.state = SUCCESS
-                        OR wt.fault_code = weight_set_rate_limited
+                    WHERE we.netuid = %s
+                      AND (
+                        wt.state = 'SUCCESS'
+                        OR wt.fault_code = 'weight_set_rate_limited'
                     )
                       AND wt.block_number IS NOT NULL
                     ORDER BY wt.block_number DESC
                     LIMIT 1
-                    """
+                    """,
+                    (netuid,),
                 ).fetchone()
                 if recent_marker:
                     blocks_since = current_block - int(recent_marker["block_number"])
@@ -226,6 +232,14 @@ class WeightSetterRepository:
                     LIMIT 1
                     """
                 ).fetchone()
+                if not epoch:
+                    epoch = _create_periodic_refresh_epoch_inside_tx(
+                        conn,
+                        netuid=netuid,
+                        current_block=current_block,
+                        rate_limit_blocks=rate_limit_blocks,
+                        burn_uid=burn_uid,
+                    )
                 if not epoch:
                     return None
 
@@ -544,6 +558,8 @@ class WeightSetter:
             subtensor_url=self.settings.network,
             current_block=current_block,
             rate_limit_blocks=self.settings.set_rate_blocks,
+            netuid=self.settings.netuid,
+            burn_uid=self.settings.burn_uid,
         )
         if not claimed:
             return False
@@ -653,6 +669,20 @@ def build_weight_payload(
     )
 
 
+def periodic_refresh_weight_hash(
+    *, netuid: int, reign_id: UUID | None, current_block: int, rate_limit_blocks: int
+) -> str:
+    refresh_window = current_block // max(rate_limit_blocks, 1)
+    payload = {
+        "netuid": netuid,
+        "reign_id": str(reign_id) if reign_id else None,
+        "reason": "PERIODIC_REFRESH",
+        "refresh_window": refresh_window,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def validate_weight_payload(payload: WeightPayload) -> None:
     if not payload.uids:
         raise ValueError("weight payload has no uids")
@@ -663,6 +693,93 @@ def validate_weight_payload(payload: WeightPayload) -> None:
     total = sum(payload.weights)
     if abs(total - 1.0) > 1e-9:
         raise ValueError(f"weight payload must sum to 1.0, got {total}")
+
+
+
+def _create_periodic_refresh_epoch_inside_tx(
+    conn: psycopg.Connection,
+    *,
+    netuid: int,
+    current_block: int,
+    rate_limit_blocks: int,
+    burn_uid: int,
+):
+    active_reign = conn.execute(
+        """
+        SELECT id, version
+        FROM reigns
+        WHERE state = 'ACTIVE'
+        ORDER BY version DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    reign_id = active_reign["id"] if active_reign else None
+    reign_version = int(active_reign["version"]) if active_reign else None
+
+    members = []
+    if reign_id:
+        members = conn.execute(
+            """
+            SELECT slot, uid, hotkey, weight_bps
+            FROM reign_members
+            WHERE reign_id = %s
+            ORDER BY slot ASC
+            """,
+            (reign_id,),
+        ).fetchall()
+
+    if members:
+        uids = [int(member["uid"]) for member in members]
+        weights = [Decimal(int(member["weight_bps"])) / Decimal(10000) for member in members]
+        slot_weight_bps = {str(member["slot"]): int(member["weight_bps"]) for member in members}
+    else:
+        uids = [burn_uid]
+        weights = [Decimal(1)]
+        slot_weight_bps = {}
+
+    refresh_window = current_block // max(rate_limit_blocks, 1)
+    policy = {
+        "policy": "periodic_refresh_v1",
+        "burn_uid": burn_uid,
+        "current_block": current_block,
+        "rate_limit_blocks": rate_limit_blocks,
+        "refresh_window": refresh_window,
+        "reign_version": reign_version,
+        "member_count": len(members),
+        "slot_weight_bps": slot_weight_bps,
+        "empty_reign_burned": not bool(members),
+    }
+    weight_hash = periodic_refresh_weight_hash(
+        netuid=netuid,
+        reign_id=reign_id,
+        current_block=current_block,
+        rate_limit_blocks=rate_limit_blocks,
+    )
+    inserted = conn.execute(
+        """
+        INSERT INTO weight_epochs (
+            id, netuid, reason, reign_id, state, uids, weights,
+            weight_policy, weight_hash
+        )
+        VALUES (%s, %s, 'PERIODIC_REFRESH', %s, 'PENDING', %s, %s, %s, %s)
+        ON CONFLICT (netuid, weight_hash) DO NOTHING
+        RETURNING id, netuid, reason, reign_id, uids, weights, weight_policy, weight_hash,
+                  NULL::uuid AS trigger_submission_id
+        """,
+        (uuid4(), netuid, reign_id, uids, weights, Jsonb(policy), weight_hash),
+    ).fetchone()
+    if inserted:
+        return inserted
+    return conn.execute(
+        """
+        SELECT we.id, we.netuid, we.reason, we.reign_id, we.uids, we.weights,
+               we.weight_policy, we.weight_hash, NULL::uuid AS trigger_submission_id
+        FROM weight_epochs we
+        WHERE we.netuid = %s AND we.weight_hash = %s
+        LIMIT 1
+        """,
+        (netuid, weight_hash),
+    ).fetchone()
 
 
 def _next_attempt_number(conn: psycopg.Connection, submission_id: UUID, stage: str) -> int:
