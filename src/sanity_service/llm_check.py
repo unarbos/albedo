@@ -1,93 +1,177 @@
-"""LLM-based coherence gate - sends all prompt/response pairs in one batch to OpenRouter."""
+"""Sanity LLM gate - per-sample injection (with re-check) + viability across the judge panel."""
 from __future__ import annotations
 
-import json
-import re
+import asyncio
+from dataclasses import dataclass, field
+from enum import StrEnum
 
-import httpx
 from loguru import logger
 
-from sanity_service import config as _cfg
-
-_OR_MODEL = _cfg.OR_MODEL
-_OR_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-_OR_TIMEOUT  = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
-
-_SYSTEM = (
-    "You review AI responses to coding questions. "
-    "For each numbered pair, answer YES if the response is relevant and coherent, "
-    "NO if it is nonsense, gibberish, or completely off-topic. "
-    "Reply with a JSON array only, e.g. [\"YES\", \"NO\", \"YES\"]. No other text."
+from sanity_service.judge_panel import query_panel
+from sanity_service.rubric import (
+    INJECTION_SYSTEM,
+    VIABILITY_SYSTEM,
+    build_injection_user,
+    build_viability_user,
+    parse_injection,
+    parse_viability,
 )
 
-
-def _build_user_message(prompts: list[str], responses: list[str]) -> str:
-    # Formats all pairs into a single message for batch judgement.
-    parts = []
-    for i, (p, r) in enumerate(zip(prompts, responses), 1):
-        parts.append(f"{i}. Question: {p.strip()}\n   Response: {r.strip()[:300]}")
-    return "\n\n".join(parts)
+# Need at least this many judges with a usable verdict to decide; otherwise defer as infra.
+_MIN_RESOLVED = 2
 
 
-def _parse_verdicts(raw: str, n: int) -> list[bool] | None:
-    # Extracts a list of YES/NO booleans from the model response; returns None if unparseable.
-    match = re.search(r"\[.*?\]", raw, re.DOTALL)
-    if not match:
-        return None
-    try:
-        items = json.loads(match.group())
-        if len(items) != n:
-            return None
-        return [str(v).strip().upper().startswith("Y") for v in items]
-    except Exception:
-        return None
+class LLMGate(StrEnum):
+    # Outcome of the gate, surfaced in the result and the sanity_results cache.
+    NOT_RUN   = "not_run"    # gate never reached (e.g. heuristics failed first)
+    DISABLED  = "disabled"   # gate intentionally off
+    PASSED    = "passed"
+    FAILED    = "failed"     # not viable (veto/consensus)
+    INJECTION = "injection"  # confirmed prompt-injection (terminal miner fault)
+    SKIPPED   = "skipped"    # judges unavailable -> infra defer
+    CACHED    = "cached"     # served from the result cache
 
 
-async def llm_check(
-    prompts: list[str],
-    responses: list[str],
-    api_key: str,
-    min_pass: int | None = None,
-) -> tuple[bool, str, str]:
-    # Batches pairs to OR; returns (passed, reason, status) where status is passed|failed|skipped.
-    # Fails open (skipped) if OR breaks; min_pass defaults to at-least-half of the prompt count.
-    if min_pass is None:
-        min_pass = (len(prompts) + 1) // 2
-    user_msg = _build_user_message(prompts, responses)
-    try:
-        async with httpx.AsyncClient(timeout=_OR_TIMEOUT) as c:
-            r = await c.post(
-                _OR_BASE_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model":       _OR_MODEL,
-                    "messages":    [
-                        {"role": "system", "content": _SYSTEM},
-                        {"role": "user",   "content": user_msg},
-                    ],
-                    "max_tokens":  64,
-                    "temperature": 0.0,
-                },
-            )
-            r.raise_for_status()
-            raw = r.json()["choices"][0]["message"]["content"] or ""
-    except Exception as exc:
-        # Fail open - OR unreachable should not block a valid challenger.
-        logger.warning("[sanity/llm] OR call failed: {} - skipping LLM gate", exc)
-        return True, "", "skipped"
+@dataclass
+class JudgeVote:
+    # One judge's verdict on one probe; None flags mean the judge gave no usable answer.
+    model:        str
+    injection:    bool | None = None
+    inj_evidence: str = ""
+    viable:       bool | None = None
+    via_reason:   str = ""
+    error:        str | None = None
 
-    verdicts = _parse_verdicts(raw, len(prompts))
-    if verdicts is None:
-        logger.warning("[sanity/llm] unparseable response: {!r} - skipping LLM gate", raw[:120])
-        return True, "", "skipped"
 
-    passed_count = sum(verdicts)
-    logger.info("[sanity/llm] verdicts={} ({}/{} coherent)", verdicts, passed_count, len(verdicts))
+@dataclass
+class SampleVerdict:
+    # Combined per-sample outcome after injection + viability.
+    prompt_excerpt: str
+    passed:         bool
+    reason:         str
+    injection:      bool = False
+    infra:          bool = False
+    rechecked:      bool = False
+    votes:          list[JudgeVote] = field(default_factory=list)
 
-    if passed_count < min_pass:
-        failed = [i + 1 for i, v in enumerate(verdicts) if not v]
-        reason = (f"LLM judge: {passed_count}/{len(verdicts)} responses coherent "
-                  f"(failed prompts: {failed})")
-        return False, reason, "failed"
 
-    return True, "", "passed"
+@dataclass
+class SampleInput:
+    # A sampled prompt plus the challenger's generated response and its heuristic pre-filter result.
+    prompt:           str
+    response:         str
+    heuristic_passed: bool = True
+    heuristic_reason: str = ""
+
+
+@dataclass
+class GateResult:
+    # Aggregate gate decision across all samples.
+    passed:        bool
+    reason:        str
+    infra_fault:   bool
+    llm_gate:      LLMGate
+    decision_mode: str
+    per_sample:    list[SampleVerdict] = field(default_factory=list)
+
+
+# ── Probes ────────────────────────────────────────────────────────────────────
+
+async def _injection_probe(
+    client, prompt: str, response: str
+) -> tuple[bool | None, list[JudgeVote]]:
+    # Returns (suspected, votes); suspected is None when too few judges resolved (treat as infra).
+    raws = await query_panel(client, INJECTION_SYSTEM, build_injection_user(prompt, response))
+    votes: list[JudgeVote] = []
+    for r in raws:
+        flag, evidence = (None, "") if r.error is not None else parse_injection(r.raw)
+        votes.append(JudgeVote(model=r.model, injection=flag, inj_evidence=evidence, error=r.error))
+    resolved = [v for v in votes if v.injection is not None]
+    if len(resolved) < _MIN_RESOLVED:
+        return None, votes
+    return any(v.injection for v in resolved), votes
+
+
+async def _viability_probe(
+    client, prompt: str, response: str, consensus: bool
+) -> tuple[bool | None, str, list[JudgeVote]]:
+    # Returns (passed, reason, votes); passed is None when too few judges resolved (treat as infra).
+    raws = await query_panel(client, VIABILITY_SYSTEM, build_viability_user(prompt, response))
+    votes: list[JudgeVote] = []
+    for r in raws:
+        flag, reason = (None, "") if r.error is not None else parse_viability(r.raw)
+        votes.append(JudgeVote(model=r.model, viable=flag, via_reason=reason, error=r.error))
+    resolved = [v for v in votes if v.viable is not None]
+    if len(resolved) < _MIN_RESOLVED:
+        return None, "viability judges unavailable", votes
+    yes = sum(1 for v in resolved if v.viable)
+    # consensus = majority of resolved judges; veto (default) = unanimity, any False vetoes.
+    passed = yes > len(resolved) / 2 if consensus else yes == len(resolved)
+    if passed:
+        return True, "", votes
+    nay = next((v.via_reason for v in resolved if not v.viable), "")
+    return False, f"not viable: {nay}".strip()[:200], votes
+
+
+async def _judge_sample(s: SampleInput, client, consensus: bool) -> SampleVerdict:
+    # Runs the per-sample flow: heuristics -> injection (+re-check) -> viability.
+    excerpt = (s.prompt or "")[:60]
+    if not s.heuristic_passed:
+        return SampleVerdict(excerpt, passed=False, reason=f"heuristic: {s.heuristic_reason}")
+
+    suspected, votes = await _injection_probe(client, s.prompt, s.response)
+    if suspected is None:
+        return SampleVerdict(excerpt, False, "injection judges unavailable",
+                             infra=True, votes=votes)
+
+    rechecked = False
+    if suspected:
+        rechecked = True
+        confirmed, votes = await _injection_probe(client, s.prompt, s.response)
+        if confirmed is None:
+            return SampleVerdict(excerpt, False, "injection judges unavailable", infra=True,
+                                 rechecked=True, votes=votes)
+        if confirmed:
+            evidence = next((v.inj_evidence for v in votes if v.injection), "")
+            return SampleVerdict(excerpt, False, f"injection: {evidence}".strip()[:200],
+                                 injection=True, rechecked=True, votes=votes)
+        # Re-check came back clean - the first flag was a false positive; continue to viability.
+
+    decided, reason, vvotes = await _viability_probe(client, s.prompt, s.response, consensus)
+    if decided is None:
+        return SampleVerdict(excerpt, False, reason, infra=True, rechecked=rechecked, votes=vvotes)
+    return SampleVerdict(excerpt, passed=decided, reason=reason, rechecked=rechecked, votes=vvotes)
+
+
+# ── Aggregation ─────────────────────────────────────────────────────────────────
+
+def _aggregate(verdicts: list[SampleVerdict], mode: str) -> GateResult:
+    # Combines per-sample verdicts with priority injection > infra > viability-fail > pass.
+    injected = next((v for v in verdicts if v.injection), None)
+    if injected is not None:
+        return GateResult(False, injected.reason, infra_fault=False, llm_gate=LLMGate.INJECTION,
+                          decision_mode=mode, per_sample=verdicts)
+    if any(v.infra for v in verdicts):
+        return GateResult(False, "judges unavailable", infra_fault=True, llm_gate=LLMGate.SKIPPED,
+                          decision_mode=mode, per_sample=verdicts)
+    failed = next((v for v in verdicts if not v.passed), None)
+    if failed is not None:
+        return GateResult(False, failed.reason, infra_fault=False, llm_gate=LLMGate.FAILED,
+                          decision_mode=mode, per_sample=verdicts)
+    return GateResult(True, "", infra_fault=False, llm_gate=LLMGate.PASSED,
+                      decision_mode=mode, per_sample=verdicts)
+
+
+async def run_gate(samples: list[SampleInput], client, *, consensus: bool = False) -> GateResult:
+    # Judges every sample concurrently and returns the aggregate gate decision.
+    mode = "consensus" if consensus else "veto"
+    if not samples:
+        return GateResult(False, "no samples", infra_fault=True,
+                          llm_gate=LLMGate.SKIPPED, decision_mode=mode)
+    verdicts = list(await asyncio.gather(*[_judge_sample(s, client, consensus) for s in samples]))
+    result = _aggregate(verdicts, mode)
+    (logger.info if result.passed else logger.warning)(
+        "[sanity/gate] passed={} gate={} mode={} reason={!r}",
+        result.passed, result.llm_gate, mode, result.reason,
+    )
+    return result

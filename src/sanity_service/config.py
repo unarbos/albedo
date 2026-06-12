@@ -36,20 +36,5 @@ def _db_url() -> str:
     return f"postgresql://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{db}"
 
 
-# vLLM / runner
-VLLM_PORT:        int   = int(os.environ.get("SANITY_VLLM_PORT", "9101"))
-GPUS:             str   = os.environ.get("SANITY_GPUS", "0")
-GPU_UTIL:         float = float(os.environ.get("SANITY_GPU_UTIL", "0.5"))
-VLLM_DTYPE:       str   = os.environ.get("SANITY_VLLM_DTYPE", "bfloat16")
-DOWNLOAD_TIMEOUT: float = float(os.environ.get("SANITY_DOWNLOAD_TIMEOUT", "300"))
-VLLM_STARTUP_S:   float = float(os.environ.get("SANITY_VLLM_STARTUP_S", "180"))
-
-# OpenRouter LLM coherence gate (skipped when OR_API_KEY is empty)
-OR_API_KEY: str = os.environ.get("SANITY_OR_API_KEY", "")
-OR_MODEL:   str = os.environ.get("SANITY_OR_MODEL", "deepseek/deepseek-v3.2")
-
-# FastAPI service port
-PORT: int = int(os.environ.get("SANITY_PORT", "9100"))
-
-# Postgres result cache + audit log (optional - disabled when unset)
+# Postgres DSN consumed by the dispatcher settings; empty string disables DB features.
 DB_URL: str = _db_url()
