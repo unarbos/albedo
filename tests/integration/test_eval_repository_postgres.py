@@ -83,10 +83,18 @@ def test_claim_next_eval_is_sequential_and_creates_attempt(db_url: str):
         active_eval_count = conn.execute(
             "SELECT count(*) FROM eval_runs WHERE state = 'DISPATCHED'",
         ).fetchone()[0]
+        king_submission_id = conn.execute(
+            "SELECT king_submission_id FROM eval_runs WHERE submission_id = %s AND state = 'DISPATCHED'",
+            (submission_id,),
+        ).fetchone()[0]
+        expected_king_submission_id = conn.execute(
+            "SELECT id FROM model_submissions WHERE hotkey = 'king-hotkey'",
+        ).fetchone()[0]
 
     assert submission_state == "EVAL_RUNNING"
     assert attempt_count == 1
     assert active_eval_count == 1
+    assert king_submission_id == expected_king_submission_id
 
 
 def test_sweep_abandoned_eval_attempts_returns_submission_to_retryable(db_url: str):
