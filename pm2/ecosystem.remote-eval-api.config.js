@@ -3,7 +3,7 @@ const path = require("path");
 
 function loadEnv() {
   const envPath = path.resolve(__dirname, "..", ".env");
-  const env = { ...process.env };
+  const env = {};
   if (!fs.existsSync(envPath)) return env;
   for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
