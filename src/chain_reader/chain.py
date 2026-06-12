@@ -35,49 +35,51 @@ def connect(network: str) -> Any:
     return bt.Subtensor(network=network)
 
 
-def _decode_raw(raw: Any) -> str:
-    if isinstance(raw, (bytes, bytearray)):
-        return raw.decode("utf-8", errors="replace")
-    if isinstance(raw, str):
-        if raw.startswith("0x"):
-            try:
-                return bytes.fromhex(raw[2:]).decode("utf-8", errors="replace")
-            except ValueError:
-                return raw
-        return raw
-    return str(raw)
+def _decode_commitment_pair(pair: tuple[Any, Any]) -> tuple[str, list[tuple[int, str]]]:
+    """Return (hotkey_ss58, [(block, payload), ...]) for one RevealedCommitments row.
+
+    Depending on the substrate client path, the payload may arrive as either a
+    hex-serialized SCALE byte string (``0x...``) or raw commitment bytes wrapped in a
+    Python str via latin-1. We normalize both shapes to bytes, strip the SCALE
+    compact-length prefix, and decode the rest as UTF-8.
+    """
+    key, data = pair
+    if not isinstance(key, str):
+        raise ValueError(f"unexpected commitment key type {type(key).__name__}")
+    out: list[tuple[int, str]] = []
+    for entry in data:
+        text, block = entry
+        if not isinstance(text, str):
+            raise ValueError(f"unexpected commitment payload type {type(text).__name__}")
+        if text.startswith(("0x", "0X")):
+            raw = bytes.fromhex(text[2:])
+        else:
+            raw = text.encode("latin-1")
+        if not raw:
+            raise ValueError("empty commitment payload")
+        mode = raw[0] & 0b11
+        offset = 1 if mode == 0 else 2 if mode == 1 else 4
+        out.append((int(block), raw[offset:].decode("utf-8", errors="ignore")))
+    return key, out
 
 
-def _iter_commitments(raw: Any) -> Iterator[tuple[str, int | None, str]]:
-    """Yield (hotkey, block, data) across both bittensor SDK shapes."""
-    if isinstance(raw, dict):
-        for hotkey, value in raw.items():
-            yield str(hotkey), None, _decode_raw(value)
-        return
-    for pair in raw:
+def _iter_revealed(subtensor: Any, netuid: int) -> Iterator[tuple[str, int, str]]:
+    """Yield (hotkey, block, payload) from Commitments.RevealedCommitments.
+
+    TimelockEncrypted commit-reveal entries are not present here until they are revealed,
+    so they are skipped for free — we never attempt to decode an encrypted blob.
+    """
+    qm = subtensor.query_map(module="Commitments", name="RevealedCommitments", params=[netuid])
+    for k, v in qm:
+        hotkey = str(getattr(k, "value", k))
+        data = getattr(v, "value", v)
         try:
-            hotkey = str(pair[0])
-            entries = [(int(item[0]), _decode_raw(item[1])) for item in pair[1]]
-            if entries:
-                block, data = max(entries, key=lambda t: t[0])
-                yield hotkey, block, data
+            _, entries = _decode_commitment_pair((hotkey, data))
         except Exception as exc:  # noqa: BLE001
-            log.debug("failed to decode commitment pair: {}", exc)
-
-
-def _commitment_blocks(subtensor: Any, netuid: int) -> dict[str, int]:
-    """hotkey -> commit block, from Commitments.CommitmentOf (get_all_commitments omits it)."""
-    out: dict[str, int] = {}
-    try:
-        for k, v in subtensor.query_map("Commitments", "CommitmentOf", [netuid]):
-            hk = getattr(k, "value", k)
-            val = getattr(v, "value", v)
-            blk = val.get("block") if isinstance(val, dict) else None
-            if blk is not None:
-                out[str(hk)] = int(blk)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("CommitmentOf query failed: {}", exc)
-    return out
+            log.debug("failed to decode revealed commitment for {}: {}", hotkey, exc)
+            continue
+        for block, payload in entries:
+            yield hotkey, block, payload
 
 
 def _uid_map(subtensor: Any, netuid: int) -> dict[str, int]:
@@ -126,23 +128,15 @@ def _payload_hash(payload: dict[str, Any]) -> str:
 
 
 def scan_commitments(subtensor: Any, netuid: int) -> list[Commit]:
-    """Read all current v5 commitments on ``netuid`` and return Commit records."""
-    raw = subtensor.get_all_commitments(netuid=netuid)
-    blocks = _commitment_blocks(subtensor, netuid)
+    """Read all revealed commitments on ``netuid`` and return v5 Commit records."""
     uids = _uid_map(subtensor, netuid)
 
     commits: list[Commit] = []
     n_total = n_skipped = 0
-    for hotkey, block, data in _iter_commitments(raw):
+    for hotkey, block, data in _iter_revealed(subtensor, netuid):
         n_total += 1
         payload = _parse_v5(data, hotkey)
         if payload is None:
-            n_skipped += 1
-            continue
-        if block is None:
-            block = blocks.get(hotkey)
-        if block is None:
-            log.warning("no commit block for hotkey={}; skipping", hotkey)
             n_skipped += 1
             continue
         uid = uids.get(hotkey)
