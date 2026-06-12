@@ -25,7 +25,7 @@ module.exports = {
       name: env.ALBEDO_REMOTE_EVAL_PM2_NAME || "albedo-remote-eval-api",
       cwd: path.resolve(__dirname, ".."),
       script: env.ALBEDO_REMOTE_EVAL_PM2_SCRIPT || "uv",
-      args: env.ALBEDO_REMOTE_EVAL_PM2_ARGS || "run albedo-remote-eval-api",
+      args: env.ALBEDO_REMOTE_EVAL_PM2_ARGS || "run --no-sync albedo-remote-eval-api",
       env,
     },
   ],

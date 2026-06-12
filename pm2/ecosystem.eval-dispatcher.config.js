@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-eval-dispatcher",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run albedo-eval-dispatcher",
+      args: "run --no-sync albedo-eval-dispatcher",
       env: loadEnv(),
     },
   ],

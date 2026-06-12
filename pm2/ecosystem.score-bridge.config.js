@@ -23,7 +23,7 @@ module.exports = {
       name: "albedo-score-bridge",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run albedo-score-bridge",
+      args: "run --no-sync albedo-score-bridge",
       autorestart: true,
       env: loadEnv(),
     },

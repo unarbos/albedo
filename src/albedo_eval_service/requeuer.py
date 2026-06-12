@@ -15,3 +15,7 @@ def main() -> None:
     repository = EvalRepository(settings.database_url)
     requeued = repository.requeue_retryable_evals(worker_id=settings.worker_id, limit=args.limit)
     print(f"requeued_eval_submissions={requeued}")
+
+
+if __name__ == "__main__":
+    main()

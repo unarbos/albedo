@@ -23,7 +23,7 @@ module.exports = {
       name: "albedo-judge-api",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run albedo-judge-api",
+      args: "run --no-sync albedo-judge-api",
       env: loadEnv(),
     },
   ],

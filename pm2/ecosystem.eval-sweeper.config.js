@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-eval-sweeper",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run albedo-eval-dispatcher --sweep-abandoned",
+      args: "run --no-sync albedo-eval-dispatcher --sweep-abandoned",
       cron_restart: "*/1 * * * *",
       autorestart: false,
       env: loadEnv(),
