@@ -104,7 +104,8 @@ class EvalRepository:
 
                 king = conn.execute(
                     """
-                    SELECT kv.version AS king_version, kv.model_hash, a.uri AS model_uri
+                    SELECT kv.version AS king_version, kv.submission_id AS king_submission_id,
+                           kv.model_hash, a.uri AS model_uri
                     FROM reigns r
                     JOIN reign_members rm ON rm.reign_id = r.id AND rm.slot = 1
                     JOIN king_versions kv ON kv.id = rm.king_version_id
@@ -159,14 +160,14 @@ class EvalRepository:
                 conn.execute(
                     """
                     INSERT INTO eval_runs (
-                        id, submission_id, stage_attempt_id, king_model_hash,
-                        challenger_model_hash, remote_host_id, state, gpu_count,
+                        id, submission_id, stage_attempt_id, king_submission_id,
+                        king_model_hash, challenger_model_hash, remote_host_id, state, gpu_count,
                         dataset_version, dataset_manifest_hash, dataset_sample_seed, dataset_sample_ids,
                         dataset_max_turns_per_sample, dataset_sampling_algo, judge_config_hash, judge_count,
                         sample_count, started_at
                     )
                     VALUES (
-                        %s, %s, %s, %s, %s, %s, 'DISPATCHED', 8,
+                        %s, %s, %s, %s, %s, %s, %s, 'DISPATCHED', 8,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
                     )
                     """,
@@ -174,6 +175,7 @@ class EvalRepository:
                         eval_run_id,
                         submission["id"],
                         attempt_id,
+                        king["king_submission_id"],
                         king["model_hash"],
                         submission["model_hash"],
                         remote_host.id,
