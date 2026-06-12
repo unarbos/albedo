@@ -23,7 +23,7 @@ const env = loadEnv();
 module.exports = {
   apps: [
     {
-      name: "chain_reader",
+      name: "albedo-chain_reader",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
       args: "run chain-reader",
@@ -34,7 +34,7 @@ module.exports = {
       time: true,
     },
     {
-      name: "hippius_validation",
+      name: "albedo-hippius_validation",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
       args: "run hippius-validation",

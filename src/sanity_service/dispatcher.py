@@ -15,7 +15,7 @@ from sanity_service.dataset import sample_prompts
 from sanity_service.judge_panel import make_client
 from sanity_service.llm_check import SampleInput, run_gate
 from sanity_service.remote_client import SanityRemoteClient
-from new_refactor.albedo.src.sanity_service.db import ClaimedPreEval, PreEvalRepository
+from src.sanity_service.db import ClaimedPreEval, PreEvalRepository
 from sanity_service.settings import SanitySettings, get_settings
 
 
