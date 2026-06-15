@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from loguru import logger
 
 from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.models import SanityRunRequest
@@ -58,7 +59,7 @@ def capacity(
 
 
 @app.post("/sanity-runs")
-def start_run(
+async def start_run(
     request: SanityRunRequest,
     background_tasks: BackgroundTasks,
     settings: SanityRemoteSettings = Depends(get_remote_settings),
@@ -70,6 +71,7 @@ def start_run(
     run = store.start(request)
     queued = store.mark_worker_started(run.run_id)
     if queued is not None:
+        logger.info("[sanity-remote-api] queuing background task run={}", run.run_id)
         background_tasks.add_task(generate, queued)
     return {"run_id": run.run_id, "state": run.state}
 

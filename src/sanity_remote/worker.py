@@ -4,15 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
-import sys
 import time
 from typing import Any
 
 import httpx
 from loguru import logger
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_thinking(text: str) -> str:
+    # Removes <think>...</think> so heuristics evaluate the answer, not CoT reasoning.
+    # Returns "" if thinking started but never closed - the model hit its token ceiling mid-thought.
+    if "<think>" not in text:
+        return text
+    if "</think>" not in text:
+        return ""
+    return _THINK_RE.sub("", text).strip()
 
 from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.state import SanityRun
@@ -125,7 +137,7 @@ class VllmEngine:
     async def _start_vllm(self, model_dir: str, model_name: str) -> None:
         # Launches a vLLM subprocess (no --trust-remote-code) and waits until it reports healthy.
         cmd = [
-            sys.executable,
+            self._s.vllm_python,
             "-m",
             "vllm.entrypoints.openai.api_server",
             "--model",
@@ -193,6 +205,9 @@ class VllmEngine:
                         "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": max_tokens,
                         "temperature": 0.0,
+                        # Disable Qwen3 extended thinking - sanity checks need direct answers,
+                        # not CoT that consumes the full token budget before any answer appears.
+                        "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
             if r.status_code >= 400:
@@ -201,7 +216,17 @@ class VllmEngine:
                 )
                 return ""
             try:
-                return r.json()["choices"][0]["message"]["content"] or ""
+                choice = r.json()["choices"][0]
+                raw = choice["message"]["content"] or ""
+                finish = choice.get("finish_reason", "unknown")
+                answer = _strip_thinking(raw)
+                logger.info(
+                    "[sanity-remote] prompt finish={} thinking={} answer_words={}",
+                    finish,
+                    "<think>" in raw,
+                    len(answer.split()),
+                )
+                return answer
             except (KeyError, IndexError, ValueError):
                 logger.warning("[sanity-remote] malformed vLLM response body - model fault")
                 return ""

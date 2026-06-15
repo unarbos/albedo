@@ -25,7 +25,7 @@ module.exports = {
     {
       name: env.SANITY_REMOTE_PM2_NAME || "albedo-sanity-remote-api",
       cwd: path.resolve(__dirname, ".."),
-      script: "uv",
+      script: env.SANITY_REMOTE_UV_PATH || "uv",
       args: "run sanity-remote",
       autorestart: true,
       env,

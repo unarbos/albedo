@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,10 +24,11 @@ class SanityRemoteSettings(BaseSettings):
     vllm_port: int = 9101
     vllm_dtype: str = "bfloat16"
     vllm_startup_s: float = 180.0
+    vllm_python: str = sys.executable  # override if vLLM lives in a separate venv
     download_timeout_s: float = 300.0
     model_cache_dir: str = "/tmp/albedo-sanity-models"
     gen_max_tokens: int = 1024
-    max_model_len: int = 4096
+    max_model_len: int = 8192
 
     # Control-plane smoke mode (no GPU) for API/idempotency tests; echoes prompts as responses.
     mock_auto_result: bool = False
