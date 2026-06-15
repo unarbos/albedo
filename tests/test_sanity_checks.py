@@ -16,6 +16,7 @@ from sanity_service.checks import (
     check_uniform_length,
     check_vocabulary,
 )
+from sanity_service.dataset import sample_prompts
 
 # ── per-response checks ─────────────────────────────────────────────────────────
 
@@ -100,6 +101,14 @@ def test_heuristics_reports_empty_before_set_collapse():
     assert all(v["reason"] == "empty response" for v in out)
 
 
+def test_fallback_prompts_use_qwen_chat_template():
+    sample = sample_prompts(seed="seed", n=1)[0]
+
+    assert sample.prompt.startswith("<|im_start|>user\n")
+    assert sample.prompt.endswith("<|im_start|>assistant\n")
+    assert "assistant:" not in sample.prompt
+
+
 def test_heuristics_passes_varied_code_responses():
     responses = [
         "def add(a, b): return a + b here",
@@ -161,4 +170,5 @@ def test_run_prompts_uses_raw_completions(monkeypatch):
         "top_p": 0.8,
         "top_k": 20,
         "min_p": 0.0,
+        "stop_token_ids": [151645],
     }

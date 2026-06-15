@@ -8,6 +8,8 @@ from typing import Protocol
 
 from .remote_dataset import EvalSample
 
+_QWEN3_IM_END_TOKEN_ID = 151645
+
 
 @dataclass(frozen=True)
 class GenerationResult:
@@ -128,7 +130,12 @@ def _vllm_worker(
         if enforce_eager:
             llm_kwargs["enforce_eager"] = True
         llm = LLM(**llm_kwargs)
-        params_kwargs = {"max_tokens": max_new_tokens, "temperature": temperature, "top_p": top_p}
+        params_kwargs = {
+            "max_tokens": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stop_token_ids": [_QWEN3_IM_END_TOKEN_ID],
+        }
         if top_k is not None:
             params_kwargs["top_k"] = top_k
         params = SamplingParams(**params_kwargs)

@@ -27,6 +27,7 @@ from sanity_service.checks import (
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _FORBIDDEN_CONFIG_KEYS = frozenset({"auto_map", "quantization_config"})
+_QWEN3_IM_END_TOKEN_ID = 151645
 
 
 def _strip_thinking(text: str) -> str:
@@ -225,9 +226,8 @@ class VllmEngine:
     async def _run_prompts(self, model_name: str, prompts: list[str], max_tokens: int) -> list[str]:
         # Per prompt: HTTP-error/malformed -> "" (model fault); transport error -> raise (infra).
         #
-        # Keep this aligned with the full eval worker: SWE-ZERO prompts are already complete
-        # text transcripts, so they should be sent as raw completions. The chat endpoint wraps
-        # that transcript in another chat template and can turn valid continuations into EOS.
+        # Keep this aligned with the full eval worker: SWE-ZERO prompts are already formatted
+        # with the Qwen chat template, so they should be sent as raw completions.
         url = f"http://localhost:{self._s.vllm_port}/v1/completions"
         timeout = httpx.Timeout(connect=5.0, read=60.0, write=5.0, pool=5.0)
 
@@ -243,6 +243,7 @@ class VllmEngine:
                         "top_p": self._s.gen_top_p,
                         "top_k": self._s.gen_top_k,
                         "min_p": self._s.gen_min_p,
+                        "stop_token_ids": [_QWEN3_IM_END_TOKEN_ID],
                     },
                 )
             if r.status_code >= 400:

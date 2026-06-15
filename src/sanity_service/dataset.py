@@ -1,4 +1,5 @@
 """Sanity dataset sampling - reuses the eval SWE-ZERO manifest sampler + loader (stable side)."""
+
 from __future__ import annotations
 
 import json
@@ -12,8 +13,8 @@ _PROMPTS_FILE = Path(__file__).parent / "prompts.json"
 class SanitySample:
     # One sampled prompt to send to the GPU worker (decoupled from the eval EvalSample type).
     sample_id: str
-    prompt:    str
-    target:    str | None = None
+    prompt: str
+    target: str | None = None
 
 
 def sample_prompts(
@@ -43,5 +44,10 @@ def sample_prompts(
 
 def _fallback_prompts(n: int) -> list[SanitySample]:
     # Static prompts.json fallback for local/dev when no SWE-ZERO manifest is configured.
+    from albedo_eval_service.remote_dataset import format_user_prompt
+
     prompts: list[str] = json.loads(_PROMPTS_FILE.read_text())[:n]
-    return [SanitySample(f"fallback:{i}", prompt) for i, prompt in enumerate(prompts)]
+    return [
+        SanitySample(f"fallback:{i}", format_user_prompt(prompt))
+        for i, prompt in enumerate(prompts)
+    ]

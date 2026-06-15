@@ -7,6 +7,9 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+_IM_START = "<|im_start|>"
+_IM_END = "<|im_end|>"
+
 
 @dataclass(frozen=True)
 class EvalSample:
@@ -56,16 +59,23 @@ def _prompt_from_row(row: dict[str, Any], *, turn_idx: int) -> tuple[str, str | 
     turns = _extract_turns(normalized)
     if turns:
         assistant_turns = [index for index, turn in enumerate(turns) if _role(turn) == "assistant"]
-        source_index = assistant_turns[turn_idx] if turn_idx < len(assistant_turns) else min(turn_idx, len(turns) - 1)
+        source_index = (
+            assistant_turns[turn_idx]
+            if turn_idx < len(assistant_turns)
+            else min(turn_idx, len(turns) - 1)
+        )
         prompt_turns = turns[:source_index]
-        target = _content(turns[source_index]) if _role(turns[source_index]) == "assistant" else None
+        target = (
+            _content(turns[source_index]) if _role(turns[source_index]) == "assistant" else None
+        )
         return _format_prompt(prompt_turns), target
 
     for key in ("prompt", "instruction", "question", "input", "text"):
         value = normalized.get(key)
         if isinstance(value, str) and value.strip():
             return value, None
-    return json.dumps({key: value for key, value in normalized.items() if not key.startswith("__")}, sort_keys=True), None
+    fallback = {key: value for key, value in normalized.items() if not key.startswith("__")}
+    return json.dumps(fallback, sort_keys=True), None
 
 
 def _extract_turns(row: dict[str, Any]) -> list[Any]:
@@ -82,15 +92,29 @@ def _extract_turns(row: dict[str, Any]) -> list[Any]:
     return []
 
 
+def format_user_prompt(prompt: str) -> str:
+    return _format_prompt([{"role": "user", "content": prompt}])
+
+
 def _format_prompt(turns: list[Any]) -> str:
-    lines = []
+    parts = []
     for turn in turns:
-        role = _role(turn) or "user"
+        role = _chat_role(_role(turn))
         content = _content(turn)
         if content:
-            lines.append(f"{role}: {content}")
-    lines.append("assistant:")
-    return "\n".join(lines)
+            parts.append(f"{_IM_START}{role}\n{content}{_IM_END}")
+    parts.append(f"{_IM_START}assistant\n")
+    return "\n".join(parts)
+
+
+def _chat_role(role: str | None) -> str:
+    if role in {"assistant", "system", "user"}:
+        return role
+    if role in {"human", "prompter"}:
+        return "user"
+    if role in {"gpt", "bot", "model"}:
+        return "assistant"
+    return "user"
 
 
 def _unwrap_column(value: Any) -> Any:
