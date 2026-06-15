@@ -250,6 +250,7 @@ class PreEvalRepository:
         fault_message: str,
         retryable: bool,
         responses: list[str] | None = None,
+        artifact_uri: str | None = None,
     ) -> None:
         # Fails the attempt; retryable -> PRE_EVAL_RETRYABLE, terminal -> TERMINAL_INVALID (cached).
         attempt_state = "FAILED_RETRYABLE" if retryable else "FAILED_TERMINAL"
@@ -259,6 +260,8 @@ class PreEvalRepository:
                 self._write_sanity_result(
                     conn, repo, digest, False, fault_message, responses or [], {}
                 )
+                if artifact_uri:
+                    self._insert_sanity_artifact(conn, submission_id, attempt_id, artifact_uri)
             conn.execute(
                 """
                 UPDATE stage_attempts
@@ -329,6 +332,25 @@ class PreEvalRepository:
                     data={"worker_id": worker_id},
                 )
             return len(rows)
+
+    @staticmethod
+    def _insert_sanity_artifact(
+        conn: psycopg.Connection, submission_id: UUID, attempt_id: UUID, uri: str
+    ) -> None:
+        # Records the uploaded fault report so the dashboard can link it (artifact_type SANITY_RESULT).
+        bucket, object_key = (None, None)
+        if uri.startswith("s3://"):
+            bucket, _, object_key = uri[len("s3://"):].partition("/")
+        conn.execute(
+            """
+            INSERT INTO artifacts (
+                id, submission_id, stage_attempt_id, artifact_type,
+                storage_backend, uri, bucket, object_key, content_type
+            )
+            VALUES (%s, %s, %s, 'SANITY_RESULT', 's3', %s, %s, %s, 'application/json')
+            """,
+            (uuid4(), submission_id, attempt_id, uri, bucket or None, object_key or None),
+        )
 
     @staticmethod
     def _write_sanity_result(

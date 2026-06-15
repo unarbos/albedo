@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -17,6 +19,7 @@ from sanity_service.judge_panel import make_client
 from sanity_service.llm_check import SampleInput, run_gate
 from sanity_service.remote_client import SanityRemoteClient
 from sanity_service.settings import SanitySettings, get_settings
+from sanity_service.uploads import put_sanity_fault
 
 
 class SanityDispatcher:
@@ -200,6 +203,21 @@ class SanityDispatcher:
                 timing={},
             )
         else:
+            # Terminal miner fault: publish a fault report to Hippius (reason + per-judge evidence)
+            # so it can be linked from the dashboard, then record the artifact alongside the verdict.
+            detail = {
+                "submission_id": str(submission_id),
+                "repo": repo,
+                "digest": digest,
+                "fault_code": str(gate.llm_gate),
+                "reason": gate.reason,
+                "decision_mode": gate.decision_mode,
+                "gate": dataclasses.asdict(gate),
+                "prompts": prompts,
+                "responses": responses,
+                "checked_at": datetime.now(UTC).isoformat(),
+            }
+            artifact_uri = put_sanity_fault(str(submission_id), digest, detail)
             self.repository.mark_pre_eval_failed(
                 submission_id=submission_id,
                 attempt_id=attempt_id,
@@ -210,6 +228,7 @@ class SanityDispatcher:
                 fault_message=gate.reason,
                 retryable=False,
                 responses=responses,
+                artifact_uri=artifact_uri,
             )
 
     async def reconcile_once(self, *, limit: int = 10, follow_timeout: float = 50.0) -> int:
