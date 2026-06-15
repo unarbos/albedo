@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -28,6 +29,8 @@ WEBSITE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WEBSITE_DIR.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 DATA_DIR = WEBSITE_DIR / "data"
+
+log = logging.getLogger("monitor")
 
 # Mirrors albedo_eval_service.judge_core.JUDGE_MODELS (kept inline so this script stays standalone).
 JUDGE_MODELS = ["z-ai/glm-5.1", "qwen/qwen3.5-397b-a17b", "deepseek/deepseek-v3.2"]
@@ -364,13 +367,13 @@ def build_state(conn) -> dict[str, Any]:
 # --------------------------------------------------------------------------- upload
 
 
-def _upload_to_hippius(key: str, path: Path) -> None:
+def _upload_to_hippius(key: str, path: Path) -> bool:
     bucket = os.environ.get("ALBEDO_S3_BUCKET") or "albedo"
     access = os.environ.get("ALBEDO_S3_ACCESS_KEY")
     secret = os.environ.get("ALBEDO_S3_SECRET_KEY")
     if not (access and secret):
-        print(f"  [skip-upload] ALBEDO_S3_* unset; kept local {path.name}")
-        return
+        log.warning("ALBEDO_S3_* unset; kept local %s (not uploaded)", path.name)
+        return False
     endpoint = os.environ.get("ALBEDO_S3_ENDPOINT") or "https://s3.hippius.com"
     try:
         import boto3
@@ -392,9 +395,10 @@ def _upload_to_hippius(key: str, path: Path) -> None:
             CacheControl="no-cache, must-revalidate",
             ACL="public-read",
         )
-        print(f"  uploaded s3://{bucket}/{key}")
+        return True
     except Exception as exc:  # never wedge the loop on an upload
-        print(f"  [upload-failed] {key}: {exc}", file=sys.stderr)
+        log.error("upload failed for %s: %s", key, exc)
+        return False
 
 
 # --------------------------------------------------------------------------- loop
@@ -420,11 +424,25 @@ def generate(*, database_url: str, netuid: int, history_limit: int, artifact_bas
         dashboard = build_dashboard(conn, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base)
         state = build_state(conn)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    uploads: dict[str, bool] = {}
     for name, data in (("dashboard.json", dashboard), ("state.json", state)):
         path = DATA_DIR / name
         path.write_text(json.dumps(data, default=_json_default, indent=2), encoding="utf-8")
-        print(f"wrote {path}")
-        _upload_to_hippius(f"data/{name}", path)
+        uploads[name] = _upload_to_hippius(f"data/{name}", path)
+
+    members = dashboard["reign"]["members"]
+    king_version = max((m["king_version"] for m in members if m.get("king_version") is not None), default=None)
+    current = dashboard["current_eval"]
+    log.info(
+        "published update: evaluated=%s reign_king=v%s eval_runs=%d queued=%d current_eval=%s fails=%d upload=%s",
+        dashboard["stats"]["evaluated"],
+        king_version,
+        len(dashboard["eval_runs"]),
+        len(dashboard["queue"]),
+        current["state"] if current else "idle",
+        len(dashboard["fails"]),
+        "ok" if all(uploads.values()) else "FAILED",
+    )
 
 
 def main() -> int:
@@ -433,6 +451,8 @@ def main() -> int:
     parser.add_argument("--netuid", type=int, default=None)
     parser.add_argument("--history-limit", type=int, default=None)
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 
     load_env(ENV_PATH)
     database_url = os.environ.get("ALBEDO_EVAL_DATABASE_URL")
@@ -462,7 +482,7 @@ def main() -> int:
                 run_once()
                 last_sig = sig
         except Exception as exc:  # keep the loop alive; the next tick retries
-            print(f"[monitor] tick failed: {exc}", file=sys.stderr)
+            log.error("tick failed: %s", exc)
         time.sleep(interval)
 
 
