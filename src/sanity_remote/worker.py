@@ -24,6 +24,11 @@ from sanity_service.checks import (
 )
 
 
+def _model_ref_parts(model_uri: str, digest: str) -> tuple[str, str]:
+    repo, sep, uri_digest = model_uri.partition("@")
+    return repo, uri_digest if sep else digest
+
+
 class WorkerFault(Exception):
     # Carries a fault code + retryability for the run's failure event.
     def __init__(self, code: str, message: str, *, retryable: bool = True) -> None:
@@ -41,6 +46,7 @@ class VllmEngine:
         self._loaded_digest = ""
         self._loaded_dir = ""
         self._lock = asyncio.Lock()
+        self._kill_port_squatter()
 
     async def run_job(
         self, model_uri: str, digest: str, prompts: list[str], max_tokens: int
@@ -49,6 +55,33 @@ class VllmEngine:
         async with self._lock:
             await self._ensure_model(model_uri, digest)
             return await self._run_prompts(digest, prompts, max_tokens)
+
+    def _kill_port_squatter(self) -> None:
+        # On startup, kill any orphaned vLLM process that may still hold the configured port.
+        # Without this, a restart of the worker process leaves _proc=None so _kill_vllm() is
+        # a no-op, _wait_healthy() immediately returns True against the old server, and the new
+        # digest is written to _loaded_digest while vLLM still serves the previous model → 404.
+        import socket
+        try:
+            with socket.socket() as s:
+                s.settimeout(0.5)
+                if s.connect_ex(("127.0.0.1", self._s.vllm_port)) != 0:
+                    return  # port is free, nothing to kill
+        except Exception:
+            return
+        try:
+            result = subprocess.run(
+                ["lsof", "-t", f"-i:{self._s.vllm_port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for pid_str in result.stdout.split():
+                try:
+                    os.kill(int(pid_str), signal.SIGKILL)
+                    logger.info("[sanity-remote] killed orphan vLLM pid={} on port {}", pid_str, self._s.vllm_port)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def forget(self) -> None:
         # Forces a reload next time; keeps _loaded_dir so a stale model stays reclaimable.
@@ -86,7 +119,8 @@ class VllmEngine:
         # Downloads the model from Hippius and returns the local directory path.
         from hippius_validation.hippius import download_full, make_ref
 
-        return await asyncio.to_thread(download_full, make_ref(model_uri, digest))
+        repo, ref_digest = _model_ref_parts(model_uri, digest)
+        return await asyncio.to_thread(download_full, make_ref(repo, ref_digest))
 
     async def _start_vllm(self, model_dir: str, model_name: str) -> None:
         # Launches a vLLM subprocess (no --trust-remote-code) and waits until it reports healthy.
@@ -213,8 +247,10 @@ def _engine() -> VllmEngine:
     return _ENGINE
 
 
-def _heuristics(responses: list[str], req: Any) -> list[dict[str, Any]]:
+def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict[str, Any]]:
     # Per-response heuristic verdicts; a set-level collapse signal fails all responses.
+    if skip:
+        return [{"passed": True, "reason": "heuristics disabled"} for _ in responses]
     set_fail = next(
         (
             c
@@ -257,9 +293,13 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
     try:
         run.append_event({"type": "generation_started", "run_id": run.run_id})
         responses = await engine.run_job(req.model_uri, req.digest, req.prompts, req.gen_max_tokens)
-        run.succeed(responses=responses, heuristics=_heuristics(responses, req))
+        run.succeed(responses=responses, heuristics=_heuristics(responses, req, skip=s.skip_heuristics))
     except WorkerFault as fault:
         engine.forget()
+        logger.warning(
+            "[sanity-remote] worker fault code={} digest={:.16} retryable={}: {}",
+            fault.code, req.digest, fault.retryable, fault,
+        )
         run.fail(fault_code=fault.code, fault_message=str(fault), retryable=fault.retryable)
     except Exception as exc:  # noqa: BLE001 - never let a worker crash strand the run
         engine.forget()

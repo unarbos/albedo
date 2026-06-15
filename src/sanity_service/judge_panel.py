@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+from loguru import logger
+
 from albedo_eval_service.judge_config import JudgeSettings, get_judge_settings
 from albedo_eval_service.judge_core import JUDGE_MODELS
 from albedo_eval_service.judge_openrouter import JudgeRawResponse, OpenRouterJudgeClient
@@ -26,6 +28,7 @@ async def query_panel(
         try:
             return await client.complete(model=model, messages=messages)
         except Exception as exc:  # noqa: BLE001 - a dead judge must not abort the panel
+            logger.warning("[sanity/judge] judge {} failed: {}: {}", model, type(exc).__name__, exc)
             return JudgeRawResponse(
                 model=model, provider=None, raw="", error=f"{type(exc).__name__}: {exc}"
             )

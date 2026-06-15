@@ -30,6 +30,8 @@ class SanityRemoteSettings(BaseSettings):
 
     # Control-plane smoke mode (no GPU) for API/idempotency tests; echoes prompts as responses.
     mock_auto_result: bool = False
+    # Skip text heuristics entirely - responses go straight to the LLM judge gate.
+    skip_heuristics: bool = False
 
 
 @lru_cache
