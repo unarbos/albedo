@@ -17,11 +17,19 @@ def test_load_swe_zero_sample_from_messages_json(tmp_path):
     table = pa.table({"messages": [json.dumps(messages)]})
     pq.write_table(table, shard_dir / "train-00000.parquet")
 
-    samples = load_swe_zero_samples(dataset_root=tmp_path, sample_ids=["data/train-00000.parquet:0:0"])
+    samples = load_swe_zero_samples(
+        dataset_root=tmp_path, sample_ids=["data/train-00000.parquet:0:0"]
+    )
 
     assert len(samples) == 1
     assert samples[0].sample_id == "data/train-00000.parquet:0:0"
-    assert samples[0].prompt == "system: Be concise.\nuser: Fix the failing test.\nassistant:"
+    assert samples[0].prompt == (
+        "<|im_start|>system\n"
+        "Be concise.<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Fix the failing test.<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
     assert samples[0].target == "Use the right assertion."
 
 
@@ -31,7 +39,9 @@ def test_load_swe_zero_sample_from_prompt_column(tmp_path):
     table = pa.table({"prompt": ["Explain pytest fixtures."]})
     pq.write_table(table, shard_dir / "train-00001.parquet")
 
-    samples = load_swe_zero_samples(dataset_root=tmp_path, sample_ids=["data/train-00001.parquet:0:0"])
+    samples = load_swe_zero_samples(
+        dataset_root=tmp_path, sample_ids=["data/train-00001.parquet:0:0"]
+    )
 
     assert samples[0].prompt == "Explain pytest fixtures."
     assert samples[0].target is None

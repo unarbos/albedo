@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from uuid import uuid4
 
 import pyarrow as pa
@@ -15,7 +17,7 @@ from albedo_eval_service.models import (
     ScoringConfig,
 )
 from albedo_eval_service.remote_config import RemoteSettings
-from albedo_eval_service.remote_generation import GenerationResult
+from albedo_eval_service.remote_generation import GenerationResult, _vllm_worker
 from albedo_eval_service.remote_state import RemoteRun
 from albedo_eval_service.remote_worker import RemoteEvalWorker
 
@@ -159,3 +161,49 @@ def test_vllm_generator_uses_canonical_max_model_len_even_when_env_is_lower(tmp_
 
     assert generator.max_model_len == canonical_max_model_len()
     assert generator.max_new_tokens == settings.max_new_tokens
+
+
+def test_vllm_worker_stops_on_qwen_im_end(monkeypatch):
+    captured = {}
+
+    class _SamplingParams:
+        def __init__(self, **kwargs):
+            captured["params"] = kwargs
+
+    class _LLM:
+        def __init__(self, **kwargs):
+            captured["llm"] = kwargs
+
+        def generate(self, prompts, params):
+            captured["prompts"] = prompts
+            captured["params_obj"] = params
+            choice = types.SimpleNamespace(text="done")
+            return [types.SimpleNamespace(outputs=[choice])]
+
+    class _Queue:
+        payload = None
+
+        def put(self, payload):
+            self.payload = payload
+
+    monkeypatch.setitem(
+        sys.modules, "vllm", types.SimpleNamespace(LLM=_LLM, SamplingParams=_SamplingParams)
+    )
+    queue = _Queue()
+
+    _vllm_worker(
+        model="/models/challenger",
+        gpu_ids=["0"],
+        prompts=["<|im_start|>user\nTask<|im_end|>\n<|im_start|>assistant\n"],
+        sample_ids=["sample-1"],
+        max_new_tokens=77,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        max_model_len=None,
+        enforce_eager=False,
+        queue=queue,
+    )
+
+    assert captured["params"]["stop_token_ids"] == [151645]
+    assert queue.payload == {"results": [{"sample_id": "sample-1", "text": "done", "error": None}]}
