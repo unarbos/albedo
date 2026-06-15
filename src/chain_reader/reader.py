@@ -13,18 +13,18 @@ async def run() -> None:
     pool = await db.connect(config.DB_URL)
     subtensor = await asyncio.to_thread(chain.connect, config.NETWORK)
 
-    log.info("chain_reader started — netuid={} network={} start_block={} (startup: full scan, diff-only insert)",
-             config.NETUID, config.NETWORK, config.START_BLOCK)
+    log.info("chain_reader started — netuid={} network={} start_block={} ignore_commits_to_block={} (startup: full scan, diff-only insert)",
+             config.NETUID, config.NETWORK, config.START_BLOCK, config.IGNORE_COMMITS_TO_BLOCK)
 
-    # chain_guard startup backfill: seed used_hotkeys with every hotkey that committed before
-    # start_block, so legacy hotkeys are blocked from eval. Idempotent across restarts.
-    if config.START_BLOCK > 0:
-        log.info("chain_guard backfill — starting (start_block={})", config.START_BLOCK)
+    # chain_guard startup backfill: seed used_hotkeys with every hotkey that committed at/before
+    # IGNORE_COMMITS_TO_BLOCK, so those hotkeys are blocked from eval. Idempotent across restarts.
+    if config.IGNORE_COMMITS_TO_BLOCK > 0:
+        log.info("chain_guard backfill — starting (ignore_commits_to_block={})", config.IGNORE_COMMITS_TO_BLOCK)
         raw = await asyncio.to_thread(guard_scan.scan_all_raw, subtensor, config.NETUID)
-        seeded = await guard_db.record_legacy(pool, raw, config.START_BLOCK)
-        log.info("chain_guard backfill — finished: scanned={} seeded_legacy_hotkeys={}", len(raw), seeded)
+        seeded = await guard_db.record_legacy(pool, raw, config.IGNORE_COMMITS_TO_BLOCK)
+        log.info("chain_guard backfill — finished: scanned={} seeded_blocked_hotkeys={}", len(raw), seeded)
     else:
-        log.info("chain_guard backfill — skipped (CHAIN_START_BLOCK unset/0; no legacy hotkeys blocked)")
+        log.info("chain_guard backfill — skipped (IGNORE_COMMITS_TO_BLOCK unset/0; no hotkeys blocked)")
 
     log.info("chain_guard backfill — done for this run; entering poll loop (per-commit guard check stays active)")
 
