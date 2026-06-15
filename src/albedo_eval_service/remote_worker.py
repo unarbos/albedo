@@ -204,7 +204,6 @@ class RemoteEvalWorker:
             temperature=sampling_config["temperature"],
             top_p=sampling_config["top_p"],
             top_k=sampling_config["top_k"],
-            min_p=sampling_config["min_p"],
             max_model_len=self._effective_max_model_len(),
             enforce_eager=self.settings.enforce_eager,
         )
@@ -219,15 +218,13 @@ class RemoteEvalWorker:
             return {
                 "temperature": self.settings.temperature,
                 "top_p": self.settings.top_p,
-                "top_k": self.settings.top_k,
-                "min_p": self.settings.min_p,
+                "top_k": None,
             }
         generation_config = canonical_generation_config()
         return {
             "temperature": float(generation_config["temperature"]),
             "top_p": float(generation_config["top_p"]),
             "top_k": int(generation_config["top_k"]),
-            "min_p": float(generation_config["min_p"]),
         }
 
     def _topology(self, request: EvalRequest) -> GpuTopology:

@@ -35,10 +35,8 @@ class RemoteSettings(BaseSettings):
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
     max_new_tokens: int = 1024
-    temperature: float = 0.7
-    top_p: float = 0.8
-    top_k: int | None = 20
-    min_p: float | None = 0.0
+    temperature: float = 0.0
+    top_p: float = 1.0
     max_model_len: int | None = None
     enforce_eager: bool = False
     use_canonical_model_config: bool = True

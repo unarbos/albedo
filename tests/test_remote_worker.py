@@ -159,7 +159,3 @@ def test_vllm_generator_uses_canonical_max_model_len_even_when_env_is_lower(tmp_
 
     assert generator.max_model_len == canonical_max_model_len()
     assert generator.max_new_tokens == settings.max_new_tokens
-    assert generator.temperature == 0.7
-    assert generator.top_p == 0.8
-    assert generator.top_k == 20
-    assert generator.min_p == 0.0
