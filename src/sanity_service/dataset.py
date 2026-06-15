@@ -39,38 +39,8 @@ def sample_prompts(
             manifest, block_hash=str(seed), sample_count=n, max_turns_per_sample=max_turns
         )
         loaded = load_swe_zero_samples(dataset_root=dataset_root, sample_ids=sample_ids)
-        return [_to_sanity_sample(s.sample_id, s.prompt, s.target, s.messages) for s in loaded]
+        return [SanitySample(s.sample_id, s.prompt, s.target, s.messages) for s in loaded]
     return _fallback_prompts(n)
-
-
-def _to_sanity_sample(
-    sample_id: str,
-    prompt: str,
-    target: str | None,
-    messages: list[dict[str, str]] | None,
-) -> SanitySample:
-    sanity_messages = _sanity_messages(messages, fallback_prompt=prompt)
-    sanity_prompt = "\n\n".join(message["content"] for message in sanity_messages).strip()
-    return SanitySample(sample_id, sanity_prompt, target, sanity_messages)
-
-
-def _sanity_messages(
-    messages: list[dict[str, str]] | None, *, fallback_prompt: str
-) -> list[dict[str, str]]:
-    if not messages:
-        return [{"role": "user", "content": fallback_prompt}]
-
-    kept: list[dict[str, str]] = []
-    for message in messages:
-        role = message.get("role", "user")
-        content = message.get("content", "")
-        if role == "assistant":
-            break
-        if role not in {"system", "user"}:
-            role = "user"
-        if content:
-            kept.append({"role": role, "content": content})
-    return kept or [{"role": "user", "content": fallback_prompt}]
 
 
 def _fallback_prompts(n: int) -> list[SanitySample]:
