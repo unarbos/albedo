@@ -16,6 +16,7 @@ from .remote_config import RemoteSettings
 
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DEFAULT_OCI_REGISTRY = "registry.hippius.com"
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,9 @@ class ModelArtifactResolver:
         parsed_oci = parse_oci_ref(model_ref)
         if parsed_oci:
             registry, repository, digest = parsed_oci
-            return self._resolve_oci(registry=registry, repository=repository, digest=digest, original_ref=model_ref)
+            return self._resolve_oci(
+                registry=registry, repository=repository, digest=digest, original_ref=model_ref
+            )
         return ResolvedModel(
             original_ref=model_ref,
             local_path=model_ref,
@@ -97,7 +100,9 @@ class ModelArtifactResolver:
         if done_marker.exists():
             self._apply_canonical_config(cache_dir)
             file_count, total_size_bytes = _tree_stats(cache_dir)
-            return ResolvedModel(model_ref, str(cache_dir), "s3", True, file_count, total_size_bytes)
+            return ResolvedModel(
+                model_ref, str(cache_dir), "s3", True, file_count, total_size_bytes
+            )
 
         import boto3
 
@@ -124,24 +129,36 @@ class ModelArtifactResolver:
                 if key.endswith("/"):
                     continue
                 found = True
-                rel = key[len(prefix):].lstrip("/") if prefix else key
+                rel = key[len(prefix) :].lstrip("/") if prefix else key
                 destination = cache_dir / rel
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 client.download_file(bucket, key, str(destination))
         if not found:
             raise FileNotFoundError(f"no model objects found under {model_ref}")
-        done_marker.write_text(json.dumps({"source": model_ref}, sort_keys=True) + "\n", encoding="utf-8")
+        done_marker.write_text(
+            json.dumps({"source": model_ref}, sort_keys=True) + "\n", encoding="utf-8"
+        )
         self._apply_canonical_config(cache_dir)
         file_count, total_size_bytes = _tree_stats(cache_dir)
         return ResolvedModel(model_ref, str(cache_dir), "s3", False, file_count, total_size_bytes)
 
-    def _resolve_oci(self, *, registry: str, repository: str, digest: str, original_ref: str) -> ResolvedModel:
-        cache_dir = self.cache_root / "oci" / registry / repository.replace("/", "__") / digest.removeprefix("sha256:")
+    def _resolve_oci(
+        self, *, registry: str, repository: str, digest: str, original_ref: str
+    ) -> ResolvedModel:
+        cache_dir = (
+            self.cache_root
+            / "oci"
+            / registry
+            / repository.replace("/", "__")
+            / digest.removeprefix("sha256:")
+        )
         done_marker = cache_dir / ".albedo-model-cache.json"
         if done_marker.exists():
             self._apply_canonical_config(cache_dir)
             file_count, total_size_bytes = _tree_stats(cache_dir)
-            return ResolvedModel(original_ref, str(cache_dir), "oci", True, file_count, total_size_bytes)
+            return ResolvedModel(
+                original_ref, str(cache_dir), "oci", True, file_count, total_size_bytes
+            )
 
         temp_dir = cache_dir.with_suffix(".partial")
         if temp_dir.exists():
@@ -150,11 +167,15 @@ class ModelArtifactResolver:
 
         with httpx.Client(timeout=None, follow_redirects=True) as client:
             manifest_url = f"https://{registry}/v2/{repository}/manifests/{digest}"
-            headers = {"Accept": "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"}
+            headers = {
+                "Accept": "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+            }
             response = client.get(manifest_url, headers=headers)
             if response.status_code == 401:
                 token = _bearer_token(client, response, repository)
-                response = client.get(manifest_url, headers={**headers, "Authorization": f"Bearer {token}"})
+                response = client.get(
+                    manifest_url, headers={**headers, "Authorization": f"Bearer {token}"}
+                )
             response.raise_for_status()
             _verify_digest(response.content, digest, label="manifest")
             manifest = response.json()
@@ -170,17 +191,35 @@ class ModelArtifactResolver:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 blob_url = f"https://{registry}/v2/{repository}/blobs/{layer_digest}"
                 blob_headers = {"Authorization": f"Bearer {token}"} if token else {}
-                auth_response = _stream_blob_to_file(client, blob_url, blob_headers, destination, layer_digest, label=name)
+                auth_response = _stream_blob_to_file(
+                    client, blob_url, blob_headers, destination, layer_digest, label=name
+                )
                 if auth_response is not None:
                     token = _bearer_token(client, auth_response, repository)
-                    _stream_blob_to_file(client, blob_url, {"Authorization": f"Bearer {token}"}, destination, layer_digest, label=name)
-        done_marker_payload = {"source": original_ref, "registry": registry, "repository": repository, "digest": digest}
-        (temp_dir / ".albedo-model-cache.json").write_text(json.dumps(done_marker_payload, sort_keys=True) + "\n", encoding="utf-8")
+                    _stream_blob_to_file(
+                        client,
+                        blob_url,
+                        {"Authorization": f"Bearer {token}"},
+                        destination,
+                        layer_digest,
+                        label=name,
+                    )
+        done_marker_payload = {
+            "source": original_ref,
+            "registry": registry,
+            "repository": repository,
+            "digest": digest,
+        }
+        (temp_dir / ".albedo-model-cache.json").write_text(
+            json.dumps(done_marker_payload, sort_keys=True) + "\n", encoding="utf-8"
+        )
         cache_dir.parent.mkdir(parents=True, exist_ok=True)
         temp_dir.replace(cache_dir)
         self._apply_canonical_config(cache_dir)
         file_count, total_size_bytes = _tree_stats(cache_dir)
-        return ResolvedModel(original_ref, str(cache_dir), "oci", False, file_count, total_size_bytes)
+        return ResolvedModel(
+            original_ref, str(cache_dir), "oci", False, file_count, total_size_bytes
+        )
 
     def _apply_canonical_config(self, model_dir: Path) -> None:
         if not self.settings.use_canonical_model_config:
@@ -228,8 +267,10 @@ def parse_oci_ref(model_ref: str) -> tuple[str, str, str] | None:
     if not _DIGEST_RE.match(digest):
         return None
     registry, sep, repository = left.partition("/")
-    if not sep or not repository or "." not in registry:
+    if not sep or not repository:
         return None
+    if "." not in registry:
+        return _DEFAULT_OCI_REGISTRY, left, digest
     return registry, repository, digest
 
 
@@ -244,7 +285,7 @@ def _bearer_token(client: httpx.Client, response: httpx.Response, repository: st
     challenge = response.headers.get("www-authenticate", "")
     if not challenge.lower().startswith("bearer "):
         raise RuntimeError("registry returned 401 without a bearer challenge")
-    params = _parse_auth_challenge(challenge[len("Bearer "):])
+    params = _parse_auth_challenge(challenge[len("Bearer ") :])
     realm = params.get("realm")
     if not realm:
         raise RuntimeError("registry bearer challenge did not include a realm")
@@ -272,7 +313,12 @@ def _parse_auth_challenge(raw: str) -> dict[str, str]:
 def _layer_filename(layer: dict[str, Any], index: int) -> str:
     annotations = layer.get("annotations") if isinstance(layer.get("annotations"), dict) else {}
     title = annotations.get("org.opencontainers.image.title")
-    if isinstance(title, str) and title and not title.startswith("/") and ".." not in Path(title).parts:
+    if (
+        isinstance(title, str)
+        and title
+        and not title.startswith("/")
+        and ".." not in Path(title).parts
+    ):
         return title
     digest = str(layer.get("digest", f"layer-{index}"))
     return digest.replace(":", "-")
