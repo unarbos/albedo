@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import signal
+import sys
 from typing import Any
 from uuid import UUID
 
@@ -256,4 +258,15 @@ def main() -> None:
     elif args.once:
         asyncio.run(dispatcher.dispatch_once())
     else:
-        asyncio.run(dispatcher.run_forever())
+        # Pre-install custom signal handlers BEFORE asyncio.run() so asyncio
+        # never installs its own SIGINT handler.  asyncio only installs its
+        # handler when signal.getsignal(SIGINT) is default_int_handler; with a
+        # custom handler in place, Runner.run()'s finally block keeps
+        # sigint_handler=None and never executes `raise KeyboardInterrupt()`.
+        # sys.exit() raises SystemExit which propagates cleanly through asyncio.
+        signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        try:
+            asyncio.run(dispatcher.run_forever())
+        except (KeyboardInterrupt, SystemExit):
+            pass
