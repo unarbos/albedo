@@ -1,0 +1,21 @@
+services:
+  albedo-postgres:
+    image: postgres:16-alpine
+    container_name: albedo-eval-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ALBEDO_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${ALBEDO_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${ALBEDO_POSTGRES_DB}
+    ports:
+      - "${ALBEDO_POSTGRES_HOST_PORT}:5432"
+    volumes:
+      - albedo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ALBEDO_POSTGRES_USER} -d ${ALBEDO_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  albedo-postgres-data:

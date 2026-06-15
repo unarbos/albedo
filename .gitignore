@@ -1,15 +1,37 @@
-.venv/
+# Local runtime configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.example_miners
+
+# Local caches and tool output
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Python bytecode and virtualenvs
 __pycache__/
 *.py[cod]
-*.egg-info/
-dist/
+.venv/
+venv/
+
+# Build artifacts
 build/
-.env
-*.env
-eval.env
-website/dashboard.json
-*.pem
-*.key
-.cache/
-*.log
-.DS_Store
+dist/
+*.egg-info/
+
+# Local database/runtime files
+*.sqlite
+*.db
+postgres-data/
+
+# Local design and runtime scratch directories
+Systemdesign.md
+design/
+albedo-remote-artifacts/
+albedo-remote-models/
+src/sanity_service/rubricisity.py
+website/data/*
