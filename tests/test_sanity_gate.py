@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from albedo_eval_service.judge_openrouter import JudgeRawResponse
@@ -157,3 +159,65 @@ def test_worker_store_lifecycle():
     run.succeed(responses=["x"], heuristics=[{"passed": True, "reason": "ok"}])
     assert run.as_status()["state"] == "succeeded"
     assert store.list_active() == []
+
+
+# ── sanity remote worker fixes ────────────────────────────────────────────────
+
+from sanity_remote.config import SanityRemoteSettings
+from sanity_remote.worker import VllmEngine, _strip_model_config
+
+
+def test_max_model_len_default_matches_genesis():
+    # 8192 was too short for SWE-ZERO multi-turn prompts; genesis max_position_embeddings is 40960.
+    assert SanityRemoteSettings().max_model_len == 40960
+
+
+def test_strip_model_config_removes_forbidden_keys(tmp_path):
+    config = {
+        "architectures": ["Qwen3ForCausalLM"],
+        "hidden_size": 2560,
+        "auto_map": {"AutoModelForCausalLM": "modeling_qwen.Qwen3ForCausalLM"},
+        "quantization_config": {"quant_type": "gptq", "bits": 4},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    _strip_model_config(str(tmp_path))
+
+    result = json.loads((tmp_path / "config.json").read_text())
+    assert "auto_map" not in result
+    assert "quantization_config" not in result
+    assert result["architectures"] == ["Qwen3ForCausalLM"]
+    assert result["hidden_size"] == 2560
+
+
+def test_strip_model_config_noop_when_clean(tmp_path):
+    config = {"architectures": ["Qwen3ForCausalLM"], "hidden_size": 2560}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    mtime_before = config_path.stat().st_mtime
+
+    _strip_model_config(str(tmp_path))
+
+    assert config_path.stat().st_mtime == mtime_before
+
+
+def test_strip_model_config_tolerates_missing_config(tmp_path):
+    _strip_model_config(str(tmp_path))  # must not raise
+
+
+def test_vllm_cmd_includes_generation_config_vllm(tmp_path):
+    settings = SanityRemoteSettings(vllm_port=19999)
+    engine = VllmEngine(settings)
+
+    captured: list[str] = []
+
+    async def _run():
+        with patch("subprocess.Popen") as mock_popen, \
+             patch.object(engine, "_wait_healthy", return_value=None):
+            mock_popen.return_value = MagicMock()
+            await engine._start_vllm(str(tmp_path), "sha256:abc")
+            captured.extend(mock_popen.call_args[0][0])
+
+    asyncio.run(_run())
+    idx = captured.index("--generation-config")
+    assert captured[idx + 1] == "vllm"
