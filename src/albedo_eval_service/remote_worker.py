@@ -7,6 +7,7 @@ from typing import Callable, Protocol, TypeVar
 
 from .canonical_model_config import canonical_generation_config, canonical_max_model_len
 from .dataset_manifest import load_manifest_file
+from .judge_core import CHALLENGER_WIN_MARGIN, challenger_beats_king
 from .models import EvalRequest
 from .remote_artifacts import ArtifactUploader, RunArtifactSpool, build_artifact_uploader
 from .remote_config import RemoteSettings
@@ -22,8 +23,7 @@ T = TypeVar("T")
 
 
 class ModelResolver(Protocol):
-    def resolve(self, model_ref: str) -> ResolvedModel:
-        ...
+    def resolve(self, model_ref: str) -> ResolvedModel: ...
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,9 @@ class RemoteEvalWorker:
         try:
             self._execute(run)
         except Exception as exc:
-            run.fail(fault_code="remote_worker_failed", fault_message=f"{type(exc).__name__}: {exc}")
+            run.fail(
+                fault_code="remote_worker_failed", fault_message=f"{type(exc).__name__}: {exc}"
+            )
 
     def _execute(self, run: RemoteRun) -> None:
         request = run.request
@@ -98,15 +100,21 @@ class RemoteEvalWorker:
             }
         )
 
-        king_generator = self._generator_factory("previous_king", topology.previous_king, king_model.local_path)
-        challenger_generator = self._generator_factory("challenger", topology.challenger, challenger_model.local_path)
+        king_generator = self._generator_factory(
+            "previous_king", topology.previous_king, king_model.local_path
+        )
+        challenger_generator = self._generator_factory(
+            "challenger", topology.challenger, challenger_model.local_path
+        )
         with ThreadPoolExecutor(max_workers=2) as executor:
             king_future = executor.submit(king_generator.generate, samples)
             challenger_future = executor.submit(challenger_generator.generate, samples)
             king_results = king_future.result()
             challenger_results = challenger_future.result()
 
-        self._emit_generation_batches(run, request, samples, king_results, challenger_results, topology)
+        self._emit_generation_batches(
+            run, request, samples, king_results, challenger_results, topology
+        )
         run.set_state("scoring")
         run.append_event(
             {
@@ -151,7 +159,9 @@ class RemoteEvalWorker:
         sample_ids = list(request.dataset.sample_ids)
         if not sample_ids:
             manifest_path = Path(self.settings.dataset_root) / "manifest.json"
-            manifest = load_manifest_file(manifest_path, expected_sha256=request.dataset.manifest_hash)
+            manifest = load_manifest_file(
+                manifest_path, expected_sha256=request.dataset.manifest_hash
+            )
             sample_ids = swe_zero_manifest_sample_ids(
                 manifest,
                 block_hash=request.dataset.sample_seed,
@@ -167,10 +177,18 @@ class RemoteEvalWorker:
             return self.settings.challenger_model or request.challenger.model_uri
         raise ValueError(f"unsupported model side: {side}")
 
-    def _resolve_model_for_side(self, run: RemoteRun, request: EvalRequest, *, side: str) -> ResolvedModel:
+    def _resolve_model_for_side(
+        self, run: RemoteRun, request: EvalRequest, *, side: str
+    ) -> ResolvedModel:
         model_ref = self._model_for_side(request, side=side)
         resolved = self._model_resolver.resolve(model_ref)
-        run.append_event({"type": "model_resolved", "eval_run_id": str(request.eval_run_id), **resolved.as_event(side=side)})
+        run.append_event(
+            {
+                "type": "model_resolved",
+                "eval_run_id": str(request.eval_run_id),
+                **resolved.as_event(side=side),
+            }
+        )
         return resolved
 
     def _vllm_generator(self, side: str, gpu_ids: list[str], model: str) -> Generator:
@@ -197,7 +215,11 @@ class RemoteEvalWorker:
 
     def _effective_sampling_config(self) -> dict[str, float | int | None]:
         if not self.settings.use_canonical_model_config:
-            return {"temperature": self.settings.temperature, "top_p": self.settings.top_p, "top_k": None}
+            return {
+                "temperature": self.settings.temperature,
+                "top_p": self.settings.top_p,
+                "top_k": None,
+            }
         generation_config = canonical_generation_config()
         return {
             "temperature": float(generation_config["temperature"]),
@@ -239,7 +261,9 @@ class RemoteEvalWorker:
     ) -> None:
         king_by_id = {result.sample_id: result for result in king_results}
         challenger_by_id = {result.sample_id: result for result in challenger_results}
-        for batch_idx, batch in enumerate(_chunks(samples, request.dataset.generation_batch_size), start=1):
+        for batch_idx, batch in enumerate(
+            _chunks(samples, request.dataset.generation_batch_size), start=1
+        ):
             sample_ids = [sample.sample_id for sample in batch]
             run.append_event(
                 {
@@ -249,16 +273,26 @@ class RemoteEvalWorker:
                     "sample_ids": sample_ids,
                     "models": ["challenger", "previous_king"],
                     "gpu_ids": topology.previous_king + topology.challenger,
-                    "king_errors": sum(1 for sample_id in sample_ids if king_by_id[sample_id].error),
-                    "chal_errors": sum(1 for sample_id in sample_ids if challenger_by_id[sample_id].error),
-                    "generated_sample_count": min(batch_idx * request.dataset.generation_batch_size, len(samples)),
+                    "king_errors": sum(
+                        1 for sample_id in sample_ids if king_by_id[sample_id].error
+                    ),
+                    "chal_errors": sum(
+                        1 for sample_id in sample_ids if challenger_by_id[sample_id].error
+                    ),
+                    "generated_sample_count": min(
+                        batch_idx * request.dataset.generation_batch_size, len(samples)
+                    ),
                     "state": "succeeded",
                 }
             )
 
-    def _emit_scoring_batches(self, run: RemoteRun, request: EvalRequest, scoring_records: list[dict[str, object]]) -> None:
+    def _emit_scoring_batches(
+        self, run: RemoteRun, request: EvalRequest, scoring_records: list[dict[str, object]]
+    ) -> None:
         scored_so_far = 0
-        for batch_idx, batch in enumerate(_chunks(scoring_records, request.dataset.scoring_batch_size), start=1):
+        for batch_idx, batch in enumerate(
+            _chunks(scoring_records, request.dataset.scoring_batch_size), start=1
+        ):
             batch_scored = sum(1 for record in batch if record.get("scored"))
             scored_so_far += batch_scored
             judge_errors = sum(
@@ -278,7 +312,9 @@ class RemoteEvalWorker:
                     "allowed_scores": request.scoring.allowed_scores,
                     "scored_sample_count": scored_so_far,
                     "judge_errors": judge_errors,
-                    "state": "succeeded" if batch_scored == len(batch) and judge_errors == 0 else "failed",
+                    "state": "succeeded"
+                    if batch_scored == len(batch) and judge_errors == 0
+                    else "failed",
                 }
             )
 
@@ -371,6 +407,9 @@ class RemoteEvalWorker:
             "king_vllm_errors": king_errors,
             "chal_vllm_errors": chal_errors,
             "judge_errors": judge_errors,
+            "required_win_margin": scoring_summary.get(
+                "required_win_margin", CHALLENGER_WIN_MARGIN
+            ),
             "gpu_topology": topology.as_dict(),
             "score_breakdown": {
                 "by_judge": scoring_summary.get("by_judge", {}),
@@ -384,7 +423,9 @@ class RemoteEvalWorker:
             "retryable": scoring_summary.get("retryable") if state != "succeeded" else None,
         }
         if state == "succeeded" and score_challenger is not None and score_king is not None:
-            verdict["challenger_won"] = float(score_challenger) > float(score_king)
+            verdict["challenger_won"] = challenger_beats_king(
+                float(score_challenger), float(score_king)
+            )
         return verdict
 
     def _write_and_upload_artifacts(
@@ -430,7 +471,9 @@ class RemoteEvalWorker:
                             **result,
                         }
                     )
-        progress_rows = [{"sequence": idx, **event} for idx, event in enumerate(run.events, start=1)]
+        progress_rows = [
+            {"sequence": idx, **event} for idx, event in enumerate(run.events, start=1)
+        ]
         remote_log_text = _remote_log_summary(run, verdict)
 
         files = {
@@ -449,7 +492,9 @@ class RemoteEvalWorker:
         )
         enriched = {**verdict}
         enriched["artifacts"] = {name: upload.uri for name, upload in sorted(uploads.items())}
-        enriched["artifact_metadata"] = {name: upload.metadata() for name, upload in sorted(uploads.items())}
+        enriched["artifact_metadata"] = {
+            name: upload.metadata() for name, upload in sorted(uploads.items())
+        }
         verdict_path = spool.write_json("verdict.json", enriched)
         verdict_upload = self._artifact_uploader.upload_run_artifacts(
             eval_run_id=request.eval_run_id,
@@ -457,7 +502,10 @@ class RemoteEvalWorker:
             files={"verdict": verdict_path},
         )["verdict"]
         enriched["artifacts"] = {**enriched["artifacts"], "verdict": verdict_upload.uri}
-        enriched["artifact_metadata"] = {**enriched["artifact_metadata"], "verdict": verdict_upload.metadata()}
+        enriched["artifact_metadata"] = {
+            **enriched["artifact_metadata"],
+            "verdict": verdict_upload.metadata(),
+        }
         if self.settings.cleanup_local_artifacts:
             spool.cleanup()
         return enriched

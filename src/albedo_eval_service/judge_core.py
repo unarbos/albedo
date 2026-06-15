@@ -8,6 +8,7 @@ from typing import Any
 
 
 METRIC_KEYS: tuple[str, ...] = ("correctness", "grounding", "progress", "protocol", "efficiency")
+CHALLENGER_WIN_MARGIN = 0.02
 
 JUDGE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.1",
@@ -295,7 +296,6 @@ def aggregate_scoring_records(
 
     by_judge: dict[str, float] = {}
     by_metric: dict[str, float] = {}
-    judge_metric_cells: list[float] = []
     judge_models = sorted(
         {
             str(result["judge_model"])
@@ -316,7 +316,6 @@ def aggregate_scoring_records(
             if values:
                 metric_mean = mean(values)
                 metric_means.append(metric_mean)
-                judge_metric_cells.append(metric_mean)
         if metric_means:
             by_judge[judge_model] = mean(metric_means)
     for metric in METRIC_KEYS:
@@ -331,11 +330,13 @@ def aggregate_scoring_records(
 
     score_challenger = mean(float(record["sample_score"]) for record in scored)
     score_king = 1.0 - score_challenger
+    challenger_won = challenger_beats_king(score_challenger, score_king)
     return {
         "state": "succeeded",
         "score_challenger": score_challenger,
         "score_king": score_king,
-        "challenger_won": score_challenger > score_king,
+        "challenger_won": challenger_won,
+        "required_win_margin": CHALLENGER_WIN_MARGIN,
         "valid_turns": valid_count,
         "total_turns": total,
         "judge_errors": judge_errors,
@@ -347,3 +348,7 @@ def aggregate_scoring_records(
         "fault_message": None,
         "retryable": None,
     }
+
+
+def challenger_beats_king(score_challenger: float, score_king: float) -> bool:
+    return (score_challenger - score_king) >= CHALLENGER_WIN_MARGIN
