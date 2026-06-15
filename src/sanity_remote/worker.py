@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
 import signal
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_FORBIDDEN_CONFIG_KEYS = frozenset({"auto_map", "quantization_config"})
 
 
 def _strip_thinking(text: str) -> str:
@@ -25,6 +28,24 @@ def _strip_thinking(text: str) -> str:
     if "</think>" not in text:
         return ""
     return _THINK_RE.sub("", text).strip()
+
+def _strip_model_config(model_dir: str) -> None:
+    # Removes keys that can redirect model loading or force unexpected quantization modes.
+    config_path = Path(model_dir) / "config.json"
+    if not config_path.exists():
+        return
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("[sanity-remote] could not read config.json: {}", exc)
+        return
+    stripped = {k: v for k, v in config.items() if k not in _FORBIDDEN_CONFIG_KEYS}
+    removed = set(config) - set(stripped)
+    if not removed:
+        return
+    config_path.write_text(json.dumps(stripped, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    logger.info("[sanity-remote] stripped forbidden keys from config.json: {}", removed)
+
 
 from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.state import SanityRun
@@ -119,6 +140,7 @@ class VllmEngine:
         old_dir = self._loaded_dir
         self._loaded_digest = ""
         self._loaded_dir = model_dir
+        await asyncio.to_thread(_strip_model_config, model_dir)
         try:
             await self._start_vllm(model_dir, digest)
         except Exception as exc:  # noqa: BLE001 - boot failures are retryable infra
@@ -152,6 +174,8 @@ class VllmEngine:
             self._s.vllm_dtype,
             "--max-model-len",
             str(self._s.max_model_len),
+            "--generation-config",
+            "vllm",
         ]
         self._proc = subprocess.Popen(
             cmd,
