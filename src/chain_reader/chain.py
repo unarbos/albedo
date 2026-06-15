@@ -127,14 +127,21 @@ def _payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def scan_commitments(subtensor: Any, netuid: int) -> list[Commit]:
-    """Read all revealed commitments on ``netuid`` and return v5 Commit records."""
+def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0) -> list[Commit]:
+    """Read all revealed commitments on ``netuid`` and return v5 Commit records.
+
+    Commits before ``start_block`` are skipped — they are not eval candidates (the chain_guard
+    ledger covers them instead).
+    """
     uids = _uid_map(subtensor, netuid)
 
     commits: list[Commit] = []
     n_total = n_skipped = 0
     for hotkey, block, data in _iter_revealed(subtensor, netuid):
         n_total += 1
+        if block < start_block:
+            n_skipped += 1
+            continue
         payload = _parse_v5(data, hotkey)
         if payload is None:
             n_skipped += 1

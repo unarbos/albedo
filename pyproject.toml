@@ -64,6 +64,7 @@ packages = [
     "src/set_reign_worker",
     "src/weight_setter",
     "src/chain_reader",
+    "src/chain_guard",
     "src/config_validation",
     "src/hippius_validation",
     "src/sanity_service",
