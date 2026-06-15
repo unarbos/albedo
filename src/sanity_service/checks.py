@@ -85,6 +85,8 @@ def check_one(
 
 def check_collapsed(responses: list[str]) -> CheckResult:
     # Fails if all responses are identical - the model ignores the prompt entirely.
+    if len(responses) < 2:
+        return CheckResult(True)
     if len({r.strip()[:100] for r in responses}) == 1:
         return CheckResult(False, "identical response to all prompts (collapsed model)")
     return CheckResult(True)
