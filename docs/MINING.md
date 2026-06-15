@@ -192,18 +192,18 @@ albedo commit --repo <ns>/albedo-qwen3-4b-v1 --digest sha256:... \
   --coldkey mine --hotkey hk1
 ```
 
-Writes the v5 reveal `v5|<repo>|<digest>` on-chain via `set_reveal_commitment`. Before submitting
+Writes the v6 reveal `v6|<repo>|<digest>` on-chain via `set_reveal_commitment`. Before submitting
 it **checks your hotkey is registered** on the netuid, prints a preview, and prompts `Proceed? [y/N]`
 (skip with `--yes`). Use this when you uploaded earlier and just need to commit a specific digest.
 
 ### Read on-chain commitments
 
 ```bash
-albedo check-commit                      # all v5 commits on the subnet
+albedo check-commit                      # all v6 commits on the subnet
 albedo check-commit --hotkey 5F...        # filter to one hotkey ss58
 ```
 
-Scans the chain for v5 commitments (oldest block first) and prints `block / hotkey / model_uri`.
+Scans the chain for v6 commitments (oldest block first) and prints `block / hotkey / model_uri`.
 Useful to confirm your own commit landed, or to see what others have submitted.
 
 ### Publish (full pipeline)

@@ -8,15 +8,15 @@ class FakeNeuron:
 
 
 class FakeMeta:
-    neurons = [FakeNeuron("hk-good", 7), FakeNeuron("hk-v4", 8), FakeNeuron("hk-four", 9)]
+    neurons = [FakeNeuron("hk-good", 7), FakeNeuron("hk-v5", 8), FakeNeuron("hk-four", 9)]
 
 
 class FakeSubtensor:
     def get_all_commitments(self, netuid):
         return [
-            ("hk-good", [(100, "v5|alice/model|sha256:" + "a" * 64)]),
-            ("hk-v4", [(101, "v4|alice/model|sha256:" + "b" * 64)]),
-            ("hk-four", [(102, "v5|alice/model|sha256:" + "c" * 64 + "|hk-four")]),
+            ("hk-good", [(100, "v6|alice/model|sha256:" + "a" * 64)]),
+            ("hk-v5", [(101, "v5|alice/model|sha256:" + "b" * 64)]),
+            ("hk-four", [(102, "v6|alice/model|sha256:" + "c" * 64 + "|hk-four")]),
         ]
 
     def query_map(self, *_args):
@@ -29,7 +29,7 @@ class FakeSubtensor:
         return f"0x{block}"
 
 
-def test_scan_commitments_accepts_only_three_part_v5_payloads():
+def test_scan_commitments_accepts_only_three_part_v6_payloads():
     commits = scan_commitments(FakeSubtensor(), 1)
 
     assert len(commits) == 1
@@ -38,7 +38,7 @@ def test_scan_commitments_accepts_only_three_part_v5_payloads():
     assert commit.uid == 7
     assert commit.model_uri == "alice/model@sha256:" + "a" * 64
     assert commit.commit_payload == {
-        "version": "v5",
+        "version": "v6",
         "repo": "alice/model",
         "digest": "sha256:" + "a" * 64,
         "author_hotkey": "hk-good",

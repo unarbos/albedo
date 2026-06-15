@@ -7,21 +7,21 @@ from chain_reader.chain import connect, scan_commitments
 
 
 def fetch(netuid: int, network: str, hotkey: str | None = None) -> list:
-    """Return v5 commits on ``netuid`` (optionally filtered to one hotkey), oldest block first."""
+    """Return v6 commits on ``netuid`` (optionally filtered to one hotkey), oldest block first."""
     logger.info(f"connecting to {network}…")
     sub = connect(network)
     logger.info(f"scanning commitments on netuid {netuid}…")
     commits = scan_commitments(sub, netuid)
     if hotkey:
         commits = [c for c in commits if c.hotkey == hotkey]
-    logger.info(f"found {len(commits)} v5 commit(s)")
+    logger.info(f"found {len(commits)} v6 commit(s)")
     return sorted(commits, key=lambda c: c.block_number)
 
 
 def print_commits(netuid: int, network: str, hotkey: str | None = None) -> int:
     commits = fetch(netuid, network, hotkey)
     if not commits:
-        print("no v5 commits found" + (f" for hotkey {hotkey}" if hotkey else ""))
+        print("no v6 commits found" + (f" for hotkey {hotkey}" if hotkey else ""))
         return 0
     for c in commits:
         print(f"block={c.block_number}  hotkey={c.hotkey[:10]}…  {c.model_uri}")

@@ -82,9 +82,9 @@ def _iter_commitments(raw: Any) -> Iterator[tuple[str, int | None, str]]:
 
 
 def scan_commits(subtensor: Any, netuid: int) -> list[CommitRecord]:
-    """Return every well-formed v5 model submission committed on ``netuid``.
+    """Return every well-formed v6 model submission committed on ``netuid``.
 
-    Non-v5 and malformed payloads are skipped.
+    Non-v6 and malformed payloads are skipped.
     """
     log.info("chain scan: querying commitments for netuid=%d", netuid)
     raw = subtensor.get_all_commitments(netuid=netuid)
@@ -110,7 +110,7 @@ def scan_commits(subtensor: Any, netuid: int) -> list[CommitRecord]:
         n_total += 1
         if block is None:
             block = blocks.get(chain_hotkey)
-        if not data.startswith("v5|"):
+        if not data.startswith("v6|"):
             n_skipped += 1
             continue
         try:
