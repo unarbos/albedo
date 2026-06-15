@@ -1,4 +1,5 @@
 """Async Postgres layer for the Hippius validation stage."""
+
 from __future__ import annotations
 
 import json
@@ -79,7 +80,9 @@ async def enqueue_from_commits(pool: asyncpg.Pool, netuid: int) -> int:
     return int(row or 0)
 
 
-async def claim_next(pool: asyncpg.Pool, worker_id: str, lease_seconds: int) -> asyncpg.Record | None:
+async def claim_next(
+    pool: asyncpg.Pool, worker_id: str, lease_seconds: int
+) -> asyncpg.Record | None:
     """Claim the oldest submitted or retryable model for Hippius validation."""
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -174,6 +177,10 @@ async def mark_done(pool: asyncpg.Pool, attempt_id, result_summary: dict) -> Non
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await _attempt_submission(conn, attempt_id)
+            model_hash = result_summary.get("model_hash") or row["model_hash"] or row["commit_hash"]
+            manifest_uri = _model_manifest_uri(row["model_uri"])
+            await _record_model_manifest_artifact(conn, row, attempt_id, model_hash, manifest_uri)
+            result_summary = {**result_summary, "model_manifest_uri": manifest_uri}
             await conn.execute(
                 """
                 UPDATE stage_attempts
@@ -196,12 +203,28 @@ async def mark_done(pool: asyncpg.Pool, attempt_id, result_summary: dict) -> Non
                 WHERE id = $1
                 """,
                 row["submission_id"],
-                result_summary.get("model_hash") or row["commit_hash"],
+                model_hash,
             )
-            await _record_event(conn, row["submission_id"], attempt_id, "hippius_succeeded", "INFO", "Hippius validation succeeded", result_summary)
+            await _record_event(
+                conn,
+                row["submission_id"],
+                attempt_id,
+                "hippius_succeeded",
+                "INFO",
+                "Hippius validation succeeded",
+                result_summary,
+            )
 
 
-async def mark_failed(pool: asyncpg.Pool, attempt_id, *, fault_class: str, fault_code: str, fault_message: str, result_summary: dict) -> None:
+async def mark_failed(
+    pool: asyncpg.Pool,
+    attempt_id,
+    *,
+    fault_class: str,
+    fault_code: str,
+    fault_message: str,
+    result_summary: dict,
+) -> None:
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await _attempt_submission(conn, attempt_id)
@@ -213,7 +236,11 @@ async def mark_failed(pool: asyncpg.Pool, attempt_id, *, fault_class: str, fault
                     result_summary = $5::jsonb
                 WHERE id = $1
                 """,
-                attempt_id, fault_class, fault_code, fault_message, json.dumps(result_summary),
+                attempt_id,
+                fault_class,
+                fault_code,
+                fault_message,
+                json.dumps(result_summary),
             )
             await conn.execute(
                 """
@@ -222,12 +249,32 @@ async def mark_failed(pool: asyncpg.Pool, attempt_id, *, fault_class: str, fault
                     fault_code = $3, fault_message = $4, updated_at = now(), finished_at = now()
                 WHERE id = $1
                 """,
-                row["submission_id"], fault_class, fault_code, fault_message,
+                row["submission_id"],
+                fault_class,
+                fault_code,
+                fault_message,
             )
-            await _record_event(conn, row["submission_id"], attempt_id, "hippius_failed_terminal", "WARN", fault_message, {"fault_class": fault_class, "fault_code": fault_code, **result_summary})
+            await _record_event(
+                conn,
+                row["submission_id"],
+                attempt_id,
+                "hippius_failed_terminal",
+                "WARN",
+                fault_message,
+                {"fault_class": fault_class, "fault_code": fault_code, **result_summary},
+            )
 
 
-async def mark_retry(pool: asyncpg.Pool, attempt_id, *, attempt_number: int, max_attempts: int, fault_class: str, fault_code: str, fault_message: str) -> str:
+async def mark_retry(
+    pool: asyncpg.Pool,
+    attempt_id,
+    *,
+    attempt_number: int,
+    max_attempts: int,
+    fault_class: str,
+    fault_code: str,
+    fault_message: str,
+) -> str:
     """Infra fault: persist HIPPIUS_RETRYABLE if under cap, else terminal infra failure."""
     terminal = attempt_number >= max_attempts
     attempt_state = "FAILED_TERMINAL" if terminal else "FAILED_RETRYABLE"
@@ -243,7 +290,11 @@ async def mark_retry(pool: asyncpg.Pool, attempt_id, *, attempt_number: int, max
                     fault_message = $5
                 WHERE id = $1
                 """,
-                attempt_id, attempt_state, fault_class, fault_code, fault_message,
+                attempt_id,
+                attempt_state,
+                fault_class,
+                fault_code,
+                fault_message,
             )
             await conn.execute(
                 """
@@ -254,9 +305,21 @@ async def mark_retry(pool: asyncpg.Pool, attempt_id, *, attempt_number: int, max
                     finished_at = CASE WHEN $2 = 'TERMINAL_INFRA_FAILED' THEN now() ELSE finished_at END
                 WHERE id = $1
                 """,
-                row["submission_id"], visible_state, fault_class, fault_code, fault_message,
+                row["submission_id"],
+                visible_state,
+                fault_class,
+                fault_code,
+                fault_message,
             )
-            await _record_event(conn, row["submission_id"], attempt_id, "hippius_retryable_failed", "ERROR" if terminal else "WARN", fault_message, {"fault_class": fault_class, "fault_code": fault_code, "terminal": terminal})
+            await _record_event(
+                conn,
+                row["submission_id"],
+                attempt_id,
+                "hippius_retryable_failed",
+                "ERROR" if terminal else "WARN",
+                fault_message,
+                {"fault_class": fault_class, "fault_code": fault_code, "terminal": terminal},
+            )
     return "failed" if terminal else "queued"
 
 
@@ -292,7 +355,15 @@ async def sweep_expired(pool: asyncpg.Pool) -> int:
                     """,
                     row["submission_id"],
                 )
-                await _record_event(conn, row["submission_id"], row["id"], "hippius_attempt_abandoned", "WARN", "Hippius validation lease expired before completion", {})
+                await _record_event(
+                    conn,
+                    row["submission_id"],
+                    row["id"],
+                    "hippius_attempt_abandoned",
+                    "WARN",
+                    "Hippius validation lease expired before completion",
+                    {},
+                )
     return len(rows)
 
 
@@ -318,7 +389,7 @@ async def hotkey_validated(pool: asyncpg.Pool, hotkey: str) -> bool:
 async def _attempt_submission(conn: asyncpg.Connection, attempt_id) -> asyncpg.Record:
     row = await conn.fetchrow(
         """
-        SELECT sa.submission_id, ms.commit_hash
+        SELECT sa.submission_id, ms.commit_hash, ms.model_hash, ms.model_uri
         FROM stage_attempts sa
         JOIN model_submissions ms ON ms.id = sa.submission_id
         WHERE sa.id = $1 AND sa.stage = 'HIPPIUS'
@@ -331,11 +402,79 @@ async def _attempt_submission(conn: asyncpg.Connection, attempt_id) -> asyncpg.R
     return row
 
 
-async def _record_event(conn: asyncpg.Connection, submission_id, stage_attempt_id, event_type: str, severity: str, message: str, data: dict) -> None:
+async def _record_model_manifest_artifact(
+    conn: asyncpg.Connection,
+    submission: asyncpg.Record,
+    attempt_id,
+    model_hash: str | None,
+    manifest_uri: str,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO artifacts (
+            submission_id, stage_attempt_id, artifact_type, storage_backend,
+            uri, sha256, content_type
+        )
+        SELECT $1, $2, 'MODEL_MANIFEST', $3, $4, $5,
+               'application/vnd.oci.image.manifest.v1+json'
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM artifacts
+            WHERE submission_id = $1
+              AND artifact_type = 'MODEL_MANIFEST'
+              AND uri = $4
+        )
+        """,
+        submission["submission_id"],
+        attempt_id,
+        _storage_backend_for_model_uri(manifest_uri),
+        manifest_uri,
+        _manifest_sha256(model_hash),
+    )
+
+
+def _model_manifest_uri(model_uri: str) -> str:
+    if model_uri.startswith(("s3://", "file://", "local-cache://")):
+        return model_uri
+    if model_uri.startswith("registry.hippius.com/"):
+        return model_uri
+    if "@sha256:" in model_uri:
+        return f"registry.hippius.com/{model_uri}"
+    return model_uri
+
+
+def _storage_backend_for_model_uri(model_uri: str) -> str:
+    if model_uri.startswith("s3://"):
+        return "s3"
+    if model_uri.startswith(("local-cache://", "file://")):
+        return "local-cache"
+    return "hippius"
+
+
+def _manifest_sha256(model_hash: str | None) -> str | None:
+    if not model_hash:
+        return None
+    return model_hash.removeprefix("sha256:")
+
+
+async def _record_event(
+    conn: asyncpg.Connection,
+    submission_id,
+    stage_attempt_id,
+    event_type: str,
+    severity: str,
+    message: str,
+    data: dict,
+) -> None:
     await conn.execute(
         """
         INSERT INTO events (submission_id, stage_attempt_id, event_type, severity, message, data)
         VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         """,
-        submission_id, stage_attempt_id, event_type, severity, message, json.dumps(data),
+        submission_id,
+        stage_attempt_id,
+        event_type,
+        severity,
+        message,
+        json.dumps(data),
     )
