@@ -1,6 +1,6 @@
 import { el, mount, link } from "../dom.js";
 import { pct, fmtRelative, fmtDateTime } from "../format.js";
-import { judgeMeta, hubRepoUrl, modelRepo, taoMinerUrl, kingTitleName } from "../model.js";
+import { judgeMeta, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
 import { verdictInfo, faultCategory } from "../data.js";
 
 const stop = e => e.stopPropagation();
@@ -46,7 +46,7 @@ export function renderHistory(container, rows, judgeModels, netuid, currentKingE
     return el("tr", { class: isCurrentKing ? "clickable crowned-now" : "clickable", onClick: () => { location.href = evalHref(r); } },
       el("td", { class: "when", title: fmtDateTime(r.finished_at) }, fmtRelative(r.finished_at)),
       el("td", { class: "uid" }, tao ? link(tao, String(r.uid ?? "—"), { onClick: stop }) : String(r.uid ?? "—")),
-      el("td", { class: "model" }, repoUrl ? link(repoUrl, repo, { class: "model-cell", onClick: stop }) : el("span", { class: "model-cell" }, repo)),
+      el("td", { class: "model" }, repoUrl ? link(repoUrl, modelName(r), { class: "model-cell", title: repo, onClick: stop }) : el("span", { class: "model-cell", title: repo }, modelName(r))),
       el("td", { class: "model vs" }, kingUrl ? link(kingUrl, kingName, { class: "model-cell", title: kingTitle, onClick: stop }) : el("span", { class: "model-cell", title: kingTitle }, kingName)),
       ...judges.map(m => el("td", { class: "center" }, judgeCell(bj[m]))),
       el("td", { class: "r" }, el("span", { class: `verdict-badge ${v.badge}` }, v.badge)));
@@ -74,7 +74,7 @@ export function renderFails(container, rows, netuid) {
     return el("tr", { class: "clickable", onClick: () => { location.href = failHref(f); } },
       el("td", { class: "when", title: fmtDateTime(f.updated_at) }, fmtRelative(f.updated_at)),
       el("td", { class: "uid" }, tao ? link(tao, String(f.uid ?? "—"), { onClick: stop }) : String(f.uid ?? "—")),
-      el("td", { class: "model" }, repoUrl ? link(repoUrl, repo, { class: "model-cell", onClick: stop }) : el("span", { class: "model-cell" }, repo)),
+      el("td", { class: "model" }, repoUrl ? link(repoUrl, modelName(f), { class: "model-cell", title: repo, onClick: stop }) : el("span", { class: "model-cell", title: repo }, modelName(f))),
       failReasonCell(f));
   });
   mount(container,

@@ -214,3 +214,37 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
 .detail-section { margin-top: 36px; }
 .detail-section > h2 { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.2em;
   color: var(--color-fg); padding-bottom: 12px; margin-bottom: 18px; border-bottom: 1px solid var(--color-fg); }
+
+/* ---------- pipeline ---------- */
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.pl-card {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 14px;
+  background: var(--color-surface);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.pl-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pl-card-title {
+  font-family: var(--font-mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--color-fg);
+}
+.pl-card-meta { font-family: var(--font-mono); font-size: 10px; color: var(--color-fg-3); }
+.pl-bucket { display: flex; flex-direction: column; gap: 6px; }
+.pl-bucket-head { display: flex; align-items: center; gap: 6px; }
+.pl-bucket-label {
+  font-family: var(--font-mono); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--color-fg-3);
+}
+.pl-bucket-count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--color-fg-2);
+}
+.pl-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--color-ok);
+  box-shadow: 0 0 6px var(--color-ok);
+}
+.pl-bucket.running:not(:has(table)) .pl-dot { opacity: 0.3; box-shadow: none; }

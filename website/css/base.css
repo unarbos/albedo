@@ -99,6 +99,19 @@ main {
   margin-top: 18px;
   display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 10px;
 }
+.hero-llms {
+  margin-top: 16px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.16em;
+  color: var(--color-fg-2);
+  transition: color 0.15s;
+}
+.hero-llms:hover { color: var(--color-fg); }
+.hero-llms:disabled { opacity: 0.5; cursor: wait; }
+.hero-llms svg { flex-shrink: 0; opacity: 0.85; }
+.hero-llms.copied { color: var(--color-ok); }
 .stat-chip {
   display: inline-flex; align-items: baseline; gap: 6px;
   padding: 5px 11px;

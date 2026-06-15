@@ -3,16 +3,16 @@ import { fetchDashboard } from "../fetch.js";
 import { verdictInfo, faultCategory } from "../data.js";
 import { el, mount, link } from "../dom.js";
 import { pct, fmtDateTime, shortHotkey, shortDigest } from "../format.js";
-import { judgeMeta, hubRepoUrl, modelRepo, taoMinerUrl, kingTitleName } from "../model.js";
+import { judgeMeta, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const evalRunId = params.get("eval_run_id");
 const submissionId = params.get("submission_id");
 
-function setHead(title, sub, modelUri) {
+function setHead(name, sub, modelUri) {
   const repoUrl = modelUri && hubRepoUrl(modelUri);
-  mount($("d-title"), repoUrl ? link(repoUrl, modelRepo(modelUri)) : title);
+  mount($("d-title"), repoUrl ? link(repoUrl, name, { title: modelRepo(modelUri) }) : name);
   $("d-sub").textContent = sub || "";
 }
 
@@ -63,7 +63,7 @@ function renderArtifacts(map, zipName) {
 
 function renderEval(r, netuid) {
   $("d-eyebrow").textContent = "eval result";
-  setHead(r.model_uri, `${r.eval_run_id} · uid ${r.uid ?? "—"} · ${shortHotkey(r.hotkey)}`, r.model_uri);
+  setHead(modelName(r), `${r.eval_run_id} · uid ${r.uid ?? "—"} · ${shortHotkey(r.hotkey)}`, r.model_uri);
 
   const v = verdictInfo(r);
   const grid = el("div", { class: "kv-grid" },
@@ -104,7 +104,7 @@ function renderEval(r, netuid) {
     el("div", { class: "detail-section" }, el("h2", {}, "king it faced"),
       el("div", { class: "kv-grid" },
         kv("king era", kingTitleName(king.king_version)),
-        kv("king model", modelRepo(king.model_uri)),
+        kv("king model", modelName(king)),
         kv("king uid", tao ? link(tao, String(king.uid ?? "—")) : (king.uid ?? "—")))));
 
   renderArtifacts(r.artifacts, `eval-${r.eval_run_id}`);
@@ -112,7 +112,7 @@ function renderEval(r, netuid) {
 
 function renderFail(f) {
   $("d-eyebrow").textContent = "failed submission";
-  setHead(f.model_uri, `${f.submission_id} · uid ${f.uid ?? "—"} · ${shortHotkey(f.hotkey)}`, f.model_uri);
+  setHead(modelName(f), `${f.submission_id} · uid ${f.uid ?? "—"} · ${shortHotkey(f.hotkey)}`, f.model_uri);
 
   const cat = faultCategory(f);
   const raw = (f.fault_message || f.fault_code || "").toString();
