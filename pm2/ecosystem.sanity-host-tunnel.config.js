@@ -18,7 +18,24 @@ function loadEnv() {
 }
 
 const env = loadEnv();
-const sshTarget = `${env.ALBEDO_SANITY_GPU_HOST_USER}@${env.ALBEDO_SANITY_GPU_HOST_SSH_HOST}`;
+const sshTarget = env.ALBEDO_SANITY_GPU_HOST_USER + "@" + env.ALBEDO_SANITY_GPU_HOST_SSH_HOST;
+const sshArgs = [
+  "-N",
+  "-o",
+  "ExitOnForwardFailure=yes",
+  "-o",
+  "ServerAliveInterval=30",
+  "-o",
+  "ServerAliveCountMax=3",
+  "-L",
+  env.ALBEDO_SANITY_TUNNEL_LOCAL_PORT + ":127.0.0.1:" + env.SANITY_REMOTE_API_PORT,
+];
+
+if (env.ALBEDO_SANITY_GPU_HOST_SSH_PORT) {
+  sshArgs.push("-p", env.ALBEDO_SANITY_GPU_HOST_SSH_PORT);
+}
+
+sshArgs.push(sshTarget);
 
 // Stable side opens an -L forward to the GPU worker, so the dispatcher reaches it at
 // 127.0.0.1:ALBEDO_SANITY_TUNNEL_LOCAL_PORT. The stable side never needs the GPU box's address
@@ -28,18 +45,7 @@ module.exports = {
     {
       name: "albedo-sanity-host-tunnel",
       script: "ssh",
-      args: [
-        "-N",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-L",
-        `${env.ALBEDO_SANITY_TUNNEL_LOCAL_PORT}:127.0.0.1:${env.SANITY_REMOTE_API_PORT}`,
-        sshTarget,
-      ].join(" "),
+      args: sshArgs.join(" "),
       autorestart: true,
       env,
     },

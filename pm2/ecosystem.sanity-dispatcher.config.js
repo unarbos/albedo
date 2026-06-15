@@ -21,7 +21,7 @@ module.exports = {
     {
       name: "albedo-sanity-dispatcher",
       cwd: path.resolve(__dirname, ".."),
-      script: "uv",
+      script: "/home/const/.local/bin/uv",
       args: "run sanity-dispatcher",
       env: loadEnv(),
     },

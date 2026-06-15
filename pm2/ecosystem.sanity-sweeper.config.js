@@ -21,7 +21,7 @@ module.exports = {
     {
       name: "albedo-sanity-sweeper",
       cwd: path.resolve(__dirname, ".."),
-      script: "uv",
+      script: "/home/const/.local/bin/uv",
       args: "run sanity-dispatcher --sweep-abandoned",
       cron_restart: "*/1 * * * *",
       autorestart: false,

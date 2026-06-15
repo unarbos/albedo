@@ -21,7 +21,7 @@ module.exports = {
     {
       name: "albedo-sanity-reconciler",
       cwd: path.resolve(__dirname, ".."),
-      script: "uv",
+      script: "/home/const/.local/bin/uv",
       args: "run sanity-dispatcher --reconcile-running",
       cron_restart: "*/1 * * * *",
       autorestart: false,
