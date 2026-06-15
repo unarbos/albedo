@@ -17,8 +17,16 @@ JUDGE_MODELS: tuple[str, ...] = (
 
 JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {
     "z-ai/glm-5.1": {"order": ["baidu"], "allow_fallbacks": False, "quantizations": ["fp8"]},
-    "qwen/qwen3.5-397b-a17b": {"order": ["deepinfra"], "allow_fallbacks": False, "quantizations": ["fp8"]},
-    "deepseek/deepseek-v3.2": {"order": ["atlas-cloud"], "allow_fallbacks": False, "quantizations": ["fp8"]},
+    "qwen/qwen3.5-397b-a17b": {
+        "order": ["deepinfra"],
+        "allow_fallbacks": False,
+        "quantizations": ["fp8"],
+    },
+    "deepseek/deepseek-v3.2": {
+        "order": ["atlas-cloud"],
+        "allow_fallbacks": False,
+        "quantizations": ["fp8"],
+    },
 }
 JUDGE_STRUCTURED_OUTPUT_MODELS = frozenset({"qwen/qwen3.5-397b-a17b", "deepseek/deepseek-v3.2"})
 
@@ -192,12 +200,16 @@ def parse_metric_verdict(
             ok = False
         elif role == "draw":
             scores[key] = 0.5
-        elif (role == "model_1" and challenger_position == 1) or (role == "model_2" and challenger_position == 2):
+        elif (role == "model_1" and challenger_position == 1) or (
+            role == "model_2" and challenger_position == 2
+        ):
             scores[key] = 1.0
         else:
             scores[key] = 0.0
     judge_mean = round(mean(scores.values()), 6) if scores else 0.0
-    return MetricVerdict(scores, judge_mean, raw, ok and error is None, model=model, provider=provider, error=error)
+    return MetricVerdict(
+        scores, judge_mean, raw, ok and error is None, model=model, provider=provider, error=error
+    )
 
 
 def _extract_json(raw: str) -> dict[str, Any] | None:
@@ -253,7 +265,9 @@ def _map_token(value: object) -> str | None:
     return None
 
 
-def aggregate_scoring_records(records: list[dict[str, Any]], *, min_valid_fraction: float = 0.5) -> dict[str, Any]:
+def aggregate_scoring_records(
+    records: list[dict[str, Any]], *, min_valid_fraction: float = 0.5
+) -> dict[str, Any]:
     scored = [record for record in records if record.get("scored")]
     total = len(records)
     valid_count = len(scored)
@@ -315,7 +329,7 @@ def aggregate_scoring_records(records: list[dict[str, Any]], *, min_valid_fracti
         if values:
             by_metric[metric] = mean(values)
 
-    score_challenger = mean(judge_metric_cells) if judge_metric_cells else mean(float(record["sample_score"]) for record in scored)
+    score_challenger = mean(float(record["sample_score"]) for record in scored)
     score_king = 1.0 - score_challenger
     return {
         "state": "succeeded",

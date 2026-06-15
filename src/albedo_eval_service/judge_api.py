@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from statistics import mean
 from typing import Any
 
 import uvicorn
@@ -66,14 +67,20 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         }
 
     @app.post("/score-batch", response_model=ScoreBatchResponse)
-    async def score_batch(request: ScoreBatchRequest, _: None = Depends(require_auth)) -> ScoreBatchResponse:
+    async def score_batch(
+        request: ScoreBatchRequest, _: None = Depends(require_auth)
+    ) -> ScoreBatchResponse:
         unknown = [model for model in request.judge_models if model not in JUDGE_MODELS]
         if unknown:
-            raise HTTPException(status_code=400, detail=f"unsupported judge model(s): {', '.join(unknown)}")
+            raise HTTPException(
+                status_code=400, detail=f"unsupported judge model(s): {', '.join(unknown)}"
+            )
         async with OpenRouterJudgeClient(settings) as client:
             records = await _score_samples(client=client, request=request)
         summary = aggregate_scoring_records(records, min_valid_fraction=settings.min_valid_fraction)
-        summary["judge_errors"] = sum(1 for record in records for result in record["judge_results"] if not result["parse_ok"])
+        summary["judge_errors"] = sum(
+            1 for record in records for result in record["judge_results"] if not result["parse_ok"]
+        )
         summary["scored_sample_count"] = sum(1 for record in records if record.get("scored"))
         return ScoreBatchResponse(
             eval_run_id=request.eval_run_id,
@@ -85,9 +92,13 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
     return app
 
 
-async def _score_samples(*, client: OpenRouterJudgeClient, request: ScoreBatchRequest) -> list[dict[str, Any]]:
+async def _score_samples(
+    *, client: OpenRouterJudgeClient, request: ScoreBatchRequest
+) -> list[dict[str, Any]]:
     async def _score_one(index: int, sample: JudgeSample) -> dict[str, Any]:
-        challenger_first = should_show_challenger_first(sample.sample_index, request.total_sample_count)
+        challenger_first = should_show_challenger_first(
+            sample.sample_index, request.total_sample_count
+        )
         challenger_position = 1 if challenger_first else 2
         messages = build_pairwise_messages(
             context_prompt=sample.prompt,
@@ -120,17 +131,23 @@ async def _score_samples(*, client: OpenRouterJudgeClient, request: ScoreBatchRe
             )
         ok = [result for result in judge_results if result["parse_ok"]]
         scored = len(ok) == len(request.judge_models)
-        sample_score = sum(float(result["judge_mean"]) for result in ok) / len(ok) if scored else None
+        sample_score = mean(float(result["judge_mean"]) for result in ok) if scored else None
         return {
             "sample_id": sample.sample_id,
-            "order": ["challenger", "previous_king"] if challenger_first else ["previous_king", "challenger"],
+            "order": ["challenger", "previous_king"]
+            if challenger_first
+            else ["previous_king", "challenger"],
             "judge_results": judge_results,
-            "judge_scores": [result["judge_mean"] for result in judge_results if result["parse_ok"]],
+            "judge_scores": [
+                result["judge_mean"] for result in judge_results if result["parse_ok"]
+            ],
             "sample_score": sample_score,
             "scored": scored,
         }
 
-    return await asyncio.gather(*[_score_one(index, sample) for index, sample in enumerate(request.samples)])
+    return await asyncio.gather(
+        *[_score_one(index, sample) for index, sample in enumerate(request.samples)]
+    )
 
 
 def main() -> None:
