@@ -27,9 +27,22 @@ export function kingTitleName(reignNumber) {
   return roman ? `ALBEDO-${roman}` : "BASE MODEL";
 }
 
+// Friendly model identity: a crowned model is named by its reign (ALBEDO-II), everyone else by
+// the first 6 chars of their hotkey (ALBEDO-5GcD3P). The real repo stays available as a tooltip.
+export function modelName(item) {
+  const v = Number(item?.king_version);
+  if (item?.king_version != null && Number.isFinite(v) && v > 0) return kingTitleName(v);
+  const hk = item?.hotkey;
+  return hk ? `ALBEDO-${hk.slice(0, 6)}` : "—";
+}
+
 export function modelRepo(uri) {
   if (!uri) return "—";
-  return uri.replace(/^[a-z0-9_-]+:/i, "");
+  let s = uri.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme:// (oci://, https://…)
+  s = s.replace(/@[^/]*$/, "");                         // strip @sha256:… digest suffix
+  const i = s.indexOf("/");
+  if (i > 0 && s.slice(0, i).includes(".")) s = s.slice(i + 1); // strip registry host (e.g. registry.hippius.com/)
+  return s || "—";
 }
 
 export function hubRepoUrl(uri) {

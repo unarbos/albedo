@@ -1,18 +1,19 @@
 import { POLL_MS } from "../config.js";
-import { fetchDashboard } from "../fetch.js";
+import { fetchDashboard, fetchState, fetchLlmsText } from "../fetch.js";
 import { normalize } from "../data.js";
 import { el, mount } from "../dom.js";
 import { fmtRelative } from "../format.js";
 import { kingTitleName, hubRepoUrl, modelRepo } from "../model.js";
 import { renderReign } from "../render/reign.js";
 import { renderChart } from "../render/chart.js";
-import { renderQueue } from "../render/queue.js";
+import { renderPipeline } from "../render/pipeline.js";
 import { renderHistory, renderFails } from "../render/history.js";
 
 const $ = id => document.getElementById(id);
 
 let state = null;
 let filter = "";
+let netuid = null;
 
 function matches(x, q) {
   if (!q) return true;
@@ -49,13 +50,11 @@ function renderTables(d) {
 }
 
 function render(d) {
-  const netuid = d.chain.netuid;
+  netuid = d.chain.netuid;
   renderHero(d);
   renderStats(d);
   renderReign($("reign-wrap"), d.reign, netuid);
   renderChart($("chart-wrap"), d.crownings);
-  renderQueue($("queue-wrap"), d.queue, d.currentEval, netuid);
-  $("queue-meta").textContent = `${d.queue.length}${d.currentEval ? " + 1 live" : ""} pending`;
   renderTables(d);
   if (d.updatedAt) $("updated").textContent = "updated " + fmtRelative(d.updatedAt);
 }
@@ -71,6 +70,63 @@ async function tick() {
   render(state);
 }
 
+async function tickPipeline() {
+  const st = await fetchState();
+  if (!st) return;
+  renderPipeline($("pipeline-wrap"), st, netuid ?? 97);
+  const c = st.counts || {};
+  const total = Object.values(c).reduce((a, x) => a + (x.running || 0) + (x.queued || 0), 0);
+  $("pipeline-meta").textContent = `${total} in flight`;
+}
+
+async function writeClipboard(text) {
+  // navigator.clipboard exists only in a secure context (https or localhost).
+  // Fall back to execCommand so copy still works over a LAN IP / plain http.
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function copyLlmsTxt(e) {
+  e.preventDefault();
+  const btn = $("hero-llms-btn");
+  const label = btn?.querySelector(".hero-llms-label");
+  if (!btn || !label) return;
+  const orig = label.textContent;
+  btn.disabled = true;
+  try {
+    const text = await fetchLlmsText();
+    if (!text) throw new Error("could not load llms.txt");
+    if (!(await writeClipboard(text))) throw new Error("clipboard write failed");
+    label.textContent = "copied";
+    btn.classList.add("copied");
+  } catch {
+    label.textContent = "copy failed";
+  }
+  setTimeout(() => {
+    label.textContent = orig;
+    btn.classList.remove("copied");
+    btn.disabled = false;
+  }, 1600);
+}
+
 function wireFilter() {
   const input = $("filter-input");
   if (!input) return;
@@ -81,5 +137,8 @@ function wireFilter() {
 }
 
 wireFilter();
+$("hero-llms-btn")?.addEventListener("click", copyLlmsTxt);
 tick();
+tickPipeline();
 setInterval(tick, POLL_MS);
+setInterval(tickPipeline, POLL_MS);

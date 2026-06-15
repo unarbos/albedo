@@ -1,6 +1,14 @@
 export const POLL_MS = 4000;
 
 export const DATA_ENDPOINTS = ["./data/dashboard.json"];
+export const STATE_ENDPOINTS = ["./data/state.json"];
+
+export const LLMS_URLS = [
+  "./llms.txt",
+  "https://s3.hippius.com/albedo/llms.txt",
+  "https://us-east-1.hippius.com/albedo/llms.txt",
+  "https://eu-central-1.hippius.com/albedo/llms.txt",
+];
 
 export const ENDPOINT_CACHE_KEY = "albedo.endpoint.v3";
 export const SUBNET_NETUID = 97;
@@ -13,4 +21,5 @@ export const ARTIFACT_TYPES = [
   { key: "EVAL_TRANSCRIPT", label: "duel-transcript.jsonl", type: "jsonl" },
   { key: "REMOTE_PROGRESS", label: "progress.jsonl", type: "jsonl" },
   { key: "REMOTE_LOGS", label: "remote-logs.txt", type: "text" },
+  { key: "SANITY_RESULT", label: "sanity-result.json", type: "json" },
 ];
