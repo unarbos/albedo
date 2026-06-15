@@ -42,3 +42,7 @@ NETUID: int = int(os.environ.get("CHAIN_NETUID", "97"))
 NETWORK: str = os.environ.get("CHAIN_NETWORK", "finney")
 # How often to poll for a new block (seconds). Bittensor block time is ~12s.
 POLL_INTERVAL_S: float = float(os.environ.get("CHAIN_POLL_INTERVAL_S", "2"))
+# Only commits at/after this block are eval candidates. Hotkeys that committed before it are
+# seeded into the chain_guard used_hotkeys ledger at startup and blocked from eval.
+# Empty/unset -> 0 (backfill disabled).
+START_BLOCK: int = int(os.environ.get("CHAIN_START_BLOCK", "0") or "0")

@@ -6,14 +6,27 @@ import asyncio
 from loguru import logger as log
 
 from chain_reader import chain, config, db
+from chain_guard import db as guard_db, scan as guard_scan
 
 
 async def run() -> None:
     pool = await db.connect(config.DB_URL)
     subtensor = await asyncio.to_thread(chain.connect, config.NETWORK)
 
-    log.info("chain_reader started — netuid={} network={} (startup: full scan, diff-only insert)",
-             config.NETUID, config.NETWORK)
+    log.info("chain_reader started — netuid={} network={} start_block={} (startup: full scan, diff-only insert)",
+             config.NETUID, config.NETWORK, config.START_BLOCK)
+
+    # chain_guard startup backfill: seed used_hotkeys with every hotkey that committed before
+    # start_block, so legacy hotkeys are blocked from eval. Idempotent across restarts.
+    if config.START_BLOCK > 0:
+        log.info("chain_guard backfill — starting (start_block={})", config.START_BLOCK)
+        raw = await asyncio.to_thread(guard_scan.scan_all_raw, subtensor, config.NETUID)
+        seeded = await guard_db.record_legacy(pool, raw, config.START_BLOCK)
+        log.info("chain_guard backfill — finished: scanned={} seeded_legacy_hotkeys={}", len(raw), seeded)
+    else:
+        log.info("chain_guard backfill — skipped (CHAIN_START_BLOCK unset/0; no legacy hotkeys blocked)")
+
+    log.info("chain_guard backfill — done for this run; entering poll loop (per-commit guard check stays active)")
 
     last_block: int | None = None
     try:
@@ -21,7 +34,7 @@ async def run() -> None:
             try:
                 cur = await asyncio.to_thread(subtensor.get_current_block)
                 if cur != last_block:
-                    commits = await asyncio.to_thread(chain.scan_commitments, subtensor, config.NETUID)
+                    commits = await asyncio.to_thread(chain.scan_commitments, subtensor, config.NETUID, config.START_BLOCK)
                     n_new = await db.insert_new_commits(pool, commits)
                     log.info("block={} scanned={} new={}", cur, len(commits), n_new)
                     last_block = cur

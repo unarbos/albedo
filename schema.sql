@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS miners (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- chain_guard ledger: hotkeys that may NOT enter eval. Seeded at chain_reader startup with
+-- every hotkey that committed before CHAIN_START_BLOCK (source='backfill'), and added to after
+-- a submission finishes eval (source='eval'). A hotkey appears at most once.
+CREATE TABLE IF NOT EXISTS used_hotkeys (
+    hotkey        TEXT PRIMARY KEY,
+    netuid        INT,
+    block_number  BIGINT,
+    submission_id UUID,
+    raw_payload   TEXT,
+    source        TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS model_submissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     miner_id UUID REFERENCES miners(id),
