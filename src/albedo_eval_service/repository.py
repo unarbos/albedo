@@ -56,12 +56,16 @@ class EvalRepository:
             ).fetchone()
         return SubmissionStatus(**row) if row else None
 
-    def claim_next_eval(self, *, worker_id: str, lease_seconds: int, request_builder) -> ClaimedEval | None:
+    def claim_next_eval(
+        self, *, worker_id: str, lease_seconds: int, request_builder
+    ) -> ClaimedEval | None:
         lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
 
         with self._connect() as conn:
             with conn.transaction():
-                locked = conn.execute("SELECT pg_try_advisory_xact_lock(hashtext('full_eval')) AS locked").fetchone()
+                locked = conn.execute(
+                    "SELECT pg_try_advisory_xact_lock(hashtext('full_eval')) AS locked"
+                ).fetchone()
                 if not locked or not locked["locked"]:
                     return None
 
@@ -208,20 +212,44 @@ class EvalRepository:
                 request=request,
             )
 
-    def record_remote_event(self, *, submission_id: UUID, attempt_id: UUID, event: dict[str, Any]) -> None:
+    def record_remote_event(
+        self, *, submission_id: UUID, attempt_id: UUID, event: dict[str, Any]
+    ) -> None:
+        event_type = "remote_{}".format(event.get("type", "event"))
         with self._connect() as conn:
             with conn.transaction():
+                if self._remote_event_exists_inside_tx(conn, attempt_id, event_type, event):
+                    return
                 self._apply_remote_event_to_eval_run_inside_tx(conn, event)
                 self.record_event_inside_tx(
                     conn,
                     submission_id=submission_id,
                     stage_attempt_id=attempt_id,
-                    event_type=f"remote_{event.get('type', 'event')}",
+                    event_type=event_type,
                     severity="INFO",
                     message=str(event.get("message") or event.get("type") or "Remote eval event"),
                     data=event,
                 )
 
+    @staticmethod
+    def _remote_event_exists_inside_tx(
+        conn: psycopg.Connection,
+        stage_attempt_id: UUID,
+        event_type: str,
+        event: dict[str, Any],
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM events
+            WHERE stage_attempt_id = %s
+              AND event_type = %s
+              AND data = %s
+            LIMIT 1
+            """,
+            (stage_attempt_id, event_type, Jsonb(event)),
+        ).fetchone()
+        return row is not None
 
     def list_reconcilable_eval_runs(self, *, limit: int = 10) -> list[ActiveEval]:
         with self._connect() as conn:
@@ -291,7 +319,6 @@ class EvalRepository:
                 (remote_run_id, eval_run_id),
             )
 
-
     def sweep_abandoned_eval_attempts(self, *, worker_id: str) -> int:
         with self._connect() as conn:
             with conn.transaction():
@@ -352,7 +379,10 @@ class EvalRepository:
                         event_type="eval_attempt_abandoned",
                         severity="WARN",
                         message="Eval attempt lease expired before completion",
-                        data={"worker_id": worker_id, "eval_run_id": str(row.get("eval_run_id") or "")},
+                        data={
+                            "worker_id": worker_id,
+                            "eval_run_id": str(row.get("eval_run_id") or ""),
+                        },
                     )
                 return len(rows)
 
@@ -377,16 +407,16 @@ class EvalRepository:
                         SET state = 'EVAL_QUEUED', updated_at = now()
                         WHERE id = %s
                         """,
-                        (row['id'],),
+                        (row["id"],),
                     )
                     self.record_event_inside_tx(
                         conn,
-                        submission_id=row['id'],
+                        submission_id=row["id"],
                         stage_attempt_id=None,
-                        event_type='eval_queued_from_pre_eval',
-                        severity='INFO',
+                        event_type="eval_queued_from_pre_eval",
+                        severity="INFO",
                         message=f"Queued for eval by {worker_id} after passing pre-eval",
-                        data={'worker_id': worker_id},
+                        data={"worker_id": worker_id},
                     )
                 return len(rows)
 
@@ -422,20 +452,20 @@ class EvalRepository:
                             updated_at = now()
                         WHERE id = %s
                         """,
-                        (row['id'],),
+                        (row["id"],),
                     )
                     self.record_event_inside_tx(
                         conn,
-                        submission_id=row['id'],
+                        submission_id=row["id"],
                         stage_attempt_id=None,
-                        event_type='eval_retry_requeued',
-                        severity='INFO',
+                        event_type="eval_retry_requeued",
+                        severity="INFO",
                         message=f"Eval retry requeued by {worker_id}",
                         data={
-                            'worker_id': worker_id,
-                            'previous_fault_class': row['fault_class'],
-                            'previous_fault_code': row['fault_code'],
-                            'previous_fault_message': row['fault_message'],
+                            "worker_id": worker_id,
+                            "previous_fault_class": row["fault_class"],
+                            "previous_fault_code": row["fault_code"],
+                            "previous_fault_message": row["fault_message"],
                         },
                     )
                 return len(rows)
@@ -503,7 +533,9 @@ class EvalRepository:
                     """,
                     (next_state, next_state, submission_id),
                 )
-                self._insert_artifacts_from_verdict_inside_tx(conn, submission_id, attempt_id, verdict)
+                self._insert_artifacts_from_verdict_inside_tx(
+                    conn, submission_id, attempt_id, verdict
+                )
                 self.record_event_inside_tx(
                     conn,
                     submission_id=submission_id,
@@ -565,11 +597,17 @@ class EvalRepository:
                     event_type="eval_failed",
                     severity="ERROR",
                     message=fault_message,
-                    data={"fault_class": fault_class, "fault_code": fault_code, "retryable": retryable},
+                    data={
+                        "fault_class": fault_class,
+                        "fault_code": fault_code,
+                        "retryable": retryable,
+                    },
                 )
 
     @staticmethod
-    def _apply_remote_event_to_eval_run_inside_tx(conn: psycopg.Connection, event: dict[str, Any]) -> None:
+    def _apply_remote_event_to_eval_run_inside_tx(
+        conn: psycopg.Connection, event: dict[str, Any]
+    ) -> None:
         eval_run_id = event.get("eval_run_id")
         if not eval_run_id:
             return
@@ -612,7 +650,10 @@ class EvalRepository:
                 (event.get("scored_sample_count"), eval_run_id),
             )
         elif event_type == "verdict":
-            conn.execute("UPDATE eval_runs SET state = 'VERDICT_READY' WHERE id = %s AND state <> 'SUCCEEDED'", (eval_run_id,))
+            conn.execute(
+                "UPDATE eval_runs SET state = 'VERDICT_READY' WHERE id = %s AND state <> 'SUCCEEDED'",
+                (eval_run_id,),
+            )
 
     @staticmethod
     def record_event_inside_tx(
@@ -635,7 +676,6 @@ class EvalRepository:
             (uuid4(), submission_id, stage_attempt_id, event_type, severity, message, Jsonb(data)),
         )
 
-
     @staticmethod
     def _insert_artifacts_from_verdict_inside_tx(
         conn: psycopg.Connection,
@@ -650,7 +690,9 @@ class EvalRepository:
             submission_id=submission_id,
             stage_attempt_id=attempt_id,
             artifacts=artifacts,
-            artifact_metadata=verdict.get("artifact_metadata") if isinstance(verdict.get("artifact_metadata"), dict) else None,
+            artifact_metadata=verdict.get("artifact_metadata")
+            if isinstance(verdict.get("artifact_metadata"), dict)
+            else None,
         ):
             conn.execute(
                 """
