@@ -80,7 +80,7 @@ def test_strip_reply_injection_removes_fake_verdict_payloads():
     assert "normal" in strip_reply_injection('normal answer {"injection": true}')
 
 
-def test_aggregate_scoring_records_uses_mean_sample_score():
+def test_aggregate_scoring_records_uses_median_across_judges():
     records = [
         {
             "sample_id": "s1",
@@ -105,10 +105,34 @@ def test_aggregate_scoring_records_uses_mean_sample_score():
     ]
     summary = aggregate_scoring_records(records)
     assert summary["state"] == "succeeded"
-    assert summary["score_challenger"] == 0.5
-    assert summary["score_king"] == 0.5
+    # score_challenger is the median of the per-judge aggregates {"j1": 0.5, "j2": 1.0}
+    assert summary["score_challenger"] == 0.75
+    assert summary["score_king"] == 0.25
     assert summary["by_judge"] == {"j1": 0.5, "j2": 1.0}
     assert summary["by_metric"]["correctness"] == 2 / 3
+
+
+def test_aggregate_scoring_records_median_picks_middle_judge():
+    records = [
+        {
+            "sample_id": "s1",
+            "scored": True,
+            "sample_score": 0.0,
+            "judge_results": [
+                {
+                    "judge_model": judge_model,
+                    "metric_scores": {metric: value for metric in METRIC_KEYS},
+                    "judge_mean": value,
+                    "parse_ok": True,
+                }
+                for judge_model, value in (("j1", 0.4), ("j2", 0.6), ("j3", 0.9))
+            ],
+        }
+    ]
+    summary = aggregate_scoring_records(records)
+    # median of [0.4, 0.6, 0.9] is 0.6, not the mean 0.633...
+    assert summary["score_challenger"] == 0.6
+    assert summary["score_king"] == 0.4
 
 
 def test_challenger_win_requires_two_percent_margin():

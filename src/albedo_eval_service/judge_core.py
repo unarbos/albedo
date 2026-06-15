@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from statistics import mean
+from statistics import mean, median
 from typing import Any
 
 
@@ -328,7 +328,7 @@ def aggregate_scoring_records(
         if values:
             by_metric[metric] = mean(values)
 
-    score_challenger = mean(float(record["sample_score"]) for record in scored)
+    score_challenger = median(by_judge.values())
     score_king = 1.0 - score_challenger
     challenger_won = challenger_beats_king(score_challenger, score_king)
     return {
