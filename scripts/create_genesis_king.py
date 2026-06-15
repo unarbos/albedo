@@ -133,13 +133,13 @@ def main() -> None:
         raise SystemExit("ALBEDO_EVAL_DATABASE_URL is not set")
 
     commit_payload = {
-        "version": "v5",
+        "version": "v6",
         "repo": REPO,
         "digest": DIGEST,
         "author_hotkey": HOTKEY,
         "bootstrap": "genesis",
     }
-    reveal_payload = f"v5|{REPO}|{DIGEST}"
+    reveal_payload = f"v6|{REPO}|{DIGEST}"
     payload_hash = sha256_text(reveal_payload)
     idempotency_key = f"genesis:{NETUID}:{HOTKEY}:{payload_hash}"
     chain_block_hash = "genesis-bootstrap:" + payload_hash

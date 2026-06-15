@@ -42,7 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--repo")
     ch.add_argument("--digest")
 
-    cm = sub.add_parser("commit", help="commit the v5 reveal on-chain (preview + Y/N + registration check)")
+    cm = sub.add_parser("commit", help="commit the v6 reveal on-chain (preview + Y/N + registration check)")
     cm.add_argument("--repo", required=True)
     cm.add_argument("--digest", required=True)
     _wallet_arg(cm, "coldkey", _COLDKEY, "wallet (coldkey) name")
