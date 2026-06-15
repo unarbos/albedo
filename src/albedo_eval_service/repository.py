@@ -356,6 +356,40 @@ class EvalRepository:
                     )
                 return len(rows)
 
+    def queue_pre_eval_passed(self, *, worker_id: str, limit: int = 100) -> int:
+        # Advances PRE_EVAL_PASSED submissions to EVAL_QUEUED so the eval dispatcher can claim them.
+        with self._connect() as conn:
+            with conn.transaction():
+                rows = conn.execute(
+                    """
+                    SELECT id FROM model_submissions ms
+                    WHERE state = 'PRE_EVAL_PASSED'
+                    ORDER BY priority ASC, updated_at ASC
+                    LIMIT %s
+                    FOR UPDATE OF ms SKIP LOCKED
+                    """,
+                    (limit,),
+                ).fetchall()
+                for row in rows:
+                    conn.execute(
+                        """
+                        UPDATE model_submissions
+                        SET state = 'EVAL_QUEUED', updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (row['id'],),
+                    )
+                    self.record_event_inside_tx(
+                        conn,
+                        submission_id=row['id'],
+                        stage_attempt_id=None,
+                        event_type='eval_queued_from_pre_eval',
+                        severity='INFO',
+                        message=f"Queued for eval by {worker_id} after passing pre-eval",
+                        data={'worker_id': worker_id},
+                    )
+                return len(rows)
+
     def requeue_retryable_evals(self, *, worker_id: str, limit: int = 100) -> int:
         with self._connect() as conn:
             with conn.transaction():
