@@ -34,7 +34,7 @@ class RemoteSettings(BaseSettings):
     challenger_model: str | None = None
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
-    max_new_tokens: int = 4096
+    max_new_tokens: int = 1024
     temperature: float = 0.7
     top_p: float = 0.8
     top_k: int | None = 20
