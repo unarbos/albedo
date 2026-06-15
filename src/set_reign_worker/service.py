@@ -211,7 +211,9 @@ class SetReignRepository:
                     for row in active_rows
                 ]
 
-                lead = next((member for member in active_members if member.previous_slot == 1), None)
+                lead = next(
+                    (member for member in active_members if member.previous_slot == 1), None
+                )
                 if not lead:
                     _mark_retryable(
                         conn,
@@ -454,10 +456,7 @@ def build_reign_plan(
         and member.model_hash != challenger.model_hash
         and member.submission_id != challenger.submission_id
     ]
-    if len(active) < 5:
-        ordered = [*filtered, challenger]
-    else:
-        ordered = [challenger, *filtered[:4]]
+    ordered = [challenger, *filtered[:4]]
 
     weight_bps = weight_bps_for_member_count(len(ordered))
     planned: list[PlannedReignMember] = []
@@ -483,7 +482,9 @@ def weight_bps_for_member_count(member_count: int) -> list[int]:
     return [base + (1 if index < remainder else 0) for index in range(member_count)]
 
 
-def weight_epoch_payload(planned_members: list[PlannedReignMember]) -> tuple[list[int], list[Decimal]]:
+def weight_epoch_payload(
+    planned_members: list[PlannedReignMember],
+) -> tuple[list[int], list[Decimal]]:
     if not planned_members:
         return [0], [Decimal("1")]
     return (
@@ -504,7 +505,7 @@ def _weight_policy(reign_version: int, planned_members: list[PlannedReignMember]
     return {
         "policy": "five_king_genesis_split_v1",
         "reign_version": reign_version,
-        "genesis_rule": "fill_slots_before_shift; split_missing_slot_weight_evenly",
+        "genesis_rule": "new_challenger_slot_1; shift_existing_down; split_weight_evenly",
         "max_slots": 5,
         "member_count": len(planned_members),
         "empty_reign_burn_uid": 0,
