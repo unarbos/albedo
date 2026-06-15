@@ -53,7 +53,7 @@ class PreEvalRepository:
     def claim_next_pre_eval(
         self, *, worker_id: str, lease_seconds: int, request_builder: Callable[..., Any]
     ) -> ClaimedPreEval | None:
-        # Claims the oldest PRE_EVAL_QUEUED submission onto a READY PRE_EVAL host under an advisory lock.
+        # Claims the oldest HIPPIUS_VALIDATED submission onto a READY PRE_EVAL host under an advisory lock.
         lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
         with self._connect() as conn, conn.transaction():
             locked = conn.execute(
@@ -67,7 +67,7 @@ class PreEvalRepository:
                 SELECT ms.*, cc.block_hash
                 FROM model_submissions ms
                 JOIN chain_commits cc ON cc.id = ms.chain_commit_id
-                WHERE ms.state = 'PRE_EVAL_QUEUED' AND cc.block_hash IS NOT NULL
+                WHERE ms.state = 'HIPPIUS_VALIDATED' AND cc.block_hash IS NOT NULL
                 ORDER BY ms.priority ASC, ms.created_at ASC
                 FOR UPDATE OF ms SKIP LOCKED
                 LIMIT 1
