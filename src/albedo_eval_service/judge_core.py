@@ -19,13 +19,13 @@ JUDGE_MODELS: tuple[str, ...] = (
 JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {
     "z-ai/glm-5.1": {"order": ["baidu", "z-ai"], "allow_fallbacks": True, "quantizations": ["fp8"]},
     "qwen/qwen3.5-397b-a17b": {
-        "order": ["deepinfra"],
-        "allow_fallbacks": False,
+        "order": ["deepinfra", "chutes"],
+        "allow_fallbacks": True,
         "quantizations": ["fp8"],
     },
     "deepseek/deepseek-v3.2": {
-        "order": ["atlas-cloud"],
-        "allow_fallbacks": False,
+        "order": ["atlas-cloud", "baidu"],
+        "allow_fallbacks": True,
         "quantizations": ["fp8"],
     },
 }
