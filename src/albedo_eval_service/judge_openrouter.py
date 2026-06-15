@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import random
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -42,7 +44,9 @@ class OpenRouterJudgeClient:
         await self.aclose()
 
     async def score(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
-        sem = self._semaphores.setdefault(model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model)))
+        sem = self._semaphores.setdefault(
+            model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
+        )
         async with sem:
             return await self._score_with_retries(model=model, messages=messages)
 
@@ -65,8 +69,12 @@ class OpenRouterJudgeClient:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt >= self.settings.retry_count:
                     break
-                await asyncio.sleep(self.settings.retry_backoff_seconds * (2**attempt) * random.uniform(0.8, 1.2))
-        return JudgeRawResponse(model=model, provider=_provider_name(model), raw="", error=last_error)
+                await asyncio.sleep(
+                    _retry_sleep_seconds(exc, attempt, self.settings.retry_backoff_seconds)
+                )
+        return JudgeRawResponse(
+            model=model, provider=_provider_name(model), raw="", error=last_error
+        )
 
     async def _score_once(
         self, *, model: str, messages: list[dict[str, str]], structured: bool = True
@@ -104,6 +112,29 @@ def _provider_name(model: str) -> str | None:
     if isinstance(order, list) and order:
         return str(order[0])
     return None
+
+
+def _retry_sleep_seconds(exc: Exception, attempt: int, base_backoff_seconds: float) -> float:
+    backoff = base_backoff_seconds * (2**attempt) * random.uniform(0.8, 1.2)
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return max(backoff, _retry_after_seconds(exc.response.headers.get("retry-after")))
+    return backoff
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 def _message_content(choices: list[dict[str, Any]]) -> str:
