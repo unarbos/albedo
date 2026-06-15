@@ -48,3 +48,12 @@ const FAULT_CLASS_LABELS = {
 export function faultCategory(f) {
   return { label: FAULT_CLASS_LABELS[f.fault_class] || "error" };
 }
+
+// Friendly labels for specific fault codes; falls back to the raw code when unmapped.
+const FAULT_CODE_LABELS = {
+  hotkey_reused: "hotkey reused",
+};
+
+export function faultCodeLabel(f) {
+  return FAULT_CODE_LABELS[f.fault_code] || f.fault_code || faultCategory(f).label;
+}

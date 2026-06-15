@@ -1,6 +1,6 @@
 import { ARTIFACT_TYPES } from "../config.js";
 import { fetchDashboard } from "../fetch.js";
-import { verdictInfo, faultCategory } from "../data.js";
+import { verdictInfo, faultCategory, faultCodeLabel } from "../data.js";
 import { el, mount, link } from "../dom.js";
 import { pct, fmtDateTime, shortHotkey, shortDigest } from "../format.js";
 import { judgeMeta, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
@@ -128,7 +128,7 @@ function renderFail(f) {
     grid,
     el("div", { class: "detail-section" }, el("h2", {}, "failure detail"),
       el("div", { class: "fail-panel" },
-        el("div", { class: "fp-code" }, f.fault_code || cat.label),
+        el("div", { class: "fp-code" }, faultCodeLabel(f)),
         el("div", { class: "fp-detail" }, raw || "(no detail)"))));
 
   renderArtifacts(f.artifacts, `submission-${f.submission_id}`);

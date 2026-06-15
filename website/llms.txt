@@ -97,7 +97,7 @@ albedo/
 │   └── weight_setter/              WEIGHTS: consume weight_epochs → subtensor.set_weights → PERIODIC_REFRESH
 │       └── service.py                  rate-limited by ALBEDO_WEIGHT_SET_RATE_BLOCKS, burn UID on no-king
 │
-├── pm2/                        One ecosystem.*.config.js per long-running / cron process (18 files)
+├── pm2/                        One ecosystem.*.config.js per long-running / cron process (incl. ecosystem.monitor.config.js)
 │
 ├── scripts/
 │   ├── create_genesis_king.py      seed genesis king_version + reign + reign_members (UID 0)
@@ -107,10 +107,11 @@ albedo/
 │   ├── setup_opensearch.sh         single-node OpenSearch container (:9200, security off)
 │   └── install_deps.sh             install opensearch-py + config_validation into a venv
 │
-├── website/                    Static dashboard (reads dashboard.json from Hippius); this llms.txt lives here
-│   ├── index.html / detail.html    reign + queue + score history; per-eval verdict/transcripts
-│   ├── js/                          config.js (endpoints/poll), data.js (normalize), render/*
-│   └── push_to_hippius.py           upload site + dashboard.json to Hippius S3 (no-cache, public-read)
+├── website/                    Static dashboard (reads data/dashboard.json + data/state.json); this llms.txt lives here
+│   ├── index.html / detail.html    reign · live queue (3-stage pipeline) · chart · fails; per-eval verdict/artifacts
+│   ├── js/                          config.js, data.js (normalize), fetch.js, model.js (model names), render/* (reign,chart,history,pipeline)
+│   ├── monitor.py                   PM2 service: DB → data/dashboard.json + data/state.json → upload to Hippius (on-change)
+│   └── push_to_hippius.py           one-shot upload of the static site + data/*.json to Hippius S3 (no-cache, public-read)
 │
 ├── docs/
 │   ├── MINING.md                   miner-facing guide for the `albedo` CLI
@@ -274,6 +275,10 @@ Console entrypoints (from `pyproject.toml`) — each has a matching `pm2/ecosyst
 | `albedo-remote-eval-api` | GPU eval control plane | GPU box | :8090 |
 | `set-reign-worker` | coronation | backend | — |
 | `weight-setter` | set_weights on-chain | backend | — |
+| `website/monitor.py` (PM2 `albedo-dashboard-monitor`) | publish dashboard.json + state.json → Hippius | backend | on-change poll (~2s) |
+
+The dashboard monitor is the one PM2 process that is **not** a `pyproject` console entrypoint — it runs
+`.venv/bin/python website/monitor.py` (standalone script, like `push_to_hippius.py`). See *Dashboard publishing* below.
 
 Backend ↔ GPU host is bridged by an SSH tunnel (`pm2/ecosystem.gpu-host-tunnel.config.js`):
 local `:18090` on the backend → `:8090` on the GPU host. The GPU host is registered as a
@@ -372,6 +377,13 @@ sanity-dispatcher: claim PRE_EVAL_QUEUED → PRE_EVAL_RUNNING
 `sanity-remote` is **stateless** (no DB, no dataset, no keys) — it just loads the model on a GPU,
 generates, runs heuristics, and returns. All judgment lives on the backend.
 
+**Failure reports → Hippius:** on a *terminal* miner-fault rejection (injection / not-viable), the
+dispatcher (`sanity_service/uploads.py`) uploads `sanity/{submission_id}/{digest}/fault.json` —
+the reason, `fault_code`, the full per-judge injection/viability evidence, prompts, and the model's
+responses — public-read, and records a `SANITY_RESULT` artifact row so the dashboard links it. Passes
+and retryable/infra faults upload nothing. Env-gated on `ALBEDO_S3_*` (no-op when unset). The judge
+system prompts themselves are never included.
+
 ---
 
 ## Coronation & weights
@@ -397,6 +409,39 @@ previous four (`weight_bps` per `reign_members` row), so dethroning is gradual r
 
 ---
 
+## Dashboard publishing (the monitor)
+
+`website/monitor.py` is a standalone PM2 service (`albedo-dashboard-monitor`) — it watches the eval DB
+and, **only when something changes**, regenerates and uploads the two files the static site reads.
+
+```
+loop every ALBEDO_MONITOR_INTERVAL_S (default 2s):
+  signature = max(model_submissions.updated_at), count(*),
+              max(eval_runs.finished_at), max(reigns.version)
+  if signature unchanged → do nothing
+  else:
+    build dashboard.json   reign · eval_runs(history) · current_eval · queue · fails · stats
+                           (score_breakdown read from stage_attempts.result_summary;
+                            artifact s3:// URIs rewritten to https public URLs)
+    build state.json       live pipeline: hippius_validate / pre_eval / eval, each running + queued
+    write website/data/{dashboard,state}.json  AND  put_object → s3://$ALBEDO_S3_BUCKET/data/*.json
+                                               (public-read, no-cache; upload skipped if ALBEDO_S3_* unset)
+```
+
+- **state.json stage buckets** (handoff states count as the *next* stage's queue, since that's what the
+  next dispatcher claims):
+  `hippius_validate` → queued `SUBMITTED`/`HIPPIUS_RETRYABLE`, running `HIPPIUS_RUNNING`;
+  `pre_eval` → queued `HIPPIUS_VALIDATED`/`PRE_EVAL_QUEUED`/`PRE_EVAL_RETRYABLE`, running `PRE_EVAL_RUNNING`;
+  `eval` → queued `PRE_EVAL_PASSED`/`EVAL_QUEUED`/`EVAL_RETRYABLE`, running `EVAL_RUNNING`.
+- The website renders **state.json as the live queue** (3 stage cards, running + queued) and
+  **dashboard.json** as reign / history / chart / fails. Models display as **`ALBEDO-<first-6-of-hotkey>`**,
+  upgraded to **`ALBEDO-<Roman>`** (e.g. ALBEDO-II) once crowned; the real repo is the hover tooltip + hub link.
+- Reactive, not asyncio: a synchronous on-change poll loop, each tick wrapped in try/except (a DB/S3 blip
+  just retries next tick). Env: `ALBEDO_MONITOR_INTERVAL_S`, `ALBEDO_DASHBOARD_NETUID` (97),
+  `ALBEDO_DASHBOARD_ARTIFACT_BASE_URL` (https://s3.hippius.com), plus `ALBEDO_EVAL_DATABASE_URL` + `ALBEDO_S3_*`.
+
+---
+
 ## Postgres schema (schema.sql)
 
 The whole system is a durable state machine in one database. Key tables:
@@ -411,7 +456,7 @@ The whole system is a durable state machine in one database. Key tables:
 | `eval_runs` | one duel: king/challenger hashes, scores, win_margin, sample/turn/error counts |
 | `king_versions` / `reigns` / `reign_members` | the 5-slot king chain + reign history |
 | `weight_epochs` / `weight_transactions` | weight intents + their on-chain submissions |
-| `artifacts` | S3 / Hippius / local-cache pointers (transcripts, verdicts, fingerprints) |
+| `artifacts` | S3 / Hippius / local-cache pointers (eval transcripts, verdict.json, fingerprints, `SANITY_RESULT` fault reports) |
 | `events` | append-only audit log per submission / stage_attempt |
 | `sanity_results` | pre-eval verdict cache keyed by `digest` |
 
@@ -466,6 +511,14 @@ Full reference in [.env.example](../.env.example) (backend + GPU host) and [.env
 | `ALBEDO_WEIGHT_SET_RATE_BLOCKS` | min blocks between weight writes (100) |
 | `ALBEDO_WEIGHT_BURN_UID` | UID weights burn to when no registered king (0) |
 
+### Dashboard monitor
+| Variable | Purpose |
+|---|---|
+| `ALBEDO_MONITOR_INTERVAL_S` | change-detection poll interval (default 2) |
+| `ALBEDO_DASHBOARD_NETUID` | netuid stamped into dashboard.json (default 97) |
+| `ALBEDO_DASHBOARD_ARTIFACT_BASE_URL` | base for rewriting artifact `s3://` URIs → https (default https://s3.hippius.com) |
+| `ALBEDO_S3_*` | bucket/endpoint/keys for uploading dashboard.json + state.json (shared with hippius_validation) |
+
 ---
 
 ## Running locally
@@ -516,11 +569,10 @@ uv run ruff check src/ && uv run ruff format src/                 # lint
 
 ## Links
 
-- **Dashboard:** static site in `website/`, polls `dashboard.json` published to Hippius S3 (`website/push_to_hippius.py`)
-- **SWE-ZERO dataset:** https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories
+- **Dashboard:** static site in `website/`; reads `data/dashboard.json` + `data/state.json`, published to
+  Hippius S3 by `website/monitor.py` (live, on-change) or `website/push_to_hippius.py` (one-shot)
+- **SWE-ZERO dataset:** https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories (linked in the dashboard header)
 - **Mining guide:** [docs/MINING.md](../docs/MINING.md)
 - **Eval runbook:** [docs/eval-service-status.md](../docs/eval-service-status.md)
 - **Reign/weight notes:** [docs/reign-and-weight-pm2.md](../docs/reign-and-weight-pm2.md)
 - **Sibling repo (single-process design):** `albedo-refactor` — same subnet, monolithic validator
-</content>
-</invoke>

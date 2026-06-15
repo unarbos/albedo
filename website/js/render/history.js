@@ -1,7 +1,7 @@
 import { el, mount, link } from "../dom.js";
 import { pct, fmtRelative, fmtDateTime } from "../format.js";
 import { judgeMeta, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
-import { verdictInfo, faultCategory } from "../data.js";
+import { verdictInfo, faultCategory, faultCodeLabel } from "../data.js";
 
 const stop = e => e.stopPropagation();
 
@@ -58,7 +58,7 @@ export function renderHistory(container, rows, judgeModels, netuid, currentKingE
 function failReasonCell(f) {
   const text = (f.fault_message || f.fault_code || faultCategory(f).label).toString();
   return el("td", { class: "fail-reason-cell" },
-    el("span", { class: "fail-code", title: f.fault_class || "" }, f.fault_code || faultCategory(f).label),
+    el("span", { class: "fail-code", title: f.fault_class || "" }, faultCodeLabel(f)),
     el("span", { class: "fail-reason", title: text }, text));
 }
 
