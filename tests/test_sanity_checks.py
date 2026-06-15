@@ -17,7 +17,7 @@ from sanity_service.checks import (
     check_uniform_length,
     check_vocabulary,
 )
-from sanity_service.dataset import sample_prompts
+from sanity_service.dataset import _to_sanity_sample, sample_prompts
 
 # ── per-response checks ─────────────────────────────────────────────────────────
 
@@ -100,6 +100,27 @@ def test_heuristics_reports_empty_before_set_collapse():
     out = _heuristics(["", "", ""], _req())
     assert not any(v["passed"] for v in out)
     assert all(v["reason"] == "empty response" for v in out)
+
+
+def test_manifest_prompts_drop_agent_trajectory_for_pre_eval():
+    sample = _to_sanity_sample(
+        "sample-1",
+        "raw transcript fallback",
+        None,
+        [
+            {"role": "system", "content": "You are fixing a repo."},
+            {"role": "user", "content": "Fix the WebDAV method list."},
+            {"role": "assistant", "content": "THOUGHT: I should run grep."},
+            {"role": "user", "content": "Observation: grep output"},
+        ],
+    )
+
+    assert sample.messages == [
+        {"role": "system", "content": "You are fixing a repo."},
+        {"role": "user", "content": "Fix the WebDAV method list."},
+    ]
+    assert "THOUGHT" not in sample.prompt
+    assert "Observation" not in sample.prompt
 
 
 def test_fallback_prompts_carry_messages_for_worker_template():
