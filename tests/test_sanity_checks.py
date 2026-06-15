@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
+from sanity_remote import worker as sanity_worker
 from sanity_remote.models import SanityRunRequest
-from sanity_remote.worker import VllmEngine, _heuristics
+from sanity_remote.worker import VllmEngine, _format_prompt_messages, _heuristics
 from sanity_service.checks import (
     check_all,
     check_code_present,
@@ -101,12 +102,30 @@ def test_heuristics_reports_empty_before_set_collapse():
     assert all(v["reason"] == "empty response" for v in out)
 
 
-def test_fallback_prompts_use_qwen_chat_template():
+def test_fallback_prompts_carry_messages_for_worker_template():
     sample = sample_prompts(seed="seed", n=1)[0]
 
-    assert sample.prompt.startswith("<|im_start|>user\n")
-    assert sample.prompt.endswith("<|im_start|>assistant\n")
-    assert "assistant:" not in sample.prompt
+    assert sample.messages == [{"role": "user", "content": sample.prompt}]
+
+
+def test_pre_eval_worker_formats_messages_with_non_thinking_template(monkeypatch):
+    captured = {}
+
+    def _fake_format_messages(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "non-thinking prompt"
+
+    monkeypatch.setattr(sanity_worker, "format_messages", _fake_format_messages)
+
+    prompts = _format_prompt_messages("/models/qwen", [[{"role": "user", "content": "Fix it."}]])
+
+    assert prompts == ["non-thinking prompt"]
+    assert captured["messages"] == [{"role": "user", "content": "Fix it."}]
+    assert captured["kwargs"] == {
+        "tokenizer_path": "/models/qwen",
+        "enable_thinking": False,
+    }
 
 
 def test_heuristics_passes_varied_code_responses():

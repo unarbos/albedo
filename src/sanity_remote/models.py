@@ -11,6 +11,7 @@ class SanityRunRequest(BaseModel):
     model_uri: str
     digest: str
     prompts: list[str]
+    prompt_messages: list[list[dict[str, str]]] | None = None
     gen_max_tokens: int = 1024
     min_tokens: int = 5
     max_repetition: float = 0.85

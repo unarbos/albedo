@@ -46,6 +46,9 @@ class SanityDispatcher:
             model_uri=submission["model_uri"],
             digest=submission.get("model_hash") or "",
             prompts=[s.prompt for s in samples],
+            prompt_messages=[
+                s.messages or [{"role": "user", "content": s.prompt}] for s in samples
+            ],
             gen_max_tokens=self.settings.gen_max_tokens,
         )
 
@@ -92,7 +95,9 @@ class SanityDispatcher:
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
             logger.warning(
                 "[sanity-dispatch] worker unreachable submission={} digest={:.16}: {}",
-                claimed.submission_id, claimed.request.digest, exc,
+                claimed.submission_id,
+                claimed.request.digest,
+                exc,
             )
             self.repository.mark_pre_eval_failed(
                 submission_id=claimed.submission_id,
@@ -174,7 +179,8 @@ class SanityDispatcher:
         client = make_client()
         try:
             gate = await run_gate(
-                samples, client,
+                samples,
+                client,
                 consensus=self.settings.consensus,
                 skip_viability=self.settings.skip_viability,
             )
@@ -204,7 +210,8 @@ class SanityDispatcher:
             )
         else:
             # Terminal miner fault: publish a fault report to Hippius (reason + per-judge evidence)
-            # so it can be linked from the dashboard, then record the artifact alongside the verdict.
+            # so it can be linked from the dashboard, then record the artifact alongside
+            # the verdict.
             detail = {
                 "submission_id": str(submission_id),
                 "repo": repo,
@@ -255,7 +262,9 @@ class SanityDispatcher:
             except (httpx.HTTPError, asyncio.TimeoutError) as exc:
                 logger.warning(
                     "[sanity-dispatch] reconcile skipped submission={} run={}: {}",
-                    active.submission_id, active.run_id, exc,
+                    active.submission_id,
+                    active.run_id,
+                    exc,
                 )
                 continue
             finally:
@@ -282,9 +291,19 @@ class SanityDispatcher:
 def main() -> None:
     # CLI entrypoint (--once / --sweep-abandoned / --reconcile-running), mirroring eval.
     parser = argparse.ArgumentParser(description="Run the Albedo sanity pre-eval dispatcher.")
-    parser.add_argument("--once", action="store_true", help="Claim and dispatch at most one pre-eval.")
-    parser.add_argument("--sweep-abandoned", action="store_true", help="Reclaim expired pre-eval attempts.")
-    parser.add_argument("--reconcile-running", action="store_true", help="Replay in-flight pre-eval runs.")
+    parser.add_argument(
+        "--once", action="store_true", help="Claim and dispatch at most one pre-eval."
+    )
+    parser.add_argument(
+        "--sweep-abandoned",
+        action="store_true",
+        help="Reclaim expired pre-eval attempts.",
+    )
+    parser.add_argument(
+        "--reconcile-running",
+        action="store_true",
+        help="Replay in-flight pre-eval runs.",
+    )
     parser.add_argument("--limit", type=int, default=10, help="Max active runs to reconcile.")
     args = parser.parse_args()
 

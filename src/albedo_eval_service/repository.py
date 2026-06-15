@@ -75,6 +75,17 @@ class EvalRepository:
                 if running:
                     return None
 
+                pending_reign = conn.execute(
+                    """
+                    SELECT id
+                    FROM model_submissions
+                    WHERE state IN ('EVAL_WIN', 'SET_REIGN_RUNNING')
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if pending_reign:
+                    return None
+
                 submission = conn.execute(
                     """
                     SELECT ms.*, cc.block_hash

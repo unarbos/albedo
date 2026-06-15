@@ -97,6 +97,66 @@ def test_claim_next_eval_is_sequential_and_creates_attempt(db_url: str):
     assert king_submission_id == expected_king_submission_id
 
 
+def test_claim_next_eval_waits_for_pending_reign_promotion(db_url: str):
+    repo = EvalRepository(db_url)
+    submission_id = _seed_eval_ready_submission(db_url)
+    pending_winner_id = uuid4()
+    pending_miner_id = uuid4()
+    pending_chain_commit_id = uuid4()
+
+    with psycopg.connect(db_url) as conn:
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO miners (id, hotkey, uid, netuid)
+                VALUES (%s, 'winner-hotkey', 8, 1)
+                """,
+                (pending_miner_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO chain_commits (
+                    id, netuid, block_number, block_hash, uid, hotkey,
+                    commit_payload, model_uri, payload_hash
+                )
+                VALUES (%s, 1, 101, '0xwinner', 8, 'winner-hotkey', '{}'::jsonb,
+                        's3://models/winner', 'payload-winner')
+                """,
+                (pending_chain_commit_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO model_submissions (
+                    id, miner_id, chain_commit_id, netuid, uid, hotkey, model_uri,
+                    model_hash, state, idempotency_key
+                )
+                VALUES (%s, %s, %s, 1, 8, 'winner-hotkey', 's3://models/winner',
+                        'sha256:winner', 'EVAL_WIN', 'idem-winner')
+                """,
+                (pending_winner_id, pending_miner_id, pending_chain_commit_id),
+            )
+
+    claimed = repo.claim_next_eval(
+        worker_id="worker-a",
+        lease_seconds=60,
+        request_builder=_request_builder,
+    )
+
+    assert claimed is None
+    with psycopg.connect(db_url) as conn:
+        submission_state = conn.execute(
+            "SELECT state FROM model_submissions WHERE id = %s",
+            (submission_id,),
+        ).fetchone()[0]
+        attempt_count = conn.execute(
+            "SELECT count(*) FROM stage_attempts WHERE submission_id = %s AND stage = 'EVAL'",
+            (submission_id,),
+        ).fetchone()[0]
+
+    assert submission_state == "EVAL_QUEUED"
+    assert attempt_count == 0
+
+
 def test_sweep_abandoned_eval_attempts_returns_submission_to_retryable(db_url: str):
     repo = EvalRepository(db_url)
     submission_id = _seed_eval_ready_submission(db_url)

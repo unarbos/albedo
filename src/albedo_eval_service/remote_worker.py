@@ -69,7 +69,6 @@ class RemoteEvalWorker:
     def _execute(self, run: RemoteRun) -> None:
         request = run.request
         topology = self._topology(request)
-        samples = self._load_samples(request)
         run.append_event(
             {
                 "type": "model_resolution_started",
@@ -89,6 +88,8 @@ class RemoteEvalWorker:
                 ],
             }
         )
+        tokenizer_path = king_model.local_path if Path(king_model.local_path).exists() else None
+        samples = self._load_samples(request, tokenizer_path=tokenizer_path)
         run.set_state("generating")
         run.append_event(
             {
@@ -152,7 +153,9 @@ class RemoteEvalWorker:
         run.append_event(verdict)
         run.set_state(str(verdict["state"]))
 
-    def _load_samples(self, request: EvalRequest) -> list[EvalSample]:
+    def _load_samples(
+        self, request: EvalRequest, *, tokenizer_path: str | None = None
+    ) -> list[EvalSample]:
         if not self.settings.dataset_root:
             raise ValueError("ALBEDO_REMOTE_DATASET_ROOT is required for SWE-ZERO parquet loading")
 
@@ -168,7 +171,12 @@ class RemoteEvalWorker:
                 sample_count=request.dataset.sample_count,
                 max_turns_per_sample=request.dataset.max_turns_per_sample,
             )
-        return load_swe_zero_samples(dataset_root=self.settings.dataset_root, sample_ids=sample_ids)
+        return load_swe_zero_samples(
+            dataset_root=self.settings.dataset_root,
+            sample_ids=sample_ids,
+            tokenizer_path=tokenizer_path,
+            enable_thinking=True,
+        )
 
     def _model_for_side(self, request: EvalRequest, *, side: str) -> str:
         if side == "previous_king":

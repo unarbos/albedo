@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from albedo_eval_service.remote_dataset import format_messages
 from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.state import SanityRun
 from sanity_service.checks import (
@@ -58,6 +59,15 @@ def _strip_model_config(model_dir: str) -> None:
     logger.info("[sanity-remote] stripped forbidden keys from config.json: {}", removed)
 
 
+def _format_prompt_messages(
+    tokenizer_path: str, prompt_messages: list[list[dict[str, str]]]
+) -> list[str]:
+    return [
+        format_messages(messages, tokenizer_path=tokenizer_path, enable_thinking=False)
+        for messages in prompt_messages
+    ]
+
+
 def _model_ref_parts(model_uri: str, digest: str) -> tuple[str, str]:
     repo, sep, uri_digest = model_uri.partition("@")
     return repo, uri_digest if sep else digest
@@ -83,11 +93,20 @@ class VllmEngine:
         self._kill_port_squatter()
 
     async def run_job(
-        self, model_uri: str, digest: str, prompts: list[str], max_tokens: int
+        self,
+        model_uri: str,
+        digest: str,
+        prompts: list[str],
+        max_tokens: int,
+        prompt_messages: list[list[dict[str, str]]] | None = None,
     ) -> list[str]:
         # Serializes one generation job: ensure the model is loaded, then generate the prompts.
         async with self._lock:
             await self._ensure_model(model_uri, digest)
+            if prompt_messages is not None:
+                prompts = await asyncio.to_thread(
+                    _format_prompt_messages, self._loaded_dir, prompt_messages
+                )
             return await self._run_prompts(digest, prompts, max_tokens)
 
     def _kill_port_squatter(self) -> None:
@@ -356,7 +375,13 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
     engine = _engine()
     try:
         run.append_event({"type": "generation_started", "run_id": run.run_id})
-        responses = await engine.run_job(req.model_uri, req.digest, req.prompts, req.gen_max_tokens)
+        responses = await engine.run_job(
+            req.model_uri,
+            req.digest,
+            req.prompts,
+            req.gen_max_tokens,
+            req.prompt_messages,
+        )
         run.succeed(
             responses=responses,
             heuristics=_heuristics(responses, req, skip=s.skip_heuristics),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,18 +17,44 @@ class EvalSample:
     sample_id: str
     prompt: str
     target: str | None = None
+    messages: list[dict[str, str]] | None = None
 
 
-def load_swe_zero_samples(*, dataset_root: str | Path, sample_ids: list[str]) -> list[EvalSample]:
+def load_swe_zero_samples(
+    *,
+    dataset_root: str | Path,
+    sample_ids: list[str],
+    tokenizer_path: str | Path | None = None,
+    enable_thinking: bool = True,
+) -> list[EvalSample]:
     root = Path(dataset_root)
-    return [_load_sample(root, sample_id) for sample_id in sample_ids]
+    return [
+        _load_sample(
+            root,
+            sample_id,
+            tokenizer_path=tokenizer_path,
+            enable_thinking=enable_thinking,
+        )
+        for sample_id in sample_ids
+    ]
 
 
-def _load_sample(root: Path, sample_id: str) -> EvalSample:
+def _load_sample(
+    root: Path,
+    sample_id: str,
+    *,
+    tokenizer_path: str | Path | None,
+    enable_thinking: bool,
+) -> EvalSample:
     shard_name, row_idx, turn_idx = _parse_sample_id(sample_id)
     row = _read_parquet_row(root / shard_name, row_idx)
-    prompt, target = _prompt_from_row(row, turn_idx=turn_idx)
-    return EvalSample(sample_id=sample_id, prompt=prompt, target=target)
+    prompt, target, messages = _prompt_from_row(
+        row,
+        turn_idx=turn_idx,
+        tokenizer_path=tokenizer_path,
+        enable_thinking=enable_thinking,
+    )
+    return EvalSample(sample_id=sample_id, prompt=prompt, target=target, messages=messages)
 
 
 def _parse_sample_id(sample_id: str) -> tuple[str, int, int]:
@@ -54,7 +81,13 @@ def _read_parquet_row(path: Path, row_idx: int) -> dict[str, Any]:
     raise IndexError(f"row_idx {row_idx} out of range for shard {path}")
 
 
-def _prompt_from_row(row: dict[str, Any], *, turn_idx: int) -> tuple[str, str | None]:
+def _prompt_from_row(
+    row: dict[str, Any],
+    *,
+    turn_idx: int,
+    tokenizer_path: str | Path | None,
+    enable_thinking: bool,
+) -> tuple[str, str | None, list[dict[str, str]] | None]:
     normalized = {key: _unwrap_column(value) for key, value in row.items()}
     turns = _extract_turns(normalized)
     if turns:
@@ -68,14 +101,19 @@ def _prompt_from_row(row: dict[str, Any], *, turn_idx: int) -> tuple[str, str | 
         target = (
             _content(turns[source_index]) if _role(turns[source_index]) == "assistant" else None
         )
-        return _format_prompt(prompt_turns), target
+        messages = _messages_from_turns(prompt_turns)
+        prompt = format_messages(
+            messages, tokenizer_path=tokenizer_path, enable_thinking=enable_thinking
+        )
+        return prompt, target, messages
 
     for key in ("prompt", "instruction", "question", "input", "text"):
         value = normalized.get(key)
         if isinstance(value, str) and value.strip():
-            return value, None
+            return value, None, [{"role": "user", "content": value}]
     fallback = {key: value for key, value in normalized.items() if not key.startswith("__")}
-    return json.dumps(fallback, sort_keys=True), None
+    prompt = json.dumps(fallback, sort_keys=True)
+    return prompt, None, [{"role": "user", "content": prompt}]
 
 
 def _extract_turns(row: dict[str, Any]) -> list[Any]:
@@ -92,19 +130,58 @@ def _extract_turns(row: dict[str, Any]) -> list[Any]:
     return []
 
 
-def format_user_prompt(prompt: str) -> str:
-    return _format_prompt([{"role": "user", "content": prompt}])
+def format_user_prompt(
+    prompt: str, *, tokenizer_path: str | Path | None = None, enable_thinking: bool = True
+) -> str:
+    return format_messages(
+        [{"role": "user", "content": prompt}],
+        tokenizer_path=tokenizer_path,
+        enable_thinking=enable_thinking,
+    )
 
 
-def _format_prompt(turns: list[Any]) -> str:
+def format_messages(
+    messages: list[dict[str, str]],
+    *,
+    tokenizer_path: str | Path | None = None,
+    enable_thinking: bool = True,
+) -> str:
+    if tokenizer_path is not None:
+        tokenizer = _load_tokenizer(str(tokenizer_path))
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    return _manual_chat_template(messages)
+
+
+def _manual_chat_template(messages: list[dict[str, str]]) -> str:
     parts = []
-    for turn in turns:
-        role = _chat_role(_role(turn))
-        content = _content(turn)
+    for message in messages:
+        role = _chat_role(message.get("role"))
+        content = message.get("content", "")
         if content:
             parts.append(f"{_IM_START}{role}\n{content}{_IM_END}")
     parts.append(f"{_IM_START}assistant\n")
     return "\n".join(parts)
+
+
+@lru_cache(maxsize=8)
+def _load_tokenizer(tokenizer_path: str):
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+
+def _messages_from_turns(turns: list[Any]) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for turn in turns:
+        content = _content(turn)
+        if content:
+            messages.append({"role": _chat_role(_role(turn)), "content": content})
+    return messages
 
 
 def _chat_role(role: str | None) -> str:

@@ -15,6 +15,7 @@ class SanitySample:
     sample_id: str
     prompt: str
     target: str | None = None
+    messages: list[dict[str, str]] | None = None
 
 
 def sample_prompts(
@@ -38,16 +39,14 @@ def sample_prompts(
             manifest, block_hash=str(seed), sample_count=n, max_turns_per_sample=max_turns
         )
         loaded = load_swe_zero_samples(dataset_root=dataset_root, sample_ids=sample_ids)
-        return [SanitySample(s.sample_id, s.prompt, s.target) for s in loaded]
+        return [SanitySample(s.sample_id, s.prompt, s.target, s.messages) for s in loaded]
     return _fallback_prompts(n)
 
 
 def _fallback_prompts(n: int) -> list[SanitySample]:
     # Static prompts.json fallback for local/dev when no SWE-ZERO manifest is configured.
-    from albedo_eval_service.remote_dataset import format_user_prompt
-
     prompts: list[str] = json.loads(_PROMPTS_FILE.read_text())[:n]
     return [
-        SanitySample(f"fallback:{i}", format_user_prompt(prompt))
+        SanitySample(f"fallback:{i}", prompt, messages=[{"role": "user", "content": prompt}])
         for i, prompt in enumerate(prompts)
     ]
