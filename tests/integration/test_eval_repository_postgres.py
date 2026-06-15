@@ -100,7 +100,9 @@ def test_claim_next_eval_is_sequential_and_creates_attempt(db_url: str):
 def test_sweep_abandoned_eval_attempts_returns_submission_to_retryable(db_url: str):
     repo = EvalRepository(db_url)
     submission_id = _seed_eval_ready_submission(db_url)
-    claimed = repo.claim_next_eval(worker_id="worker-a", lease_seconds=60, request_builder=_request_builder)
+    claimed = repo.claim_next_eval(
+        worker_id="worker-a", lease_seconds=60, request_builder=_request_builder
+    )
     assert claimed is not None
 
     with psycopg.connect(db_url) as conn:
@@ -134,10 +136,53 @@ def test_sweep_abandoned_eval_attempts_returns_submission_to_retryable(db_url: s
     )
 
 
+def test_record_remote_event_skips_exact_replay(db_url: str):
+    repo = EvalRepository(db_url)
+    submission_id = _seed_eval_ready_submission(db_url)
+    claimed = repo.claim_next_eval(
+        worker_id="worker-a", lease_seconds=60, request_builder=_request_builder
+    )
+    assert claimed is not None
+
+    event = {
+        "type": "generation_batch_done",
+        "eval_run_id": str(claimed.eval_run_id),
+        "batch_id": "gen-0001",
+        "generated_sample_count": 8,
+    }
+    repo.record_remote_event(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        event=event,
+    )
+    repo.record_remote_event(
+        submission_id=claimed.submission_id,
+        attempt_id=claimed.attempt_id,
+        event=event,
+    )
+
+    with psycopg.connect(db_url) as conn:
+        row = conn.execute(
+            """
+            SELECT er.generated_sample_count, count(e.id)
+            FROM eval_runs er
+            JOIN events e ON e.stage_attempt_id = er.stage_attempt_id
+            WHERE er.id = %s
+              AND e.event_type = %s
+            GROUP BY er.generated_sample_count
+            """,
+            (claimed.eval_run_id, "remote_generation_batch_done"),
+        ).fetchone()
+
+    assert row == (8, 1)
+
+
 def test_record_remote_progress_and_verdict_artifacts_update_eval_run(db_url: str):
     repo = EvalRepository(db_url)
     submission_id = _seed_eval_ready_submission(db_url)
-    claimed = repo.claim_next_eval(worker_id="worker-a", lease_seconds=60, request_builder=_request_builder)
+    claimed = repo.claim_next_eval(
+        worker_id="worker-a", lease_seconds=60, request_builder=_request_builder
+    )
     assert claimed is not None
 
     repo.record_remote_event(
@@ -158,7 +203,11 @@ def test_record_remote_progress_and_verdict_artifacts_update_eval_run(db_url: st
     repo.record_remote_event(
         submission_id=claimed.submission_id,
         attempt_id=claimed.attempt_id,
-        event={"type": "generation_batch_done", "eval_run_id": str(claimed.eval_run_id), "generated_sample_count": 2},
+        event={
+            "type": "generation_batch_done",
+            "eval_run_id": str(claimed.eval_run_id),
+            "generated_sample_count": 2,
+        },
     )
     repo.record_remote_event(
         submission_id=claimed.submission_id,
@@ -168,7 +217,11 @@ def test_record_remote_progress_and_verdict_artifacts_update_eval_run(db_url: st
     repo.record_remote_event(
         submission_id=claimed.submission_id,
         attempt_id=claimed.attempt_id,
-        event={"type": "scoring_batch_done", "eval_run_id": str(claimed.eval_run_id), "scored_sample_count": 2},
+        event={
+            "type": "scoring_batch_done",
+            "eval_run_id": str(claimed.eval_run_id),
+            "scored_sample_count": 2,
+        },
     )
 
     repo.mark_eval_succeeded(
@@ -188,7 +241,10 @@ def test_record_remote_progress_and_verdict_artifacts_update_eval_run(db_url: st
             "king_vllm_errors": 0,
             "chal_vllm_errors": 0,
             "judge_errors": 0,
-            "gpu_topology": {"previous_king": ["0", "1", "2", "3"], "challenger": ["4", "5", "6", "7"]},
+            "gpu_topology": {
+                "previous_king": ["0", "1", "2", "3"],
+                "challenger": ["4", "5", "6", "7"],
+            },
             "artifacts": {
                 "generated_samples": "s3://albedo-artifacts/submissions/1/eval/2/generated-samples.jsonl",
                 "scoring_results": "s3://albedo-artifacts/submissions/1/eval/2/scoring-results.jsonl",
@@ -292,7 +348,14 @@ def _seed_eval_ready_submission(database_url: str) -> UUID:
                     (%s, %s, %s, 1, 7, 'miner-hotkey', 's3://models/challenger', 'sha256:challenger', 'EVAL_QUEUED', 'idem-a'),
                     (%s, %s, %s, 1, 1, 'king-hotkey', 's3://models/king', 'sha256:king', 'COMPLETE_CORONATED', 'idem-king')
                 """,
-                (submission_id, miner_id, chain_commit_id, king_submission_id, king_miner_id, king_chain_commit_id),
+                (
+                    submission_id,
+                    miner_id,
+                    chain_commit_id,
+                    king_submission_id,
+                    king_miner_id,
+                    king_chain_commit_id,
+                ),
             )
             conn.execute(
                 """

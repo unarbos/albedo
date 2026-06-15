@@ -1,4 +1,5 @@
 """Tests for the sanity pre-eval gate, dispatcher decisions, and worker run store."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,15 +9,15 @@ from uuid import uuid4
 
 from albedo_eval_service.judge_openrouter import JudgeRawResponse
 from sanity_remote.models import SanityRunRequest
-from sanity_remote.worker import _model_ref_parts
 from sanity_remote.state import SanityRunStore
+from sanity_remote.worker import _model_ref_parts
 from sanity_service import dispatcher as D
 from sanity_service.llm_check import GateResult, LLMGate, SampleInput, run_gate
 from sanity_service.rubric import parse_injection, parse_viability
 from sanity_service.settings import SanitySettings
 
-
 # ── rubric parsers ────────────────────────────────────────────────────────────
+
 
 def test_parse_injection_and_viability():
     assert parse_injection('{"injection": false, "evidence": "none"}') == (False, "none")
@@ -27,6 +28,7 @@ def test_parse_injection_and_viability():
 
 # ── gate via a fake judge client (calls 1-3 = first injection pass, 4-6 = re-check) ─────
 
+
 class _FakeJudge:
     def __init__(self, inj1: bool, inj2: bool, viable: bool) -> None:
         self._inj1, self._inj2, self._viable, self._n = inj1, inj2, viable, 0
@@ -35,9 +37,17 @@ class _FakeJudge:
         if "security auditor" in messages[0]["content"]:
             self._n += 1
             flag = self._inj2 if self._n > 3 else self._inj1
-            raw = '{"injection": true, "evidence": "x"}' if flag else '{"injection": false, "evidence": "none"}'
+            raw = (
+                '{"injection": true, "evidence": "x"}'
+                if flag
+                else '{"injection": false, "evidence": "none"}'
+            )
         else:
-            raw = '{"viable": true, "reason": "ok"}' if self._viable else '{"viable": false, "reason": "bad"}'
+            raw = (
+                '{"viable": true, "reason": "ok"}'
+                if self._viable
+                else '{"viable": false, "reason": "bad"}'
+            )
         return JudgeRawResponse(model=model, provider="p", raw=raw)
 
 
@@ -73,6 +83,7 @@ def test_gate_heuristic_fail_skips_judges():
 
 # ── dispatcher _complete decisions ──────────────────────────────────────────────
 
+
 class _FakeRepo:
     def __init__(self) -> None:
         self.calls: list = []
@@ -94,24 +105,34 @@ def _complete(gate: GateResult, result: dict) -> list:
     disp = D.SanityDispatcher(settings=SanitySettings(), repository=repo)
     D.make_client = lambda: _DummyJudge()
 
-    async def _fake_gate(samples, client, *, consensus=False):
+    async def _fake_gate(samples, client, *, consensus=False, skip_viability=False):
         return gate
 
     D.run_gate = _fake_gate
     asyncio.run(
         disp._complete(
-            submission_id=uuid4(), attempt_id=uuid4(), repo="r", digest="d",
-            prompts=["p", "p", "p"], result=result,
+            submission_id=uuid4(),
+            attempt_id=uuid4(),
+            repo="r",
+            digest="d",
+            prompts=["p", "p", "p"],
+            result=result,
         )
     )
     return repo.calls
 
 
-_OK = {"state": "succeeded", "responses": ["a", "b", "c"], "heuristics": [{"passed": True, "reason": "ok"}] * 3}
+_OK = {
+    "state": "succeeded",
+    "responses": ["a", "b", "c"],
+    "heuristics": [{"passed": True, "reason": "ok"}] * 3,
+}
 
 
 def test_complete_passed():
-    assert _complete(GateResult(True, "", False, LLMGate.PASSED, "veto", []), _OK) == [("passed", None)]
+    assert _complete(GateResult(True, "", False, LLMGate.PASSED, "veto", []), _OK) == [
+        ("passed", None)
+    ]
 
 
 def test_complete_injection_is_terminal_miner_fault():
@@ -132,6 +153,7 @@ def test_complete_worker_failure_is_retryable():
 
 # ── import hygiene ──────────────────────────────────────────────────────────────
 
+
 def test_dispatcher_binds_canonical_repository():
     # Guards against re-introducing `from src.sanity_service.db`, which loads db.py a second
     # time under the `src.` namespace and yields a distinct PreEvalRepository class.
@@ -142,6 +164,7 @@ def test_dispatcher_binds_canonical_repository():
 
 
 # ── worker run store ────────────────────────────────────────────────────────────
+
 
 def test_model_ref_parts_accepts_chain_model_uri():
     digest = "sha256:" + "a" * 64
@@ -212,8 +235,10 @@ def test_vllm_cmd_includes_generation_config_vllm(tmp_path):
     captured: list[str] = []
 
     async def _run():
-        with patch("subprocess.Popen") as mock_popen, \
-             patch.object(engine, "_wait_healthy", return_value=None):
+        with (
+            patch("subprocess.Popen") as mock_popen,
+            patch.object(engine, "_wait_healthy", return_value=None),
+        ):
             mock_popen.return_value = MagicMock()
             await engine._start_vllm(str(tmp_path), "sha256:abc")
             captured.extend(mock_popen.call_args[0][0])
