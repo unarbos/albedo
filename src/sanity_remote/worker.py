@@ -16,6 +16,15 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from sanity_remote.config import SanityRemoteSettings, get_remote_settings
+from sanity_remote.state import SanityRun
+from sanity_service.checks import (
+    check_code_present,
+    check_collapsed,
+    check_one,
+    check_uniform_length,
+)
+
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _FORBIDDEN_CONFIG_KEYS = frozenset({"auto_map", "quantization_config"})
 
@@ -28,6 +37,7 @@ def _strip_thinking(text: str) -> str:
     if "</think>" not in text:
         return ""
     return _THINK_RE.sub("", text).strip()
+
 
 def _strip_model_config(model_dir: str) -> None:
     # Removes keys that can redirect model loading or force unexpected quantization modes.
@@ -45,16 +55,6 @@ def _strip_model_config(model_dir: str) -> None:
         return
     config_path.write_text(json.dumps(stripped, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     logger.info("[sanity-remote] stripped forbidden keys from config.json: {}", removed)
-
-
-from sanity_remote.config import SanityRemoteSettings, get_remote_settings
-from sanity_remote.state import SanityRun
-from sanity_service.checks import (
-    check_code_present,
-    check_collapsed,
-    check_one,
-    check_uniform_length,
-)
 
 
 def _model_ref_parts(model_uri: str, digest: str) -> tuple[str, str]:
@@ -95,6 +95,7 @@ class VllmEngine:
         # a no-op, _wait_healthy() immediately returns True against the old server, and the new
         # digest is written to _loaded_digest while vLLM still serves the previous model → 404.
         import socket
+
         try:
             with socket.socket() as s:
                 s.settimeout(0.5)
@@ -105,12 +106,18 @@ class VllmEngine:
         try:
             result = subprocess.run(
                 ["lsof", "-t", f"-i:{self._s.vllm_port}"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             for pid_str in result.stdout.split():
                 try:
                     os.kill(int(pid_str), signal.SIGKILL)
-                    logger.info("[sanity-remote] killed orphan vLLM pid={} on port {}", pid_str, self._s.vllm_port)
+                    logger.info(
+                        "[sanity-remote] killed orphan vLLM pid={} on port {}",
+                        pid_str,
+                        self._s.vllm_port,
+                    )
                 except Exception:
                     pass
         except Exception:
@@ -217,7 +224,11 @@ class VllmEngine:
 
     async def _run_prompts(self, model_name: str, prompts: list[str], max_tokens: int) -> list[str]:
         # Per prompt: HTTP-error/malformed -> "" (model fault); transport error -> raise (infra).
-        url = f"http://localhost:{self._s.vllm_port}/v1/chat/completions"
+        #
+        # Keep this aligned with the full eval worker: SWE-ZERO prompts are already complete
+        # text transcripts, so they should be sent as raw completions. The chat endpoint wraps
+        # that transcript in another chat template and can turn valid continuations into EOS.
+        url = f"http://localhost:{self._s.vllm_port}/v1/completions"
         timeout = httpx.Timeout(connect=5.0, read=60.0, write=5.0, pool=5.0)
 
         async def _one(prompt: str) -> str:
@@ -226,12 +237,12 @@ class VllmEngine:
                     url,
                     json={
                         "model": model_name,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "prompt": prompt,
                         "max_tokens": max_tokens,
-                        "temperature": 0.0,
-                        # Disable Qwen3 extended thinking - sanity checks need direct answers,
-                        # not CoT that consumes the full token budget before any answer appears.
-                        "chat_template_kwargs": {"enable_thinking": False},
+                        "temperature": self._s.gen_temperature,
+                        "top_p": self._s.gen_top_p,
+                        "top_k": self._s.gen_top_k,
+                        "min_p": self._s.gen_min_p,
                     },
                 )
             if r.status_code >= 400:
@@ -241,7 +252,7 @@ class VllmEngine:
                 return ""
             try:
                 choice = r.json()["choices"][0]
-                raw = choice["message"]["content"] or ""
+                raw = choice["text"] or ""
                 finish = choice.get("finish_reason", "unknown")
                 answer = _strip_thinking(raw)
                 logger.info(
@@ -300,6 +311,19 @@ def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict
     # Per-response heuristic verdicts; a set-level collapse signal fails all responses.
     if skip:
         return [{"passed": True, "reason": "heuristics disabled"} for _ in responses]
+
+    out: list[dict[str, Any]] = []
+    for resp in responses:
+        r = check_one(
+            resp,
+            min_tokens=req.min_tokens,
+            max_repetition=req.max_repetition,
+            min_vocab_ratio=req.min_vocab_ratio,
+        )
+        out.append({"passed": r.passed, "reason": r.reason})
+    if any(not item["passed"] for item in out):
+        return out
+
     set_fail = next(
         (
             c
@@ -312,18 +336,8 @@ def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict
         ),
         None,
     )
-    out: list[dict[str, Any]] = []
-    for resp in responses:
-        if set_fail is not None:
-            out.append({"passed": False, "reason": set_fail.reason})
-            continue
-        r = check_one(
-            resp,
-            min_tokens=req.min_tokens,
-            max_repetition=req.max_repetition,
-            min_vocab_ratio=req.min_vocab_ratio,
-        )
-        out.append({"passed": r.passed, "reason": r.reason})
+    if set_fail is not None:
+        return [{"passed": False, "reason": set_fail.reason} for _ in responses]
     return out
 
 
@@ -342,12 +356,18 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
     try:
         run.append_event({"type": "generation_started", "run_id": run.run_id})
         responses = await engine.run_job(req.model_uri, req.digest, req.prompts, req.gen_max_tokens)
-        run.succeed(responses=responses, heuristics=_heuristics(responses, req, skip=s.skip_heuristics))
+        run.succeed(
+            responses=responses,
+            heuristics=_heuristics(responses, req, skip=s.skip_heuristics),
+        )
     except WorkerFault as fault:
         engine.forget()
         logger.warning(
             "[sanity-remote] worker fault code={} digest={:.16} retryable={}: {}",
-            fault.code, req.digest, fault.retryable, fault,
+            fault.code,
+            req.digest,
+            fault.retryable,
+            fault,
         )
         run.fail(fault_code=fault.code, fault_message=str(fault), retryable=fault.retryable)
     except Exception as exc:  # noqa: BLE001 - never let a worker crash strand the run

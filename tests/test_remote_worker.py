@@ -7,7 +7,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from albedo_eval_service.canonical_model_config import canonical_max_model_len
-from albedo_eval_service.models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
+from albedo_eval_service.models import (
+    Challenger,
+    DatasetConfig,
+    EvalRequest,
+    PreviousKing,
+    ScoringConfig,
+)
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_generation import GenerationResult
 from albedo_eval_service.remote_state import RemoteRun
@@ -20,9 +26,14 @@ class RecordingGenerator:
         self.calls = calls
 
     def generate(self, samples):
-        self.calls.append({"side": self.side, "sample_ids": [sample.sample_id for sample in samples]})
+        self.calls.append(
+            {"side": self.side, "sample_ids": [sample.sample_id for sample in samples]}
+        )
         suffix = " challenger output" if self.side == "challenger" else " king"
-        return [GenerationResult(sample_id=sample.sample_id, text=sample.prompt + suffix) for sample in samples]
+        return [
+            GenerationResult(sample_id=sample.sample_id, text=sample.prompt + suffix)
+            for sample in samples
+        ]
 
 
 def _write_dataset(root):
@@ -46,7 +57,9 @@ def _request():
         eval_run_id=uuid4(),
         submission_id=uuid4(),
         challenger=Challenger(model_uri="s3-or-hippius-uri/challenger", model_hash="sha256:chal"),
-        previous_king=PreviousKing(model_uri="s3-or-hippius-uri/king", model_hash="sha256:king", king_version=7),
+        previous_king=PreviousKing(
+            model_uri="s3-or-hippius-uri/king", model_hash="sha256:king", king_version=7
+        ),
         dataset=DatasetConfig(
             version="AlienKevin/SWE-ZERO-12M-trajectories",
             manifest_uri="s3://albedo-artifacts/datasets/swe-zero/manifest.json",
@@ -121,7 +134,10 @@ def test_remote_worker_rejects_overlapping_gpu_groups(tmp_path):
         scoring_backend="mock",
     )
 
-    RemoteEvalWorker(settings, generator_factory=lambda side, gpu_ids, model: RecordingGenerator(side=side, calls=[])).execute(run)
+    RemoteEvalWorker(
+        settings,
+        generator_factory=lambda side, gpu_ids, model: RecordingGenerator(side=side, calls=[]),
+    ).execute(run)
 
     verdict = run.final_verdict()
     assert run.state == "failed"
@@ -143,3 +159,7 @@ def test_vllm_generator_uses_canonical_max_model_len_even_when_env_is_lower(tmp_
 
     assert generator.max_model_len == canonical_max_model_len()
     assert generator.max_new_tokens == settings.max_new_tokens
+    assert generator.temperature == 0.7
+    assert generator.top_p == 0.8
+    assert generator.top_k == 20
+    assert generator.min_p == 0.0

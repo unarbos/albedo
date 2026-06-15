@@ -24,6 +24,32 @@ MODEL_HASH = "sha256:3368b0c79b619ed90dc5610c20073cf02c3a93275ebc0c5b94a9d332fea
 REPO = "teutonic/albedo-qwen3-4b-genesis"
 DIGEST = MODEL_HASH
 BURN_UID = 0
+REMOTE_GPU_HOSTS = [
+    {
+        "id": "gpu-eval-b200-1",
+        "role": "EVAL",
+        "base_url": "http://127.0.0.1:18090",
+        "tunnel_name": "albedo-backend-to-gpu-api-tunnel",
+        "state": "READY",
+        "gpu_count": 8,
+        "free_gpu_count": 8,
+        "accelerator_type": "B200",
+        "capabilities": {"generation_backend": "vllm", "score_bridge_connected": True},
+        "last_health": {"ready": True, "active_runs": 0},
+    },
+    {
+        "id": "sanity-remote-1",
+        "role": "PRE_EVAL",
+        "base_url": "http://127.0.0.1:19100",
+        "tunnel_name": "albedo-sanity-host-tunnel",
+        "state": "READY",
+        "gpu_count": 1,
+        "free_gpu_count": 1,
+        "accelerator_type": "RTX 5090",
+        "capabilities": {},
+        "last_health": {"ready": True},
+    },
+]
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -58,6 +84,39 @@ def weight_hash(*, reign_version: int) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def upsert_remote_gpu_hosts(conn: psycopg.Connection) -> None:
+    for host in REMOTE_GPU_HOSTS:
+        conn.execute(
+            """
+            INSERT INTO remote_gpu_hosts (
+                id, role, base_url, tunnel_name, state, gpu_count, free_gpu_count,
+                accelerator_type, capabilities, last_heartbeat_at, last_health
+            )
+            VALUES (
+                %(id)s, %(role)s, %(base_url)s, %(tunnel_name)s, %(state)s,
+                %(gpu_count)s, %(free_gpu_count)s, %(accelerator_type)s,
+                %(capabilities)s, now(), %(last_health)s
+            )
+            ON CONFLICT (id) DO UPDATE
+            SET role = EXCLUDED.role,
+                base_url = EXCLUDED.base_url,
+                tunnel_name = EXCLUDED.tunnel_name,
+                state = EXCLUDED.state,
+                gpu_count = EXCLUDED.gpu_count,
+                free_gpu_count = EXCLUDED.free_gpu_count,
+                accelerator_type = EXCLUDED.accelerator_type,
+                capabilities = EXCLUDED.capabilities,
+                last_heartbeat_at = now(),
+                last_health = EXCLUDED.last_health
+            """,
+            {
+                **host,
+                "capabilities": Jsonb(host["capabilities"]),
+                "last_health": Jsonb(host["last_health"]),
+            },
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Create the initial Albedo genesis king in the eval Postgres database."
@@ -88,6 +147,7 @@ def main() -> None:
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
         with conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext('genesis_bootstrap'))")
+            upsert_remote_gpu_hosts(conn)
 
             active_reign = conn.execute(
                 """
@@ -356,6 +416,7 @@ def main() -> None:
                             "reign_id": str(reign_id),
                             "reign_version": reign_version,
                             "king_version_id": str(king_version_id),
+                            "remote_gpu_hosts": [host["id"] for host in REMOTE_GPU_HOSTS],
                             "weight_hash": epoch_weight_hash,
                         }
                     ),

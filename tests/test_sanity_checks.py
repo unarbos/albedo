@@ -1,8 +1,11 @@
 """Tests for the sanity response heuristics (checks.py) and the worker's _heuristics wrapper."""
+
 from __future__ import annotations
 
+import asyncio
+
 from sanity_remote.models import SanityRunRequest
-from sanity_remote.worker import _heuristics
+from sanity_remote.worker import VllmEngine, _heuristics
 from sanity_service.checks import (
     check_all,
     check_code_present,
@@ -15,6 +18,7 @@ from sanity_service.checks import (
 )
 
 # ── per-response checks ─────────────────────────────────────────────────────────
+
 
 def test_check_one_passes_clean_code_answer():
     assert check_one("def add(a, b): return a + b done").passed
@@ -43,6 +47,7 @@ def test_check_vocabulary_catches_low_variety():
 
 # ── cross-prompt checks ─────────────────────────────────────────────────────────
 
+
 def test_check_collapsed_flags_identical_responses():
     assert not check_collapsed(["same", "same", "same"]).passed
     assert check_collapsed(["one", "two", "three"]).passed
@@ -69,6 +74,7 @@ def test_check_all_reports_first_failure_with_prompt_index():
 
 # ── worker _heuristics wrapper ──────────────────────────────────────────────────
 
+
 def _req() -> SanityRunRequest:
     return SanityRunRequest(run_id="r", model_uri="m", digest="d", prompts=["p"])
 
@@ -80,9 +86,18 @@ def test_heuristics_skip_passes_all_without_inspection():
 
 
 def test_heuristics_set_failure_fails_every_response():
-    out = _heuristics(["dup text", "dup text", "dup text"], _req())
+    out = _heuristics(
+        ["def f(): return 1 now", "def f(): return 1 now", "def f(): return 1 now"],
+        _req(),
+    )
     assert not any(v["passed"] for v in out)
     assert all("collapsed" in v["reason"] for v in out)
+
+
+def test_heuristics_reports_empty_before_set_collapse():
+    out = _heuristics(["", "", ""], _req())
+    assert not any(v["passed"] for v in out)
+    assert all(v["reason"] == "empty response" for v in out)
 
 
 def test_heuristics_passes_varied_code_responses():
@@ -93,3 +108,57 @@ def test_heuristics_passes_varied_code_responses():
     ]
     out = _heuristics(responses, _req())
     assert all(v["passed"] for v in out), out
+
+
+def test_run_prompts_uses_raw_completions(monkeypatch):
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"choices": [{"text": "completion text", "finish_reason": "stop"}]}
+
+    class _Client:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            captured["url"] = url
+            captured["json"] = json
+            return _Response()
+
+    monkeypatch.setattr("sanity_remote.worker.httpx.AsyncClient", _Client)
+    engine = VllmEngine.__new__(VllmEngine)
+    engine._s = type(
+        "Settings",
+        (),
+        {
+            "vllm_port": 1234,
+            "gen_temperature": 0.7,
+            "gen_top_p": 0.8,
+            "gen_top_k": 20,
+            "gen_min_p": 0.0,
+        },
+    )()
+
+    out = asyncio.run(engine._run_prompts("model-name", ["raw transcript"], 77))
+
+    assert out == ["completion text"]
+    assert captured["url"] == "http://localhost:1234/v1/completions"
+    assert captured["json"] == {
+        "model": "model-name",
+        "prompt": "raw transcript",
+        "max_tokens": 77,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+    }

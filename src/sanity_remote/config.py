@@ -29,6 +29,10 @@ class SanityRemoteSettings(BaseSettings):
     model_cache_dir: str = "/tmp/albedo-sanity-models"
     gen_max_tokens: int = 1024
     max_model_len: int = 8192
+    gen_temperature: float = 0.7
+    gen_top_p: float = 0.8
+    gen_top_k: int = 20
+    gen_min_p: float = 0.0
 
     # Control-plane smoke mode (no GPU) for API/idempotency tests; echoes prompts as responses.
     mock_auto_result: bool = False
