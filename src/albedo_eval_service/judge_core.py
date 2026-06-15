@@ -17,7 +17,7 @@ JUDGE_MODELS: tuple[str, ...] = (
 )
 
 JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {
-    "z-ai/glm-5.1": {"order": ["baidu"], "allow_fallbacks": False, "quantizations": ["fp8"]},
+    "z-ai/glm-5.1": {"order": ["baidu", "z-ai"], "allow_fallbacks": True, "quantizations": ["fp8"]},
     "qwen/qwen3.5-397b-a17b": {
         "order": ["deepinfra"],
         "allow_fallbacks": False,
