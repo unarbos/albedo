@@ -12,10 +12,10 @@ from loguru import logger
 
 from sanity_remote.models import SanityRunRequest
 from sanity_service.dataset import sample_prompts
+from sanity_service.db import ClaimedPreEval, PreEvalRepository
 from sanity_service.judge_panel import make_client
 from sanity_service.llm_check import SampleInput, run_gate
 from sanity_service.remote_client import SanityRemoteClient
-from src.sanity_service.db import ClaimedPreEval, PreEvalRepository
 from sanity_service.settings import SanitySettings, get_settings
 
 
@@ -87,6 +87,10 @@ class SanityDispatcher:
             )
             return True
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            logger.warning(
+                "[sanity-dispatch] worker unreachable submission={} digest={:.16}: {}",
+                claimed.submission_id, claimed.request.digest, exc,
+            )
             self.repository.mark_pre_eval_failed(
                 submission_id=claimed.submission_id,
                 attempt_id=claimed.attempt_id,
@@ -204,8 +208,10 @@ class SanityDispatcher:
                 responses=responses,
             )
 
-    async def reconcile_once(self, *, limit: int = 10) -> int:
+    async def reconcile_once(self, *, limit: int = 10, follow_timeout: float = 50.0) -> int:
         # Replays in-flight pre-evals whose dispatcher may have crashed mid-poll.
+        # follow_timeout must be shorter than the cron_restart interval (60s) so PM2 never
+        # has to SIGTERM a busy reconciler — the TimeoutError exits cleanly instead.
         reconciled = 0
         for active in self.repository.list_reconcilable_pre_eval(limit=limit):
             client = SanityRemoteClient(
@@ -214,13 +220,20 @@ class SanityDispatcher:
                 timeout_seconds=self.settings.remote_event_timeout_seconds,
             )
             try:
-                result = await self._follow_until_result(
-                    client,
-                    submission_id=active.submission_id,
-                    attempt_id=active.attempt_id,
-                    run_id=active.run_id,
+                result = await asyncio.wait_for(
+                    self._follow_until_result(
+                        client,
+                        submission_id=active.submission_id,
+                        attempt_id=active.attempt_id,
+                        run_id=active.run_id,
+                    ),
+                    timeout=follow_timeout,
                 )
-            except (httpx.HTTPError, asyncio.TimeoutError):
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                logger.warning(
+                    "[sanity-dispatch] reconcile skipped submission={} run={}: {}",
+                    active.submission_id, active.run_id, exc,
+                )
                 continue
             finally:
                 await client.aclose()
@@ -263,10 +276,13 @@ def main() -> None:
             dispatcher.repository.sweep_abandoned_pre_eval(worker_id=settings.worker_id),
         )
     elif args.reconcile_running:
-        logger.info(
-            "[sanity-dispatch] reconciled={}",
-            asyncio.run(dispatcher.reconcile_once(limit=args.limit)),
-        )
+        try:
+            logger.info(
+                "[sanity-dispatch] reconciled={}",
+                asyncio.run(dispatcher.reconcile_once(limit=args.limit)),
+            )
+        except KeyboardInterrupt:
+            logger.info("[sanity-dispatch] reconciler interrupted by signal, exiting cleanly")
     elif args.once:
         asyncio.run(dispatcher.dispatch_once())
     else:

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from albedo_eval_service.judge_openrouter import JudgeRawResponse
 from sanity_remote.models import SanityRunRequest
+from sanity_remote.worker import _model_ref_parts
 from sanity_remote.state import SanityRunStore
 from sanity_service import dispatcher as D
 from sanity_service.llm_check import GateResult, LLMGate, SampleInput, run_gate
@@ -127,7 +128,24 @@ def test_complete_worker_failure_is_retryable():
     assert calls == [("failed", True, "INFRA_FAULT")]
 
 
+# ── import hygiene ──────────────────────────────────────────────────────────────
+
+def test_dispatcher_binds_canonical_repository():
+    # Guards against re-introducing `from src.sanity_service.db`, which loads db.py a second
+    # time under the `src.` namespace and yields a distinct PreEvalRepository class.
+    import sanity_service.db as canonical
+
+    assert D.PreEvalRepository is canonical.PreEvalRepository
+    assert D.ClaimedPreEval is canonical.ClaimedPreEval
+
+
 # ── worker run store ────────────────────────────────────────────────────────────
+
+def test_model_ref_parts_accepts_chain_model_uri():
+    digest = "sha256:" + "a" * 64
+    assert _model_ref_parts("alice/model@" + digest, "") == ("alice/model", digest)
+    assert _model_ref_parts("alice/model", digest) == ("alice/model", digest)
+
 
 def test_worker_store_lifecycle():
     store = SanityRunStore()
