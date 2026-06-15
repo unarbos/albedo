@@ -170,7 +170,11 @@ class SanityDispatcher:
         ]
         client = make_client()
         try:
-            gate = await run_gate(samples, client, consensus=self.settings.consensus)
+            gate = await run_gate(
+                samples, client,
+                consensus=self.settings.consensus,
+                skip_viability=self.settings.skip_viability,
+            )
         finally:
             await client.aclose()
 

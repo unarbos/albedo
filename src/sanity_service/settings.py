@@ -25,6 +25,8 @@ class SanitySettings(BaseSettings):
     max_turns_per_sample: int = 10
     gen_max_tokens: int = 1024
 
+    skip_viability: bool = False
+
     lease_seconds: int = 600
     dispatch_poll_seconds: float = 5.0
     remote_event_timeout_seconds: float = 30.0

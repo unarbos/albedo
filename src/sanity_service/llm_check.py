@@ -113,7 +113,9 @@ async def _viability_probe(
     return False, f"not viable: {nay}".strip()[:200], votes
 
 
-async def _judge_sample(s: SampleInput, client, consensus: bool) -> SampleVerdict:
+async def _judge_sample(
+    s: SampleInput, client, consensus: bool, skip_viability: bool = False
+) -> SampleVerdict:
     # Runs the per-sample flow: heuristics -> injection (+re-check) -> viability.
     excerpt = (s.prompt or "")[:60]
     if not s.heuristic_passed:
@@ -136,6 +138,9 @@ async def _judge_sample(s: SampleInput, client, consensus: bool) -> SampleVerdic
             return SampleVerdict(excerpt, False, f"injection: {evidence}".strip()[:200],
                                  injection=True, rechecked=True, votes=votes)
         # Re-check came back clean - the first flag was a false positive; continue to viability.
+
+    if skip_viability:
+        return SampleVerdict(excerpt, passed=True, reason="viability skipped", rechecked=rechecked)
 
     decided, reason, vvotes = await _viability_probe(client, s.prompt, s.response, consensus)
     if decided is None:
@@ -162,13 +167,17 @@ def _aggregate(verdicts: list[SampleVerdict], mode: str) -> GateResult:
                       decision_mode=mode, per_sample=verdicts)
 
 
-async def run_gate(samples: list[SampleInput], client, *, consensus: bool = False) -> GateResult:
+async def run_gate(
+    samples: list[SampleInput], client, *, consensus: bool = False, skip_viability: bool = False
+) -> GateResult:
     # Judges every sample concurrently and returns the aggregate gate decision.
     mode = "consensus" if consensus else "veto"
     if not samples:
         return GateResult(False, "no samples", infra_fault=True,
                           llm_gate=LLMGate.SKIPPED, decision_mode=mode)
-    verdicts = list(await asyncio.gather(*[_judge_sample(s, client, consensus) for s in samples]))
+    verdicts = list(await asyncio.gather(
+        *[_judge_sample(s, client, consensus, skip_viability) for s in samples]
+    ))
     result = _aggregate(verdicts, mode)
     (logger.info if result.passed else logger.warning)(
         "[sanity/gate] passed={} gate={} mode={} reason={!r}",
