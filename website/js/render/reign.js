@@ -9,6 +9,13 @@ export function renderReign(container, reign, netuid) {
     return;
   }
 
+  // Glow the most recently coronated king (highest king_version), not just slot 0.
+  let glowIdx = 0, bestVersion = -Infinity;
+  members.forEach((m, i) => {
+    const v = Number(m.king_version);
+    if (Number.isFinite(v) && v > bestVersion) { bestVersion = v; glowIdx = i; }
+  });
+
   const cards = members.map((m, i) => {
     const repo = modelRepo(m.model_uri);
     const repoUrl = hubRepoUrl(m.model_uri);
@@ -22,7 +29,7 @@ export function renderReign(container, reign, netuid) {
           el("span", { class: "king" }, pct(m.score_king)))
       : el("div", { class: "rc-score" }, el("span", { class: "none" }, "no duel scores"));
 
-    return el("div", { class: i === 0 ? "reign-card current" : "reign-card" },
+    return el("div", { class: i === glowIdx ? "reign-card current" : "reign-card" },
       el("div", { class: "rc-top" },
         el("span", { class: "rc-era" }, kingTitleName(m.king_version)),
         el("span", { class: "rc-weight" }, weightPct)),
