@@ -36,6 +36,11 @@ def _cache_dir(ref: ModelRef) -> Path:
     return resolved
 
 
+def cache_dir(ref: ModelRef) -> Path:
+    """Public: per-(repo, digest) local cache dir for ``ref`` (no I/O, no download)."""
+    return _cache_dir(ref)
+
+
 def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:
     dest = _cache_dir(ref)
     dest.mkdir(parents=True, exist_ok=True)
