@@ -431,14 +431,69 @@ class EvalRepository:
                     )
                 return len(rows)
 
-    def requeue_retryable_evals(self, *, worker_id: str, limit: int = 100) -> int:
+    def requeue_retryable_evals(
+        self, *, worker_id: str, limit: int = 100, max_retry_count: int = 3
+    ) -> int:
         with self._connect() as conn:
             with conn.transaction():
+                capped_rows = conn.execute(
+                    """
+                    SELECT id, retry_count, fault_class, fault_code, fault_message
+                    FROM model_submissions ms
+                    WHERE state = 'EVAL_RETRYABLE'
+                      AND retry_count >= %s
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM stage_attempts sa
+                          WHERE sa.submission_id = ms.id
+                            AND sa.stage = 'EVAL'
+                            AND sa.state IN ('CLAIMED', 'RUNNING')
+                      )
+                    FOR UPDATE OF ms SKIP LOCKED
+                    """,
+                    (max_retry_count,),
+                ).fetchall()
+                for row in capped_rows:
+                    message = (
+                        f"Eval retry cap reached: retry_count={row['retry_count']} "
+                        f"max_retry_count={max_retry_count}"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE model_submissions
+                        SET state = 'TERMINAL_INVALID',
+                            fault_class = COALESCE(fault_class, 'INFRA_FAULT'),
+                            fault_code = 'eval_retry_limit_exceeded',
+                            fault_message = %s,
+                            finished_at = now(),
+                            updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (message, row["id"]),
+                    )
+                    self.record_event_inside_tx(
+                        conn,
+                        submission_id=row["id"],
+                        stage_attempt_id=None,
+                        event_type="eval_retry_limit_exceeded",
+                        severity="ERROR",
+                        message=message,
+                        data={
+                            "worker_id": worker_id,
+                            "retry_count": row["retry_count"],
+                            "max_retry_count": max_retry_count,
+                            "previous_fault_class": row["fault_class"],
+                            "previous_fault_code": row["fault_code"],
+                            "previous_fault_message": row["fault_message"],
+                        },
+                    )
+
                 rows = conn.execute(
                     """
                     SELECT id, fault_class, fault_code, fault_message
                     FROM model_submissions ms
                     WHERE state = 'EVAL_RETRYABLE'
+                      AND retry_count < %s
                       AND NOT EXISTS (
                           SELECT 1
                           FROM stage_attempts sa
@@ -450,7 +505,7 @@ class EvalRepository:
                     LIMIT %s
                     FOR UPDATE OF ms SKIP LOCKED
                     """,
-                    (limit,),
+                    (max_retry_count, limit),
                 ).fetchall()
                 for row in rows:
                     conn.execute(
@@ -474,6 +529,7 @@ class EvalRepository:
                         message=f"Eval retry requeued by {worker_id}",
                         data={
                             "worker_id": worker_id,
+                            "max_retry_count": max_retry_count,
                             "previous_fault_class": row["fault_class"],
                             "previous_fault_code": row["fault_code"],
                             "previous_fault_message": row["fault_message"],
