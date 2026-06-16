@@ -5,7 +5,47 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Keywords expected in at least one response for a coding task.
-_CODE_KEYWORDS = {"def", "class", "import", "return", "if", "for", "while", "print", "="}
+_CODE_KEYWORDS = {
+    # ── Python ──
+    "def", "class", "import", "from", "return", "if", "elif", "else", "for",
+    "while", "try", "except", "finally", "with", "as", "lambda", "yield",
+    "raise", "assert", "pass", "del", "global", "nonlocal", "and", "or", "not",
+    "in", "is", "async", "await", "print", "self",
+
+    # ── JS / TS ──
+    "function", "const", "let", "var", "switch", "case", "break", "continue",
+    "new", "extends", "export", "default", "typeof", "instanceof", "this",
+    "super", "catch", "throw", "interface", "type", "enum", "namespace",
+    "public", "private", "protected", "readonly", "console",
+
+    # ── Java / C# / C / C++ ──
+    "static", "final", "void", "int", "char", "bool", "string", "struct",
+    "using", "package", "implements", "abstract", "override", "virtual",
+    "template", "typename", "include", "#include", "std", "sizeof", "typedef",
+
+    # ── Go ──
+    "func", "range", "map", "chan", "go", "defer", "select", "nil",
+
+    # ── Rust ──
+    "fn", "mut", "impl", "trait", "pub", "use", "mod", "match", "loop",
+    "where", "unsafe", "dyn", "crate",
+
+    # ── Ruby / PHP / shell-script ──
+    "end", "module", "require", "unless", "until", "do", "done", "then", "fi",
+    "begin", "rescue", "ensure", "puts", "elsif", "foreach", "echo",
+
+    # ── mini-swe-agent bash / POSIX + dev CLIs (the dominant signal) ──
+    "grep", "rgrep", "tree", "find", "cat", "sed", "awk", "ls", "cd", "head", "tail", "sort",
+    "uniq", "wc", "cut", "tr", "xargs", "diff", "patch", "cp", "mv", "rm",
+    "rmdir", "mkdir", "touch", "chmod", "chown", "ln", "pwd", "which", "tee",
+    "printf", "export", "source", "env", "stat", "basename", "dirname", "tar",
+    "curl", "wget", "ssh", "rsync", "git", "make", "cmake", "gcc", "clang",
+    "node", "npm", "npx", "yarn", "pnpm", "cargo", "rustc", "java", "javac",
+    "mvn", "gradle", "ruby", "gem", "bundle", "rake", "php", "composer",
+    "perl", "python", "python3", "pip", "pip3", "pytest", "tox", "ruff",
+    "black", "mypy", "flake8", "pylint", "bash", "sh", "docker", "kubectl",
+}
+
 
 
 @dataclass

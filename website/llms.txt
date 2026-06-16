@@ -12,7 +12,7 @@
 > repo; this repo splits that flow across ingest → validate → pre-eval → eval →
 > reign → weight services so each stage scales, retries, and recovers independently.)
 
-**Subnet:** netuid `97` (finney mainnet) · **Model class:** Qwen3-4B only · **Reveal format:** `v5|<repo>|<digest>`
+**Subnet:** netuid `97` (finney mainnet) · **Model class:** Qwen3-4B only · **Reveal format:** `v6|<repo>|<digest>`
 
 ---
 
@@ -33,9 +33,9 @@ albedo/
 │   ├── validate.py                 local file-manifest + arch checks (same code validators run)
 │   ├── upload.py                   push model dir to Hippius, return repo@sha256:digest
 │   ├── publish.py                  full pipeline: validate→upload→check→registered?→commit
-│   ├── commit.py                   write v5 reveal on-chain (set_reveal_commitment)
+│   ├── commit.py                   write v6 reveal on-chain (set_reveal_commitment)
 │   ├── register.py                 burned_register a hotkey on netuid 97
-│   ├── check_commits.py            scan chain for v5 commits
+│   ├── check_commits.py            scan chain for v6 commits
 │   ├── env.py                      load .env (repo root + cwd) → defaults
 │   └── tui.py                      full-screen prompt_toolkit console (`albedo on`)
 │
@@ -43,7 +43,7 @@ albedo/
 │   │
 │   ├── chain_reader/               INGEST: poll chain → write chain_commits + model_submissions(SUBMITTED)
 │   │   ├── reader.py                   async poll loop (get_current_block every CHAIN_POLL_INTERVAL_S)
-│   │   ├── chain.py                    decode v5 payloads, resolve hotkey→uid via metagraph
+│   │   ├── chain.py                    decode v6 payloads, resolve hotkey→uid via metagraph
 │   │   └── db.py                       upsert chain_commits / miners / model_submissions / events
 │   │
 │   ├── config_validation/          VALIDATION LIBRARY (reused by miner CLI + hippius_validation)
@@ -54,7 +54,7 @@ albedo/
 │   │   ├── checks/duplicate.py         fingerprint cosine ≥ similarity_threshold → reject
 │   │   ├── fingerprint/compute.py      per-tensor L2 norms + deterministic value samples (layer_norms_v2)
 │   │   ├── fingerprint/store.py        pluggable corpus: Null / Jsonl (CLI) — OpenSearch lives in hippius_validation
-│   │   └── models/reveal.py            parse/build v5 reveal
+│   │   └── models/reveal.py            parse/build v6 reveal
 │   │
 │   ├── hippius_validation/         VALIDATE WORKER: claim submissions → download → validate → dedup → persist
 │   │   ├── validate_worker.py          end-to-end per-model: files→download→arch→fingerprint→OpenSearch dedup
@@ -130,7 +130,7 @@ stage is an independent service that **claims** work, holds a **lease**, and eit
 state or marks it retryable/terminal. This is the backbone of the whole repo.
 
 ```
-on-chain v5 commit
+on-chain v6 commit
   │
   ▼  chain_reader            poll chain → chain_commits + model_submissions(SUBMITTED)
 SUBMITTED
@@ -205,7 +205,7 @@ similarity_threshold = 0.95                           # fingerprint cosine ≥ t
 
 ## Mining (the `albedo` CLI)
 
-Albedo is king-of-the-hill for Qwen3-4B. Fine-tune → upload to Hippius → commit a v5 reveal on-chain.
+Albedo is king-of-the-hill for Qwen3-4B. Fine-tune → upload to Hippius → commit a v6 reveal on-chain.
 A model that passes validation **and** beats the king earns emissions. Full guide: [docs/MINING.md](../docs/MINING.md).
 
 ### Install
@@ -234,7 +234,7 @@ pip install -e '.[train]'        # optional: trl + accelerate + deepspeed for SF
 albedo register                                   # one-time: burned_register on netuid 97
 albedo check-hippius --path /path/to/model        # local validate (free) — must say VALID
 albedo publish --path /path/to/model --name v1    # validate→upload→check→registered?→commit
-albedo check-commit --hotkey 5F...                # confirm your v5 commit landed
+albedo check-commit --hotkey 5F...                # confirm your v6 commit landed
 albedo on                                         # interactive TUI
 ```
 
@@ -448,7 +448,7 @@ The whole system is a durable state machine in one database. Key tables:
 
 | Table | Holds |
 |---|---|
-| `chain_commits` | raw on-chain v5 commits (netuid, block, hotkey, model_uri, payload_hash) |
+| `chain_commits` | raw on-chain v6 commits (netuid, block, hotkey, model_uri, payload_hash) |
 | `miners` | hotkey → coldkey / uid / netuid |
 | `model_submissions` | **the spine** — one row per submission + its `state` + `fault_class/code` |
 | `stage_attempts` | per-stage claim/lease/heartbeat (`HIPPIUS`/`PRE_EVAL`/`EVAL`/`SET_REIGN`/`WEIGHT_SET`) |
@@ -542,7 +542,7 @@ python scripts/create_genesis_king.py     # genesis reign + king_version + reign
 
 ## Key contracts
 
-**Reveal (on-chain):** `v5|<repo>|<digest>` — e.g. `v5|alice/albedo-qwen3-4b-v1|sha256:...`
+**Reveal (on-chain):** `v6|<repo>|<digest>` — e.g. `v6|alice/albedo-qwen3-4b-v1|sha256:...`
 
 **EvalRequest (backend → POST /eval-runs):** king + challenger model refs, `dataset_sample_ids`,
 `dataset_manifest_hash`, `judge_config_hash`, `dataset_sample_seed` (= commit block hash).
