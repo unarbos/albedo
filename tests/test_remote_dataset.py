@@ -38,6 +38,8 @@ def test_load_swe_zero_sample_uses_tokenizer_chat_template(tmp_path, monkeypatch
     captured = {}
 
     class _Tokenizer:
+        chat_template = "native-template"
+
         def apply_chat_template(self, messages, **kwargs):
             captured["messages"] = messages
             captured["kwargs"] = kwargs
@@ -70,6 +72,45 @@ def test_load_swe_zero_sample_uses_tokenizer_chat_template(tmp_path, monkeypatch
         "add_generation_prompt": True,
         "enable_thinking": True,
     }
+
+
+def test_load_swe_zero_sample_supplies_canonical_template_when_missing(tmp_path, monkeypatch):
+    captured = {}
+
+    class _Tokenizer:
+        chat_template = None
+
+        def apply_chat_template(self, messages, **kwargs):
+            captured["messages"] = messages
+            captured["kwargs"] = kwargs
+            return "canonical templated prompt"
+
+    monkeypatch.setattr(remote_dataset, "_load_tokenizer", lambda path: _Tokenizer())
+
+    shard_dir = tmp_path / "data"
+    shard_dir.mkdir()
+    messages = [
+        {"role": "user", "content": "Fix it."},
+        {"role": "assistant", "content": "Done."},
+    ]
+    table = pa.table({"messages": [json.dumps(messages)]})
+    pq.write_table(table, shard_dir / "train-00000.parquet")
+
+    samples = load_swe_zero_samples(
+        dataset_root=tmp_path,
+        sample_ids=["data/train-00000.parquet:0:0"],
+        tokenizer_path="/models/qwen",
+        enable_thinking=False,
+    )
+
+    assert samples[0].prompt == "canonical templated prompt"
+    assert captured["messages"] == messages[:1]
+    assert captured["kwargs"]["tokenize"] is False
+    assert captured["kwargs"]["add_generation_prompt"] is True
+    assert captured["kwargs"]["enable_thinking"] is False
+    assert "chat_template" in captured["kwargs"]
+    assert "<|im_start|>assistant" in captured["kwargs"]["chat_template"]
+    assert "enable_thinking" in captured["kwargs"]["chat_template"]
 
 
 def test_load_swe_zero_sample_from_prompt_column(tmp_path):

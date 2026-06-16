@@ -10,7 +10,7 @@ import pytest
 from albedo_eval_service.config import Settings
 from albedo_eval_service.dispatcher import build_eval_request
 from albedo_eval_service.repository import EvalRepository
-
+from weight_setter.service import WeightSetterRepository
 
 pytestmark = pytest.mark.integration
 
@@ -95,6 +95,81 @@ def test_claim_next_eval_is_sequential_and_creates_attempt(db_url: str):
     assert attempt_count == 1
     assert active_eval_count == 1
     assert king_submission_id == expected_king_submission_id
+
+
+def test_weight_setter_claims_newest_epoch_and_supersedes_older(db_url: str):
+    repo = WeightSetterRepository(db_url)
+    oldest_id = uuid4()
+    middle_id = uuid4()
+    newest_id = uuid4()
+    other_netuid_id = uuid4()
+
+    with psycopg.connect(db_url) as conn:
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO weight_epochs (
+                    id, netuid, reason, state, uids, weights, weight_policy,
+                    weight_hash, created_at
+                )
+                VALUES
+                    (
+                        %s, 1, 'CORONATION', 'PENDING', ARRAY[1], ARRAY[1.0],
+                        '{}'::jsonb, 'hash-oldest', now() - interval '3 minutes'
+                    ),
+                    (
+                        %s, 1, 'CORONATION', 'PENDING', ARRAY[2], ARRAY[1.0],
+                        '{}'::jsonb, 'hash-middle', now() - interval '2 minutes'
+                    ),
+                    (
+                        %s, 1, 'CORONATION', 'PENDING', ARRAY[3], ARRAY[1.0],
+                        '{}'::jsonb, 'hash-newest', now() - interval '1 minute'
+                    ),
+                    (
+                        %s, 2, 'CORONATION', 'PENDING', ARRAY[4], ARRAY[1.0],
+                        '{}'::jsonb, 'hash-other-netuid', now() - interval '4 minutes'
+                    )
+                """,
+                (oldest_id, middle_id, newest_id, other_netuid_id),
+            )
+
+    claimed = repo.claim_next_epoch(
+        worker_id="weight-worker",
+        wallet_hotkey="wallet-hotkey",
+        subtensor_url="finney",
+        current_block=1000,
+        rate_limit_blocks=100,
+        netuid=1,
+        burn_uid=0,
+    )
+
+    assert claimed is not None
+    assert claimed.epoch_id == newest_id
+
+    with psycopg.connect(db_url) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, state, last_fault_code, attempt_count
+            FROM weight_epochs
+            WHERE id = ANY(%s::uuid[])
+            ORDER BY created_at ASC
+            """,
+            ([oldest_id, middle_id, newest_id, other_netuid_id],),
+        ).fetchall()
+        states = {row[0]: row for row in rows}
+
+    assert states[oldest_id][1:4] == (
+        "FAILED_TERMINAL",
+        "superseded_by_newer_weight_epoch",
+        0,
+    )
+    assert states[middle_id][1:4] == (
+        "FAILED_TERMINAL",
+        "superseded_by_newer_weight_epoch",
+        0,
+    )
+    assert states[newest_id][1:4] == ("RUNNING", None, 1)
+    assert states[other_netuid_id][1:4] == ("PENDING", None, 0)
 
 
 def test_claim_next_eval_waits_for_pending_reign_promotion(db_url: str):
@@ -194,6 +269,80 @@ def test_sweep_abandoned_eval_attempts_returns_submission_to_retryable(db_url: s
         "REMOTE_EVAL_FAULT",
         "eval_attempt_lease_expired",
     )
+
+
+def test_requeue_retryable_eval_obeys_retry_cap(db_url: str):
+    repo = EvalRepository(db_url)
+    submission_id = _seed_eval_ready_submission(db_url)
+
+    with psycopg.connect(db_url) as conn, conn.transaction():
+        conn.execute(
+            """
+            UPDATE model_submissions
+            SET state = 'EVAL_RETRYABLE', retry_count = 2,
+                fault_class = 'INFRA_FAULT', fault_code = 'temporary',
+                fault_message = 'try again'
+            WHERE id = %s
+            """,
+            (submission_id,),
+        )
+
+    requeued = repo.requeue_retryable_evals(worker_id="requeuer", limit=100, max_retry_count=3)
+
+    assert requeued == 1
+    with psycopg.connect(db_url) as conn:
+        row = conn.execute(
+            "SELECT state, retry_count, fault_code FROM model_submissions WHERE id = %s",
+            (submission_id,),
+        ).fetchone()
+
+    assert row == ("EVAL_QUEUED", 2, None)
+
+
+def test_requeue_retryable_eval_terminalizes_at_retry_cap(db_url: str):
+    repo = EvalRepository(db_url)
+    submission_id = _seed_eval_ready_submission(db_url)
+
+    with psycopg.connect(db_url) as conn, conn.transaction():
+        conn.execute(
+            """
+            UPDATE model_submissions
+            SET state = 'EVAL_RETRYABLE', retry_count = 3,
+                fault_class = 'INFRA_FAULT', fault_code = 'temporary',
+                fault_message = 'try again'
+            WHERE id = %s
+            """,
+            (submission_id,),
+        )
+
+    requeued = repo.requeue_retryable_evals(worker_id="requeuer", limit=100, max_retry_count=3)
+
+    assert requeued == 0
+    with psycopg.connect(db_url) as conn:
+        row = conn.execute(
+            """
+            SELECT state, retry_count, fault_code, fault_message
+            FROM model_submissions
+            WHERE id = %s
+            """,
+            (submission_id,),
+        ).fetchone()
+        event_type = conn.execute(
+            """
+            SELECT event_type
+            FROM events
+            WHERE submission_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (submission_id,),
+        ).fetchone()[0]
+
+    assert row[0] == "TERMINAL_INVALID"
+    assert row[1] == 3
+    assert row[2] == "eval_retry_limit_exceeded"
+    assert "max_retry_count=3" in row[3]
+    assert event_type == "eval_retry_limit_exceeded"
 
 
 def test_record_remote_event_skips_exact_replay(db_url: str):

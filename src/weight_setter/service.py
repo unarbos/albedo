@@ -11,9 +11,9 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import psycopg
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 @dataclass(frozen=True)
@@ -89,17 +89,13 @@ class WeightSetterSettings(BaseSettings):
             network=os.environ.get("ALBEDO_WEIGHT_NETWORK")
             or os.environ.get("CHAIN_NETWORK", "finney"),
             netuid=int(
-                os.environ.get("ALBEDO_WEIGHT_NETUID")
-                or os.environ.get("CHAIN_NETUID")
-                or "97"
+                os.environ.get("ALBEDO_WEIGHT_NETUID") or os.environ.get("CHAIN_NETUID") or "97"
             ),
             set_rate_blocks=int(os.environ.get("ALBEDO_WEIGHT_SET_RATE_BLOCKS", "100")),
             poll_seconds=float(os.environ.get("ALBEDO_WEIGHT_POLL_SECONDS", "12")),
             worker_id=os.environ.get("ALBEDO_WEIGHT_WORKER_ID", "weight-setter"),
             burn_uid=int(os.environ.get("ALBEDO_WEIGHT_BURN_UID", "0")),
-            retry_backoff_seconds=int(
-                os.environ.get("ALBEDO_WEIGHT_RETRY_BACKOFF_SECONDS", "60")
-            ),
+            retry_backoff_seconds=int(os.environ.get("ALBEDO_WEIGHT_RETRY_BACKOFF_SECONDS", "60")),
         )
 
 
@@ -217,21 +213,39 @@ class WeightSetterRepository:
                 epoch = conn.execute(
                     """
                     SELECT we.id, we.netuid, we.reason, we.reign_id, we.uids, we.weights,
-                           we.weight_policy, we.weight_hash, r.trigger_submission_id
+                           we.weight_policy, we.weight_hash, we.created_at,
+                           r.trigger_submission_id
                     FROM weight_epochs we
                     LEFT JOIN reigns r ON r.id = we.reign_id
-                    WHERE (
+                    WHERE we.netuid = %s
+                      AND (
                         we.state = 'PENDING'
                         OR (
                             we.state = 'FAILED_RETRYABLE'
                             AND we.updated_at <= now() - interval '60 seconds'
                         )
                     )
-                    ORDER BY we.created_at ASC
+                    ORDER BY we.created_at DESC, we.id DESC
                     FOR UPDATE OF we SKIP LOCKED
                     LIMIT 1
-                    """
+                    """,
+                    (netuid,),
                 ).fetchone()
+                if epoch:
+                    conn.execute(
+                        """
+                        UPDATE weight_epochs
+                        SET state = 'FAILED_TERMINAL',
+                            updated_at = now(),
+                            last_fault_class = NULL,
+                            last_fault_code = 'superseded_by_newer_weight_epoch'
+                        WHERE netuid = %s
+                          AND id <> %s
+                          AND created_at <= %s
+                          AND state IN ('PENDING', 'FAILED_RETRYABLE')
+                        """,
+                        (netuid, epoch["id"], epoch["created_at"]),
+                    )
                 if not epoch:
                     epoch = _create_periodic_refresh_epoch_inside_tx(
                         conn,
@@ -695,7 +709,6 @@ def validate_weight_payload(payload: WeightPayload) -> None:
         raise ValueError(f"weight payload must sum to 1.0, got {total}")
 
 
-
 def _create_periodic_refresh_epoch_inside_tx(
     conn: psycopg.Connection,
     *,
@@ -825,7 +838,9 @@ def _record_event(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Albedo weight setter.")
-    parser.add_argument("--once", action="store_true", help="Submit at most one pending weight epoch.")
+    parser.add_argument(
+        "--once", action="store_true", help="Submit at most one pending weight epoch."
+    )
     args = parser.parse_args()
 
     settings = WeightSetterSettings.from_env()
