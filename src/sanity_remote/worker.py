@@ -73,6 +73,14 @@ def _model_ref_parts(model_uri: str, digest: str) -> tuple[str, str]:
     return repo, uri_digest if sep else digest
 
 
+def _model_present(model_dir: str) -> bool:
+    # A reusable on-disk copy: dir exists, non-empty, has config.json + a safetensors shard.
+    p = Path(model_dir)
+    if not p.is_dir():
+        return False
+    return (p / "config.json").exists() and any(p.glob("*.safetensors"))
+
+
 class WorkerFault(Exception):
     # Carries a fault code + retryability for the run's failure event.
     def __init__(self, code: str, message: str, *, retryable: bool = True) -> None:
@@ -177,11 +185,16 @@ class VllmEngine:
             await asyncio.to_thread(shutil.rmtree, old_dir, True)
 
     async def _materialize(self, model_uri: str, digest: str) -> str:
-        # Downloads the model from Hippius and returns the local directory path.
-        from hippius_validation.hippius import download_full, make_ref
+        # Reuse an already-downloaded copy if present; otherwise download from Hippius.
+        from hippius_validation.hippius import cache_dir, download_full, make_ref
 
         repo, ref_digest = _model_ref_parts(model_uri, digest)
-        return await asyncio.to_thread(download_full, make_ref(repo, ref_digest))
+        ref = make_ref(repo, ref_digest)
+        dest = str(cache_dir(ref))
+        if _model_present(dest):
+            logger.info("[sanity-remote] reusing on-disk model at {} — skipping download", dest)
+            return dest
+        return await asyncio.to_thread(download_full, ref)
 
     async def _start_vllm(self, model_dir: str, model_name: str) -> None:
         # Launches a vLLM subprocess (no --trust-remote-code) and waits until it reports healthy.
