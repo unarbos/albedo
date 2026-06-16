@@ -6,7 +6,10 @@ hippius_validation.config first sets CV_MODEL_CACHE_DIR so config_validation dow
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from hippius_validation import config as _config  # noqa: F401 — sets CV_MODEL_CACHE_DIR first
+from config_validation.hippius import cache_dir as _cache_dir
 from config_validation.hippius import download_full as _download_full
 from config_validation.hippius import list_files as _list_files
 from config_validation.models import ModelRef
@@ -15,6 +18,11 @@ from config_validation.models import ModelRef
 def make_ref(repo: str, digest: str) -> ModelRef:
     """Validate + build a ModelRef from a chain_commit's repo/digest."""
     return ModelRef(repo=repo, digest=digest)
+
+
+def cache_dir(ref: ModelRef) -> Path:
+    """Local cache dir for ``ref`` (no I/O, no download)."""
+    return _cache_dir(ref)
 
 
 def list_files(ref: ModelRef) -> list[str]:
