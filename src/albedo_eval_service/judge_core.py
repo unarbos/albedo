@@ -8,7 +8,7 @@ from typing import Any
 
 
 METRIC_KEYS: tuple[str, ...] = ("correctness", "grounding", "progress", "protocol", "efficiency")
-CHALLENGER_WIN_MARGIN = 0.02
+CHALLENGER_WIN_MARGIN = 0.06
 
 JUDGE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.1",
