@@ -10,6 +10,16 @@ import pyarrow.parquet as pq
 
 _IM_START = "<|im_start|>"
 _IM_END = "<|im_end|>"
+_QWEN3_CHAT_TEMPLATE = """{%- for message in messages %}
+{{- '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{- '<|im_start|>assistant\n' }}
+{%- if enable_thinking is defined and enable_thinking is false %}
+{{- '<think>\n\n</think>\n\n' }}
+{%- endif %}
+{%- endif %}
+"""
 
 
 @dataclass(frozen=True)
@@ -148,12 +158,14 @@ def format_messages(
 ) -> str:
     if tokenizer_path is not None:
         tokenizer = _load_tokenizer(str(tokenizer_path))
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=enable_thinking,
-        )
+        kwargs = {
+            "tokenize": False,
+            "add_generation_prompt": True,
+            "enable_thinking": enable_thinking,
+        }
+        if getattr(tokenizer, "chat_template", None) is None:
+            kwargs["chat_template"] = _QWEN3_CHAT_TEMPLATE
+        return tokenizer.apply_chat_template(messages, **kwargs)
     return _manual_chat_template(messages)
 
 
