@@ -14,7 +14,7 @@ Validators then read your commitment off-chain, download the model from Hippius,
 the **same validation checks you can run locally** (file manifest + architecture lock +
 near-duplicate dedup), and finally **evaluate** the model. A model that beats the current
 king earns weight/emissions. So your job is: produce a model that (a) passes validation and
-(b) scores higher than the incumbent.
+(b) scores higher than the incumbent by at least the **6% win margin**.
 
 The whole publish flow is one pipeline:
 
