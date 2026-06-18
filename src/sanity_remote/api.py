@@ -97,11 +97,17 @@ def cancel_run(run_id: str, _: None = Depends(require_auth)) -> dict[str, str]:
 
 def main() -> None:
     # Console entrypoint: serve the worker API on the configured port.
+    import os
+
     import uvicorn
 
+    settings = get_remote_settings()
+    # hippius_validation.config reads ALBEDO_MODEL_CACHE_DIR at first import (inside _materialize).
+    # Propagate our setting now so the lazy import picks up the right cache root.
+    os.environ.setdefault("ALBEDO_MODEL_CACHE_DIR", settings.model_cache_dir)
     uvicorn.run(
         "sanity_remote.api:app",
         host="0.0.0.0",
-        port=get_remote_settings().api_port,
+        port=settings.api_port,
         log_level="info",
     )
