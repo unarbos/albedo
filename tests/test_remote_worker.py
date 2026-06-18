@@ -205,5 +205,5 @@ def test_vllm_worker_stops_on_qwen_im_end(monkeypatch):
         queue=queue,
     )
 
-    assert captured["params"]["stop_token_ids"] == [151645]
+    assert captured["params"]["stop_token_ids"] == [248046]
     assert queue.payload == {"results": [{"sample_id": "sample-1", "text": "done", "error": None}]}
