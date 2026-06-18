@@ -2,7 +2,7 @@
 
 Ported from albedo's per-tensor fingerprint (norms + samples, shard-order invariant)
 but reads safetensors with numpy only — no torch — by parsing the file header directly
-so bf16 checkpoints (the Qwen3-4B norm) are supported.
+so bf16 checkpoints (the Qwen3.6-35B-A3B norm) are supported.
 
 A fingerprint is direction-sensitive: a scaled or fine-tuned copy shifts the sampled
 values, so it still differs from the original even when tensor norms are close.

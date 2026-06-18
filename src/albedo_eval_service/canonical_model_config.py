@@ -6,49 +6,139 @@ from pathlib import Path
 from typing import Any
 
 
+# Canonical model upgraded from the Qwen3-4B genesis to Qwen3.6-35B-A3B
+# (qwen3_5_moe). Pinned to the teutonic/qwen3.6-35b-a3b-genesis `genesis` manifest.
 GENESIS_MODEL_CONFIG_REF = (
-    "registry.hippius.com/teutonic/albedo-qwen3-4b-genesis@"
-    "sha256:3368b0c79b619ed90dc5610c20073cf02c3a93275ebc0c5b94a9d332fea6f606"
+    "registry.hippius.com/teutonic/qwen3.6-35b-a3b-genesis@"
+    "sha256:efd5b8d0a1c1f472be56ff919419cdd0561bdecd9013d5c2a96dd0e23e89c165"
 )
 
+# Full Hugging Face config.json for Qwen/Qwen3.6-35B-A3B. Kept byte-for-byte
+# faithful to the published config so apply_canonical_model_config is idempotent
+# on the canonical artifact and pins the architecture for contestants.
 GENESIS_MODEL_CONFIG: dict[str, Any] = {
-    "architectures": ["Qwen3ForCausalLM"],
-    "attention_bias": False,
-    "attention_dropout": 0.0,
-    "bos_token_id": 151643,
-    "eos_token_id": 151645,
-    "head_dim": 128,
-    "hidden_act": "silu",
-    "hidden_size": 2560,
-    "initializer_range": 0.02,
-    "intermediate_size": 9728,
-    "max_position_embeddings": 40960,
-    "max_window_layers": 36,
-    "model_type": "qwen3",
-    "num_attention_heads": 32,
-    "num_hidden_layers": 36,
-    "num_key_value_heads": 8,
-    "rms_norm_eps": 1e-6,
-    "rope_scaling": None,
-    "rope_theta": 1000000,
-    "sliding_window": None,
-    "tie_word_embeddings": True,
-    "torch_dtype": "bfloat16",
-    "transformers_version": "4.51.0",
-    "use_cache": True,
-    "use_sliding_window": False,
-    "vocab_size": 151936,
+    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+    "image_token_id": 248056,
+    "model_type": "qwen3_5_moe",
+    "text_config": {
+        "attention_bias": False,
+        "attention_dropout": 0.0,
+        "attn_output_gate": True,
+        "bos_token_id": 248044,
+        "dtype": "bfloat16",
+        "eos_token_id": 248044,
+        "full_attention_interval": 4,
+        "head_dim": 256,
+        "hidden_act": "silu",
+        "hidden_size": 2048,
+        "initializer_range": 0.02,
+        "layer_types": [
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+        ],
+        "linear_conv_kernel_dim": 4,
+        "linear_key_head_dim": 128,
+        "linear_num_key_heads": 16,
+        "linear_num_value_heads": 32,
+        "linear_value_head_dim": 128,
+        "mamba_ssm_dtype": "float32",
+        "max_position_embeddings": 262144,
+        "model_type": "qwen3_5_moe_text",
+        "moe_intermediate_size": 512,
+        "mtp_num_hidden_layers": 1,
+        "mtp_use_dedicated_embeddings": False,
+        "num_attention_heads": 16,
+        "num_experts": 256,
+        "num_experts_per_tok": 8,
+        "num_hidden_layers": 40,
+        "num_key_value_heads": 2,
+        "output_router_logits": False,
+        "pad_token_id": None,
+        "partial_rotary_factor": 0.25,
+        "rms_norm_eps": 1e-06,
+        "rope_parameters": {
+            "mrope_interleaved": True,
+            "mrope_section": [11, 11, 10],
+            "partial_rotary_factor": 0.25,
+            "rope_theta": 10000000,
+            "rope_type": "default",
+        },
+        "router_aux_loss_coef": 0.001,
+        "shared_expert_intermediate_size": 512,
+        "tie_word_embeddings": False,
+        "use_cache": True,
+        "vocab_size": 248320,
+    },
+    "tie_word_embeddings": False,
+    "transformers_version": "4.57.1",
+    "video_token_id": 248057,
+    "vision_config": {
+        "deepstack_visual_indexes": [],
+        "depth": 27,
+        "hidden_act": "gelu_pytorch_tanh",
+        "hidden_size": 1152,
+        "in_channels": 3,
+        "initializer_range": 0.02,
+        "intermediate_size": 4304,
+        "model_type": "qwen3_5_moe",
+        "num_heads": 16,
+        "num_position_embeddings": 2304,
+        "out_hidden_size": 2048,
+        "patch_size": 16,
+        "spatial_merge_size": 2,
+        "temporal_patch_size": 2,
+    },
+    "vision_end_token_id": 248054,
+    "vision_start_token_id": 248053,
 }
 
+# Published generation_config.json for Qwen3.6-35B-A3B.
 GENESIS_GENERATION_CONFIG: dict[str, Any] = {
-    "bos_token_id": 151643,
+    "bos_token_id": 248044,
     "do_sample": True,
-    "eos_token_id": [151645, 151643],
-    "pad_token_id": 151643,
-    "temperature": 0.6,
+    "eos_token_id": [248046, 248044],
+    "pad_token_id": 248044,
+    "temperature": 1.0,
     "top_k": 20,
     "top_p": 0.95,
-    "transformers_version": "4.51.0",
 }
 
 GENESIS_ARCH_SPEC: dict[str, Any] = {
@@ -69,7 +159,12 @@ def canonical_generation_config() -> dict[str, Any]:
 
 
 def canonical_max_model_len() -> int:
-    return int(GENESIS_MODEL_CONFIG["max_position_embeddings"])
+    # max_position_embeddings lives under text_config for the multimodal MoE
+    # config; fall back to the top level for flat configs.
+    config = GENESIS_MODEL_CONFIG
+    if "max_position_embeddings" in config:
+        return int(config["max_position_embeddings"])
+    return int(config["text_config"]["max_position_embeddings"])
 
 
 def apply_canonical_model_config(model_dir: Path) -> bool:

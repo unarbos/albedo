@@ -8,7 +8,7 @@ from typing import Protocol
 
 from .remote_dataset import EvalSample
 
-_QWEN3_IM_END_TOKEN_ID = 151645
+_QWEN3_IM_END_TOKEN_ID = 248046  # <|im_end|> for Qwen3.6-35B-A3B (was 151645 for Qwen3-4B genesis)
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,8 @@ class VllmProcessGenerator:
         top_k: int | None = None,
         max_model_len: int | None = None,
         enforce_eager: bool = False,
+        gpu_memory_utilization: float = 0.95,
+        kv_cache_dtype: str = "auto",
     ):
         self.model = model
         self.gpu_ids = gpu_ids
@@ -43,6 +45,8 @@ class VllmProcessGenerator:
         self.top_k = top_k
         self.max_model_len = max_model_len
         self.enforce_eager = enforce_eager
+        self.gpu_memory_utilization = gpu_memory_utilization
+        self.kv_cache_dtype = kv_cache_dtype
 
     def generate(self, samples: list[EvalSample]) -> list[GenerationResult]:
         if not samples:
@@ -63,6 +67,8 @@ class VllmProcessGenerator:
                 "top_k": self.top_k,
                 "max_model_len": self.max_model_len,
                 "enforce_eager": self.enforce_eager,
+                "gpu_memory_utilization": self.gpu_memory_utilization,
+                "kv_cache_dtype": self.kv_cache_dtype,
                 "queue": result_queue,
             },
         )
@@ -109,6 +115,8 @@ def _vllm_worker(
     top_k: int | None,
     max_model_len: int | None,
     enforce_eager: bool,
+    gpu_memory_utilization: float,
+    kv_cache_dtype: str,
     queue,
 ) -> None:
     try:
@@ -124,6 +132,8 @@ def _vllm_worker(
             # do not let vLLM auto-import Hugging Face generation_config.json.
             "generation_config": "vllm",
             "reasoning_parser": "qwen3",
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "kv_cache_dtype": kv_cache_dtype,
         }
         if max_model_len is not None:
             llm_kwargs["max_model_len"] = max_model_len
