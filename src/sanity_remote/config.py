@@ -32,7 +32,7 @@ class SanityRemoteSettings(BaseSettings):
     tensor_parallel_size: int = 1  # GPU_IDS must list exactly this many indices
     cpu_offload_gb: int = 0  # GB to spill to CPU RAM; 2x5090 BF16 needs ~6 for the 67 GB model
     download_timeout_s: float = 1800.0  # 67 GB model can take 20+ min from Hippius
-    model_cache_dir: str = "/tmp/albedo-sanity-models"
+    model_cache_dir: str = "/root/miners_models"
     gen_max_tokens: int = 2048
     max_model_len: int = 8192
     gen_temperature: float = 0.7
