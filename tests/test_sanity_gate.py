@@ -105,7 +105,7 @@ def _complete(gate: GateResult, result: dict) -> list:
     disp = D.SanityDispatcher(settings=SanitySettings(), repository=repo)
     D.make_client = lambda: _DummyJudge()
 
-    async def _fake_gate(samples, client, *, consensus=False, skip_viability=False):
+    async def _fake_gate(samples, client, *, consensus=False, skip_viability=False, models=None):
         return gate
 
     D.run_gate = _fake_gate
@@ -190,16 +190,17 @@ from sanity_remote.config import SanityRemoteSettings
 from sanity_remote.worker import VllmEngine, _strip_model_config
 
 
-def test_max_model_len_default_matches_genesis():
-    # 8192 was too short for SWE-ZERO multi-turn prompts; genesis max_position_embeddings is 40960.
-    assert SanityRemoteSettings().max_model_len == 40960
+def test_max_model_len_default_is_within_genesis_context():
+    # max_model_len is memory-constrained on the sanity GPU; must not exceed genesis max_position_embeddings.
+    from albedo_eval_service.canonical_model_config import GENESIS_MODEL_CONFIG
+    assert 0 < SanityRemoteSettings().max_model_len <= GENESIS_MODEL_CONFIG["max_position_embeddings"]
 
 
 def test_strip_model_config_removes_forbidden_keys(tmp_path):
     config = {
-        "architectures": ["Qwen3ForCausalLM"],
-        "hidden_size": 2560,
-        "auto_map": {"AutoModelForCausalLM": "modeling_qwen.Qwen3ForCausalLM"},
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "hidden_size": 5120,
+        "auto_map": {"AutoModelForCausalLM": "modeling_qwen.Qwen3_5ForConditionalGeneration"},
         "quantization_config": {"quant_type": "gptq", "bits": 4},
     }
     (tmp_path / "config.json").write_text(json.dumps(config))
@@ -209,12 +210,12 @@ def test_strip_model_config_removes_forbidden_keys(tmp_path):
     result = json.loads((tmp_path / "config.json").read_text())
     assert "auto_map" not in result
     assert "quantization_config" not in result
-    assert result["architectures"] == ["Qwen3ForCausalLM"]
-    assert result["hidden_size"] == 2560
+    assert result["architectures"] == ["Qwen3_5ForConditionalGeneration"]
+    assert result["hidden_size"] == 5120
 
 
 def test_strip_model_config_noop_when_clean(tmp_path):
-    config = {"architectures": ["Qwen3ForCausalLM"], "hidden_size": 2560}
+    config = {"architectures": ["Qwen3_5ForConditionalGeneration"], "hidden_size": 5120}
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
     mtime_before = config_path.stat().st_mtime

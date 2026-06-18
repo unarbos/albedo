@@ -29,9 +29,7 @@ class SanityDispatcher:
         self.settings = settings
         self.repository = repository
 
-    def _build_request(
-        self, submission: dict[str, Any], host: Any, attempt_id: UUID
-    ) -> SanityRunRequest:
+    def _build_request(self, submission: dict[str, Any], host: Any, attempt_id: UUID) -> SanityRunRequest:
         # Samples the prompts (stable side) and builds the worker request; run_id = attempt_id.
         samples = sample_prompts(
             seed=str(submission["block_hash"]),
@@ -64,7 +62,9 @@ class SanityDispatcher:
         # Claims and runs one pre-eval end to end; returns False when nothing was claimable.
         claimed = self.claim_once()
         if not claimed:
+            logger.debug("[sanity-dispatch] no claimable pre-eval")
             return False
+        logger.info("[sanity-dispatch] claimed submission={} digest={:.16} host={}", claimed.submission_id, claimed.request.digest, claimed.remote_host.id,)
         client = SanityRemoteClient(
             base_url=claimed.remote_host.base_url,
             auth_token=self.settings.remote_auth_token,
@@ -74,15 +74,8 @@ class SanityDispatcher:
             await client.ready()
             start = await client.start_run(claimed.request)
             run_id = str(start.get("run_id") or claimed.attempt_id)
-            self.repository.heartbeat_attempt(
-                attempt_id=claimed.attempt_id, lease_seconds=self.settings.lease_seconds
-            )
-            result = await self._follow_until_result(
-                client,
-                submission_id=claimed.submission_id,
-                attempt_id=claimed.attempt_id,
-                run_id=run_id,
-            )
+            self.repository.heartbeat_attempt(attempt_id=claimed.attempt_id, lease_seconds=self.settings.lease_seconds)
+            result = await self._follow_until_result(client, submission_id=claimed.submission_id, attempt_id=claimed.attempt_id, run_id=run_id,)
             await self._complete(
                 submission_id=claimed.submission_id,
                 attempt_id=claimed.attempt_id,
@@ -93,12 +86,7 @@ class SanityDispatcher:
             )
             return True
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-            logger.warning(
-                "[sanity-dispatch] worker unreachable submission={} digest={:.16}: {}",
-                claimed.submission_id,
-                claimed.request.digest,
-                exc,
-            )
+            logger.warning("[sanity-dispatch] worker unreachable submission={} digest={:.16}: {}", claimed.submission_id, claimed.request.digest, exc,)
             self.repository.mark_pre_eval_failed(
                 submission_id=claimed.submission_id,
                 attempt_id=claimed.attempt_id,
@@ -113,43 +101,30 @@ class SanityDispatcher:
         finally:
             await client.aclose()
 
-    async def _follow_until_result(
-        self, client: SanityRemoteClient, *, submission_id: UUID, attempt_id: UUID, run_id: str
-    ) -> dict[str, Any]:
+    async def _follow_until_result(self, client: SanityRemoteClient, *, submission_id: UUID, attempt_id: UUID, run_id: str) -> dict[str, Any]:
         # Polls the worker, recording events and refreshing the lease, until a result appears.
         seen = 0
         while True:
             events = [event async for event in client.iter_events(run_id)]
             for event in events[seen:]:
-                self.repository.record_remote_event(
-                    submission_id=submission_id, attempt_id=attempt_id, event=event
-                )
-                self.repository.heartbeat_attempt(
-                    attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds
-                )
+                ev_type = event.get("type", "?")
+                logger.info("[sanity-dispatch] worker event={} run={} submission={:.8}", ev_type, run_id, str(submission_id),)
+                self.repository.record_remote_event(submission_id=submission_id, attempt_id=attempt_id, event=event)
+                self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
                 if event.get("type") == "result":
+                    logger.info("[sanity-dispatch] result received run={} state={} submission={:.8}", run_id, event.get("state"), str(submission_id),)
                     return event
             seen = max(seen, len(events))
             status = await client.get_run(run_id)
             if status.get("type") == "result" or status.get("state") in {"succeeded", "failed"}:
                 if status.get("type") == "result":
-                    self.repository.record_remote_event(
-                        submission_id=submission_id, attempt_id=attempt_id, event=status
-                    )
+                    self.repository.record_remote_event(submission_id=submission_id, attempt_id=attempt_id, event=status)
                 return status
             await asyncio.sleep(self.settings.remote_event_poll_seconds)
 
-    async def _complete(
-        self,
-        *,
-        submission_id: UUID,
-        attempt_id: UUID,
-        repo: str,
-        digest: str,
-        prompts: list[str],
-        result: dict[str, Any],
-    ) -> None:
+    async def _complete(self, *, submission_id: UUID, attempt_id: UUID, repo: str, digest: str, prompts: list[str], result: dict[str, Any],) -> None:
         # Judges the generated responses and writes the terminal verdict.
+        logger.info("[sanity-dispatch] completing submission={:.8} digest={:.16} state={}", str(submission_id), digest, result.get("state"),)
         if result.get("state") == "failed":
             self.repository.mark_pre_eval_failed(
                 submission_id=submission_id,
@@ -242,13 +217,13 @@ class SanityDispatcher:
         # Replays in-flight pre-evals whose dispatcher may have crashed mid-poll.
         # follow_timeout must be shorter than the cron_restart interval (60s) so PM2 never
         # has to SIGTERM a busy reconciler — the TimeoutError exits cleanly instead.
+        in_flight = self.repository.list_reconcilable_pre_eval(limit=limit)
+        logger.info("[sanity-dispatch] reconcile found={}", len(in_flight))
+        if not in_flight:
+            return 0
         reconciled = 0
-        for active in self.repository.list_reconcilable_pre_eval(limit=limit):
-            client = SanityRemoteClient(
-                base_url=active.remote_host.base_url,
-                auth_token=self.settings.remote_auth_token,
-                timeout_seconds=self.settings.remote_event_timeout_seconds,
-            )
+        for active in in_flight:
+            client = SanityRemoteClient(base_url=active.remote_host.base_url, auth_token=self.settings.remote_auth_token, timeout_seconds=self.settings.remote_event_timeout_seconds,)
             try:
                 result = await asyncio.wait_for(
                     self._follow_until_result(
@@ -260,12 +235,7 @@ class SanityDispatcher:
                     timeout=follow_timeout,
                 )
             except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-                logger.warning(
-                    "[sanity-dispatch] reconcile skipped submission={} run={}: {}",
-                    active.submission_id,
-                    active.run_id,
-                    exc,
-                )
+                logger.warning("[sanity-dispatch] reconcile skipped submission={} run={}: {}", active.submission_id, active.run_id, exc,)
                 continue
             finally:
                 await client.aclose()
@@ -285,44 +255,33 @@ class SanityDispatcher:
         while True:
             did_work = await self.dispatch_once()
             if not did_work:
+                logger.debug("[sanity-dispatch] idle — sleeping {}s", self.settings.dispatch_poll_seconds)
                 await asyncio.sleep(self.settings.dispatch_poll_seconds)
 
 
 def main() -> None:
     # CLI entrypoint (--once / --sweep-abandoned / --reconcile-running), mirroring eval.
     parser = argparse.ArgumentParser(description="Run the Albedo sanity pre-eval dispatcher.")
-    parser.add_argument(
-        "--once", action="store_true", help="Claim and dispatch at most one pre-eval."
-    )
-    parser.add_argument(
-        "--sweep-abandoned",
-        action="store_true",
-        help="Reclaim expired pre-eval attempts.",
-    )
-    parser.add_argument(
-        "--reconcile-running",
-        action="store_true",
-        help="Replay in-flight pre-eval runs.",
-    )
+    parser.add_argument("--once", action="store_true", help="Claim and dispatch at most one pre-eval.")
+    parser.add_argument("--sweep-abandoned", action="store_true", help="Reclaim expired pre-eval attempts.",)
+    parser.add_argument("--reconcile-running", action="store_true", help="Replay in-flight pre-eval runs.",)
     parser.add_argument("--limit", type=int, default=10, help="Max active runs to reconcile.")
     args = parser.parse_args()
 
     settings = get_settings()
     dispatcher = SanityDispatcher(
         settings=settings,
-        repository=PreEvalRepository(settings.database_url, min_free_gpus=settings.min_free_gpus),
+        repository=PreEvalRepository(
+            settings.database_url,
+            min_free_gpus=settings.min_free_gpus,
+            max_retry_count=settings.max_retry_count,
+        ),
     )
     if args.sweep_abandoned:
-        logger.info(
-            "[sanity-dispatch] abandoned={}",
-            dispatcher.repository.sweep_abandoned_pre_eval(worker_id=settings.worker_id),
-        )
+        logger.info("[sanity-dispatch] abandoned={}", dispatcher.repository.sweep_abandoned_pre_eval(worker_id=settings.worker_id),)
     elif args.reconcile_running:
         try:
-            logger.info(
-                "[sanity-dispatch] reconciled={}",
-                asyncio.run(dispatcher.reconcile_once(limit=args.limit)),
-            )
+            logger.info("[sanity-dispatch] reconciled={}", asyncio.run(dispatcher.reconcile_once(limit=args.limit)),)
         except KeyboardInterrupt:
             logger.info("[sanity-dispatch] reconciler interrupted by signal, exiting cleanly")
     elif args.once:

@@ -32,6 +32,7 @@ class SanitySettings(BaseSettings):
     remote_event_timeout_seconds: float = 30.0
     remote_event_poll_seconds: float = 5.0
     min_free_gpus: int = 1
+    max_retry_count: int = 5
 
 
 @lru_cache
