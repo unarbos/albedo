@@ -77,6 +77,8 @@ ALLOWED_FILES: tuple[str, ...] = (
     # chat_template.jinja may be present, but the system uses its OWN canonical template
     "chat_template.jinja", "merges.txt", "vocab.json",
     "model.safetensors.index.json",
+    ".gitattributes", "LICENSE", "README.md", "configuration.json",
+    "preprocessor_config.json", "video_preprocessor_config.json",
 )
 ALLOWED_GLOBS: tuple[str, ...] = ("model-*-of-*.safetensors", "model.safetensors")
 FORBIDDEN_GLOBS: tuple[str, ...] = ("*.py",)
