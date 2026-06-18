@@ -4,9 +4,9 @@
 
 [chain]
 name         = "Albedo"
-seed_repo    = "teutonic/albedo-qwen3-4b-genesis"
-# Challengers must be named albedo-qwen3-4b-<suffix> under any Hippius namespace.
-repo_pattern = "^[^/]+/albedo-qwen3-4b-.+$"
+seed_repo    = "teutonic/qwen3.6-35b-a3b-genesis"
+# Challengers must be named albedo-qwen3.6-35b-<suffix> under any Hippius namespace.
+repo_pattern = "^[^/]+/albedo-qwen3\\.6-35b-.+$"
 
 [arch]
 # Qwen3-4B identity + capacity keys. A challenger's config.json must match the
@@ -21,11 +21,15 @@ extra_lock_keys = [
   "num_key_value_heads",
   "intermediate_size",
   "head_dim",
+  "moe_intermediate_size",
+  "shared_expert_intermediate_size",
+  "num_experts",
+  "num_experts_per_tok",
 ]
 
 [seed]
-# Genesis Qwen3-4B reference; arch check compares challengers against this.
-seed_digest = "sha256:3368b0c79b619ed90dc5610c20073cf02c3a93275ebc0c5b94a9d332fea6f606"
+# Genesis Qwen3.6-35B-A3B reference; arch check compares challengers against this.
+seed_digest = "sha256:efd5b8d0a1c1f472be56ff919419cdd0561bdecd9013d5c2a96dd0e23e89c165"
 
 [files]
 # Strict allowlist. A repo must contain every `required` file, must contain at least
