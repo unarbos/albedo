@@ -9,7 +9,7 @@ seed_repo    = "teutonic/qwen3.6-35b-a3b-genesis"
 repo_pattern = "^[^/]+/albedo-qwen3\\.6-35b-.+$"
 
 [arch]
-# Qwen3-4B identity + capacity keys. A challenger's config.json must match the
+# Qwen3.6-35B-A3B identity + capacity keys. A challenger's config.json must match the
 # genesis seed on `architectures` plus every key below.
 extra_lock_keys = [
   "max_position_embeddings",
