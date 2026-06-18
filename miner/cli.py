@@ -34,8 +34,8 @@ def _build_parser() -> argparse.ArgumentParser:
     up = sub.add_parser("upload", help="upload a local model dir to Hippius")
     up.add_argument("--path", required=True)
     up.add_argument("--namespace", default=_NAMESPACE)
-    up.add_argument("--name", help="suffix appended after albedo-qwen3-4b-")
-    up.add_argument("--repo", help="full repo override (ns/albedo-qwen3-4b-…)")
+    up.add_argument("--name", help="suffix appended after albedo-qwen3.6-35b-")
+    up.add_argument("--repo", help="full repo override (ns/albedo-qwen3.6-35b-…)")
 
     ch = sub.add_parser("check-hippius", help="validate a model/repo (file manifest + architecture, no dedup)")
     ch.add_argument("--path", help="local model directory")
