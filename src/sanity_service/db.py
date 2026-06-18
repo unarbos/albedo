@@ -272,10 +272,12 @@ class PreEvalRepository:
 
     def sweep_abandoned_pre_eval(self, *, worker_id: str) -> int:
         # Reclaims expired RUNNING pre-eval attempts (dead dispatcher/host) back to the queue.
+        # When retry_count already reached the cap the submission moves to TERMINAL_INVALID instead
+        # of RETRYABLE so it does not sit in a ghost state that the claim query never picks up.
         with self._connect() as conn, conn.transaction():
             rows = conn.execute(
                 """
-                SELECT sa.id AS attempt_id, sa.submission_id
+                SELECT sa.id AS attempt_id, sa.submission_id, ms.retry_count
                 FROM stage_attempts sa
                 JOIN model_submissions ms ON ms.id = sa.submission_id
                 WHERE sa.stage = 'PRE_EVAL' AND sa.state = 'RUNNING'
@@ -284,6 +286,8 @@ class PreEvalRepository:
                 """
             ).fetchall()
             for row in rows:
+                exhausted = row["retry_count"] + 1 >= self._max_retry_count
+                next_state = "TERMINAL_INVALID" if exhausted else "PRE_EVAL_RETRYABLE"
                 conn.execute(
                     """
                     UPDATE stage_attempts
@@ -296,12 +300,12 @@ class PreEvalRepository:
                 conn.execute(
                     """
                     UPDATE model_submissions
-                    SET state = 'PRE_EVAL_RETRYABLE', fault_class = 'INFRA_FAULT',
+                    SET state = %s, fault_class = 'INFRA_FAULT',
                         fault_code = 'pre_eval_lease_expired', fault_message = 'lease expired before completion',
                         retry_count = retry_count + 1, updated_at = now()
                     WHERE id = %s
                     """,
-                    (row["submission_id"],),
+                    (next_state, row["submission_id"]),
                 )
                 self.record_event_inside_tx(
                     conn,
@@ -309,8 +313,8 @@ class PreEvalRepository:
                     stage_attempt_id=row["attempt_id"],
                     event_type="pre_eval_abandoned",
                     severity="WARN",
-                    message="Pre-eval lease expired before completion",
-                    data={"worker_id": worker_id},
+                    message=f"Pre-eval lease expired before completion (-> {next_state})",
+                    data={"worker_id": worker_id, "exhausted": exhausted},
                 )
             return len(rows)
 
