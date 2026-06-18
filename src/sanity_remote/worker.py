@@ -115,6 +115,13 @@ class VllmEngine:
                 )
             return await self._run_prompts(digest, prompts, max_tokens)
 
+    async def teardown(self) -> None:
+        # Frees the GPUs after a run by killing vLLM and forcing a cold load next time.
+        # Mirrors the eval server's per-run fresh-process pattern (remote_generation.py).
+        async with self._lock:
+            await self._kill_vllm()
+            self._loaded_digest = ""
+
     def _kill_port_squatter(self) -> None:
         # On startup, kill any orphaned vLLM process that may still hold the configured port.
         # Without this, a restart of the worker process leaves _proc=None so _kill_vllm() is
@@ -207,6 +214,8 @@ class VllmEngine:
             self._s.vllm_dtype,
             "--max-model-len",
             str(self._s.max_model_len),
+            "--kv-cache-dtype",
+            self._s.kv_cache_dtype,
             "--generation-config",
             "vllm",
         ]
@@ -434,3 +443,10 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
         engine.forget()
         logger.exception("[sanity-remote] generation failed for {}", req.digest)
         run.fail(fault_code="worker_error", fault_message=str(exc), retryable=True)
+    finally:
+        # Tear down vLLM so both GPUs free up between preevals (eval-server parity);
+        # the next run cold-loads. Best-effort: never let teardown strand the run.
+        try:
+            await engine.teardown()
+        except Exception:  # noqa: BLE001
+            logger.warning("[sanity-remote] vLLM teardown after run failed (best-effort)")

@@ -19,7 +19,7 @@ class SanityRemoteSettings(BaseSettings):
     api_port: int = 9100  # the worker's own HTTP API (the dispatcher reaches this via the tunnel)
 
     # vLLM / generation
-    gpu_ids: str = "0"
+    gpu_ids: str = "0,1"
     gpu_util: float = 0.95
     vllm_port: int = 9101
     vllm_dtype: str = "bfloat16"
@@ -29,11 +29,12 @@ class SanityRemoteSettings(BaseSettings):
     vllm_enforce_eager: bool = False
     # Passed as --moe-backend <value>; "triton" avoids FlashInfer JIT on CUDA 13 / sm_120f hosts.
     vllm_moe_backend: str = ""
-    tensor_parallel_size: int = 1  # GPU_IDS must list exactly this many indices
+    tensor_parallel_size: int = 2  # GPU_IDS must list exactly this many indices
     cpu_offload_gb: int = 0  # GB to spill to CPU RAM; 2x5090 BF16 needs ~6 for the 67 GB model
     download_timeout_s: float = 1800.0  # 67 GB model can take 20+ min from Hippius
     model_cache_dir: str = "/root/miners_models"
     max_model_len: int = 8192
+    kv_cache_dtype: str = "auto"
     gen_temperature: float = 0.7
     gen_top_p: float = 0.8
     gen_top_k: int = 20
