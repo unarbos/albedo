@@ -174,6 +174,7 @@ def test_run_prompts_uses_raw_completions(monkeypatch):
             "gen_top_p": 0.8,
             "gen_top_k": 20,
             "gen_min_p": 0.0,
+            "gen_read_timeout_s": 300.0,
         },
     )()
 
@@ -189,5 +190,5 @@ def test_run_prompts_uses_raw_completions(monkeypatch):
         "top_p": 0.8,
         "top_k": 20,
         "min_p": 0.0,
-        "stop_token_ids": [151645],
+        "stop_token_ids": [248046],
     }
