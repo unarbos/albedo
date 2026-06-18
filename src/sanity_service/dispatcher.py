@@ -103,6 +103,8 @@ class SanityDispatcher:
 
     async def _follow_until_result(self, client: SanityRemoteClient, *, submission_id: UUID, attempt_id: UUID, run_id: str) -> dict[str, Any]:
         # Polls the worker, recording events and refreshing the lease, until a result appears.
+        # Heartbeat runs once per poll tick (not just per event) so a long model download or
+        # vLLM boot — which emits no events — does not let the lease expire mid-wait.
         seen = 0
         while True:
             events = [event async for event in client.iter_events(run_id)]
@@ -110,11 +112,13 @@ class SanityDispatcher:
                 ev_type = event.get("type", "?")
                 logger.info("[sanity-dispatch] worker event={} run={} submission={:.8}", ev_type, run_id, str(submission_id),)
                 self.repository.record_remote_event(submission_id=submission_id, attempt_id=attempt_id, event=event)
-                self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
                 if event.get("type") == "result":
                     logger.info("[sanity-dispatch] result received run={} state={} submission={:.8}", run_id, event.get("state"), str(submission_id),)
+                    self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
                     return event
             seen = max(seen, len(events))
+            # Heartbeat on every tick so a silent download/boot period does not expire the lease.
+            self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
             status = await client.get_run(run_id)
             if status.get("type") == "result" or status.get("state") in {"succeeded", "failed"}:
                 if status.get("type") == "result":
@@ -251,11 +255,15 @@ class SanityDispatcher:
         return reconciled
 
     async def run_forever(self) -> None:
-        # Continuously claims and dispatches pre-evals.
+        # Continuously claims and dispatches pre-evals; keeps the loop alive across transient errors.
         while True:
-            did_work = await self.dispatch_once()
-            if not did_work:
-                logger.debug("[sanity-dispatch] idle — sleeping {}s", self.settings.dispatch_poll_seconds)
+            try:
+                did_work = await self.dispatch_once()
+                if not did_work:
+                    logger.debug("[sanity-dispatch] idle — sleeping {}s", self.settings.dispatch_poll_seconds)
+                    await asyncio.sleep(self.settings.dispatch_poll_seconds)
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive across DB blips, etc.
+                logger.exception("[sanity-dispatch] unhandled error in dispatch loop, retrying in {}s: {}", self.settings.dispatch_poll_seconds, exc)
                 await asyncio.sleep(self.settings.dispatch_poll_seconds)
 
 
