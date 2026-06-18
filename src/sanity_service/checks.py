@@ -7,45 +7,28 @@ from dataclasses import dataclass
 # Keywords expected in at least one response for a coding task.
 _CODE_KEYWORDS = {
     # ── Python ──
-    "def", "class", "import", "from", "return", "if", "elif", "else", "for",
-    "while", "try", "except", "finally", "with", "as", "lambda", "yield",
-    "raise", "assert", "pass", "del", "global", "nonlocal", "and", "or", "not",
-    "in", "is", "async", "await", "print", "self",
-
+    "def","class","import","from","return","if","elif","else","for","while","try","except","finally","with","as","lambda",
+    "yield","raise","assert","pass","del","global","nonlocal","and","or","not","in","is","async","await","print","self",
     # ── JS / TS ──
-    "function", "const", "let", "var", "switch", "case", "break", "continue",
-    "new", "extends", "export", "default", "typeof", "instanceof", "this",
-    "super", "catch", "throw", "interface", "type", "enum", "namespace",
-    "public", "private", "protected", "readonly", "console",
-
+    "function","const","let","var","switch","case","break","continue","new","extends","export","default","typeof","instanceof",
+    "this","super","catch","throw","interface","type","enum","namespace","public","private","protected","readonly","console",
     # ── Java / C# / C / C++ ──
-    "static", "final", "void", "int", "char", "bool", "string", "struct",
-    "using", "package", "implements", "abstract", "override", "virtual",
-    "template", "typename", "include", "#include", "std", "sizeof", "typedef",
-
+    "static","final","void","int","char","bool","string","struct","using","package","implements",
+    "abstract","override","virtual","template","typename","include","#include","std","sizeof","typedef",
     # ── Go ──
-    "func", "range", "map", "chan", "go", "defer", "select", "nil",
-
+    "func","range","map","chan","go","defer","select","nil",
     # ── Rust ──
-    "fn", "mut", "impl", "trait", "pub", "use", "mod", "match", "loop",
-    "where", "unsafe", "dyn", "crate",
-
+    "fn","mut","impl","trait","pub","use","mod","match","loop","where","unsafe","dyn","crate",
     # ── Ruby / PHP / shell-script ──
-    "end", "module", "require", "unless", "until", "do", "done", "then", "fi",
-    "begin", "rescue", "ensure", "puts", "elsif", "foreach", "echo",
-
+    "end","module","require","unless","until","do","done","then","fi",
+    "begin","rescue","ensure","puts","elsif","foreach","echo",
     # ── mini-swe-agent bash / POSIX + dev CLIs (the dominant signal) ──
-    "grep", "rgrep", "tree", "find", "cat", "sed", "awk", "ls", "cd", "head", "tail", "sort",
-    "uniq", "wc", "cut", "tr", "xargs", "diff", "patch", "cp", "mv", "rm",
-    "rmdir", "mkdir", "touch", "chmod", "chown", "ln", "pwd", "which", "tee",
-    "printf", "export", "source", "env", "stat", "basename", "dirname", "tar",
-    "curl", "wget", "ssh", "rsync", "git", "make", "cmake", "gcc", "clang",
-    "node", "npm", "npx", "yarn", "pnpm", "cargo", "rustc", "java", "javac",
-    "mvn", "gradle", "ruby", "gem", "bundle", "rake", "php", "composer",
-    "perl", "python", "python3", "pip", "pip3", "pytest", "tox", "ruff",
-    "black", "mypy", "flake8", "pylint", "bash", "sh", "docker", "kubectl",
+    "grep","rgrep","tree","find","cat","sed","awk","ls","cd","head","tail","sort","uniq","wc","cut","tr","xargs","diff",
+    "patch","cp","mv","rm","rmdir","mkdir","touch","chmod","chown","ln","pwd","which","tee","printf","export","source",
+    "env","stat","basename","dirname","tar","curl","wget","ssh","rsync","git","make","cmake","gcc","clang","node","npm",
+    "npx","yarn","pnpm","cargo","rustc","java","javac","mvn","gradle","ruby","gem","bundle","rake","php","composer","perl",
+    "python","python3","pip","pip3","pytest","tox","ruff","black","mypy","flake8","pylint","bash","sh","docker","kubectl",
 }
-
 
 
 @dataclass
@@ -73,7 +56,7 @@ def check_length(text: str, min_tokens: int = 5) -> CheckResult:
     return CheckResult(True)
 
 
-def check_repetition(text: str, max_repetition: float = 0.95) -> CheckResult:
+def check_repetition(text: str, max_repetition: float = 0.85) -> CheckResult:
     # Fails if >85% of consecutive trigrams are identical - catches "to to to to" token loops.
     tokens = text.split()
     if len(tokens) < 3:
@@ -92,8 +75,8 @@ def check_encoding(text: str) -> CheckResult:
     return CheckResult(True)
 
 
-def check_vocabulary(text: str, min_ratio: float = 0.1) -> CheckResult:
-    # Fails if unique/total token ratio is below 10% - catches low-variety "the the the" outputs.
+def check_vocabulary(text: str, min_ratio: float = 0.3) -> CheckResult:
+    # Fails if unique/total token ratio is below 30% - catches low-variety "the the the" outputs.
     tokens = text.lower().split()
     if len(tokens) < 8:
         return CheckResult(True)
@@ -103,20 +86,14 @@ def check_vocabulary(text: str, min_ratio: float = 0.1) -> CheckResult:
     return CheckResult(True)
 
 
-def check_one(
-    text: str,
-    min_tokens: int = 5,
-    max_repetition: float = 0.85,
-    min_vocab_ratio: float = 0.3,
-    check_vocab: bool = True,
-) -> CheckResult:
+def check_one(text: str, min_tokens: int = 5, max_repetition: float = 0.85, min_vocab_ratio: float = 0.3,) -> CheckResult:
     # Runs all per-response checks in order and returns the first failure.
     for result in [
         check_empty(text),
         check_length(text, min_tokens),
         check_repetition(text, max_repetition),
         check_encoding(text),
-        check_vocabulary(text, min_vocab_ratio) if check_vocab else CheckResult(True),
+        check_vocabulary(text, min_vocab_ratio),
     ]:
         if not result.passed:
             return result
@@ -156,12 +133,7 @@ def check_code_present(responses: list[str]) -> CheckResult:
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 
-def check_all(
-    responses: list[str],
-    min_tokens: int = 5,
-    max_repetition: float = 0.95,
-    min_vocab_ratio: float = 0.1,
-) -> CheckResult:
+def check_all(responses: list[str], min_tokens: int = 5, max_repetition: float = 0.95, min_vocab_ratio: float = 0.1,) -> CheckResult:
     # Runs per-response checks first, then cross-prompt checks; returns the first failure.
     for i, resp in enumerate(responses):
         result = check_one(
