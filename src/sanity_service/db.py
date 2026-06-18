@@ -233,9 +233,9 @@ class PreEvalRepository:
             )
 
     def mark_pre_eval_failed(self, *, submission_id: UUID, attempt_id: UUID, repo: str, digest: str, fault_class: str, fault_code: str, fault_message: str, retryable: bool, responses: list[str] | None = None, artifact_uri: str | None = None,) -> None:
-        # Fails the attempt; retryable -> PRE_EVAL_RETRYABLE, terminal -> TERMINAL_INVALID (cached).
+        # Fails the attempt; retryable -> PRE_EVAL_RETRYABLE (unless retries exhausted, then
+        # TERMINAL_INVALID), terminal -> TERMINAL_INVALID with a cached sanity_results row.
         attempt_state = "FAILED_RETRYABLE" if retryable else "FAILED_TERMINAL"
-        submission_state = "PRE_EVAL_RETRYABLE" if retryable else "TERMINAL_INVALID"
         with self._connect() as conn, conn.transaction():
             if not retryable:
                 self._write_sanity_result(
@@ -251,14 +251,21 @@ class PreEvalRepository:
                 """,
                 (attempt_state, fault_class, fault_code, fault_message, attempt_id),
             )
+            # Cap retryable failures: once retry_count reaches max, move to TERMINAL_INVALID so the
+            # submission does not sit in PRE_EVAL_RETRYABLE forever unclaimed by the claim query.
             conn.execute(
                 """
                 UPDATE model_submissions
-                SET state = %s, fault_class = %s, fault_code = %s, fault_message = %s,
+                SET state = CASE
+                        WHEN %s AND retry_count + 1 >= %s THEN 'TERMINAL_INVALID'
+                        WHEN %s THEN 'PRE_EVAL_RETRYABLE'
+                        ELSE 'TERMINAL_INVALID'
+                    END,
+                    fault_class = %s, fault_code = %s, fault_message = %s,
                     retry_count = retry_count + 1, updated_at = now()
                 WHERE id = %s
                 """,
-                (submission_state, fault_class, fault_code, fault_message, submission_id),
+                (retryable, self._max_retry_count, retryable, fault_class, fault_code, fault_message, submission_id),
             )
             self.record_event_inside_tx(
                 conn,

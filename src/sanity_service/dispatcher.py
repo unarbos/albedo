@@ -243,14 +243,18 @@ class SanityDispatcher:
                 continue
             finally:
                 await client.aclose()
-            await self._complete(
-                submission_id=active.submission_id,
-                attempt_id=active.attempt_id,
-                repo=active.repo,
-                digest=active.digest,
-                prompts=active.prompts,
-                result=result,
-            )
+            try:
+                await self._complete(
+                    submission_id=active.submission_id,
+                    attempt_id=active.attempt_id,
+                    repo=active.repo,
+                    digest=active.digest,
+                    prompts=active.prompts,
+                    result=result,
+                )
+            except Exception as exc:  # noqa: BLE001 - log and continue so one bad completion does not abort the loop
+                logger.exception("[sanity-dispatch] reconcile _complete failed submission={}: {}", active.submission_id, exc)
+                continue
             reconciled += 1
         return reconciled
 
