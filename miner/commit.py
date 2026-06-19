@@ -1,4 +1,4 @@
-"""Commit the v6 reveal on-chain (miner side) with a preview + Y/N + registration check."""
+"""Commit the v7 reveal on-chain (miner side) with a preview + Y/N + registration check."""
 from __future__ import annotations
 
 import os
@@ -9,8 +9,8 @@ from config_validation.models import ModelRef
 
 
 def build_reveal(ref: ModelRef) -> str:
-    """The on-chain payload: ``v6|<repo>|<digest>`` (matches chain_reader's v6 parser)."""
-    return f"v6|{ref.repo}|{ref.digest}"
+    """The on-chain payload: ``v7|<repo>|<digest>`` (matches chain_reader's v7 parser)."""
+    return f"v7|{ref.repo}|{ref.digest}"
 
 
 def build_wallet(coldkey: str, hotkey: str):

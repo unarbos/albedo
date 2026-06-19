@@ -16,9 +16,9 @@ def _sha256(payload: bytes) -> str:
 
 
 def test_parse_oci_ref_accepts_hippius_registry_digest():
-    ref = "registry.hippius.com/sota1028/albedo-qwen3-4b-miner_5@sha256:" + "8" * 64
+    ref = "registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@sha256:" + "8" * 64
 
-    assert parse_oci_ref(ref) == ("registry.hippius.com", "sota1028/albedo-qwen3-4b-miner_5", "sha256:" + "8" * 64)
+    assert parse_oci_ref(ref) == ("registry.hippius.com", "sota1028/albedo-qwen3.6-35b-miner_5", "sha256:" + "8" * 64)
 
 
 def test_model_resolver_passes_through_existing_local_path(tmp_path):
@@ -33,8 +33,8 @@ def test_model_resolver_passes_through_existing_local_path(tmp_path):
     assert resolved.file_count == 2
     assert Path(resolved.local_path, "generation_config.json").exists()
     rewritten = json.loads(Path(resolved.local_path, "config.json").read_text(encoding="utf-8"))
-    assert rewritten["model_type"] == "qwen3"
-    assert rewritten["max_position_embeddings"] == canonical_max_model_len()
+    assert rewritten["model_type"] == "qwen3_5_moe"
+    assert rewritten["text_config"]["max_position_embeddings"] == canonical_max_model_len()
     assert "auto_map" not in rewritten
 
 
@@ -91,12 +91,12 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
             raise AssertionError(url)
 
     monkeypatch.setattr("albedo_eval_service.remote_models.httpx.Client", lambda **_: FakeClient())
-    ref = f"registry.hippius.com/sota1028/albedo-qwen3-4b-miner_5@{manifest_digest}"
+    ref = f"registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@{manifest_digest}"
 
     resolved = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache"))).resolve(ref)
 
     rewritten = json.loads(Path(resolved.local_path, "config.json").read_text(encoding="utf-8"))
-    assert rewritten["model_type"] == "qwen3"
-    assert rewritten["max_position_embeddings"] == canonical_max_model_len()
+    assert rewritten["model_type"] == "qwen3_5_moe"
+    assert rewritten["text_config"]["max_position_embeddings"] == canonical_max_model_len()
     assert resolved.source == "oci"
     assert resolved.cache_hit is False

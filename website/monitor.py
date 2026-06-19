@@ -156,7 +156,7 @@ def _artifacts_for(conn, submission_ids: list, base: str) -> dict[str, dict[str,
     return out
 
 
-def _eval_runs(conn, *, limit: int, base: str) -> list[dict[str, Any]]:
+def _eval_runs(conn, *, limit: int, base: str, model_filter: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT er.id AS eval_run_id, er.submission_id,
@@ -179,10 +179,11 @@ def _eval_runs(conn, *, limit: int, base: str) -> list[dict[str, Any]]:
             ORDER BY version DESC LIMIT 1
         ) kkv ON true
         WHERE er.state = 'SUCCEEDED'
+          AND ms.model_uri LIKE %s
         ORDER BY er.finished_at DESC NULLS LAST
         LIMIT %s
         """,
-        (limit,),
+        (f"%{model_filter}%", limit),
     ).fetchall()
 
     artifacts = _artifacts_for(conn, [row["submission_id"] for row in rows], base)
@@ -225,7 +226,7 @@ def _eval_runs(conn, *, limit: int, base: str) -> list[dict[str, Any]]:
     return runs
 
 
-def _current_eval(conn) -> dict[str, Any] | None:
+def _current_eval(conn, *, model_filter: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT er.id AS eval_run_id, er.state, er.sample_count, er.generated_sample_count,
@@ -233,10 +234,11 @@ def _current_eval(conn) -> dict[str, Any] | None:
         FROM eval_runs er
         JOIN model_submissions ms ON ms.id = er.submission_id
         WHERE er.state = ANY(%s)
+          AND ms.model_uri LIKE %s
         ORDER BY er.started_at DESC NULLS LAST
         LIMIT 1
         """,
-        (list(ACTIVE_EVAL_STATES),),
+        (list(ACTIVE_EVAL_STATES), f"%{model_filter}%"),
     ).fetchone()
     if not row:
         return None
@@ -253,15 +255,16 @@ def _current_eval(conn) -> dict[str, Any] | None:
     }
 
 
-def _queue(conn, *, exclude_submission_id: str | None) -> list[dict[str, Any]]:
+def _queue(conn, *, exclude_submission_id: str | None, model_filter: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT id AS submission_id, state, model_uri, hotkey, uid, created_at
         FROM model_submissions
         WHERE state = ANY(%s)
+          AND model_uri LIKE %s
         ORDER BY priority ASC, created_at ASC
         """,
-        (list(QUEUE_STATES),),
+        (list(QUEUE_STATES), f"%{model_filter}%"),
     ).fetchall()
     return [
         {
@@ -277,7 +280,7 @@ def _queue(conn, *, exclude_submission_id: str | None) -> list[dict[str, Any]]:
     ]
 
 
-def _fails(conn, *, limit: int, base: str) -> list[dict[str, Any]]:
+def _fails(conn, *, limit: int, base: str, model_filter: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT ms.id AS submission_id, ms.state, ms.model_uri, ms.hotkey, ms.uid,
@@ -287,10 +290,11 @@ def _fails(conn, *, limit: int, base: str) -> list[dict[str, Any]]:
                 ORDER BY er.started_at DESC NULLS LAST LIMIT 1) AS eval_run_id
         FROM model_submissions ms
         WHERE ms.state = ANY(%s)
+          AND ms.model_uri LIKE %s
         ORDER BY ms.updated_at DESC
         LIMIT %s
         """,
-        (list(FAIL_STATES), limit),
+        (list(FAIL_STATES), f"%{model_filter}%", limit),
     ).fetchall()
     artifacts = _artifacts_for(conn, [row["submission_id"] for row in rows], base)
     return [
@@ -317,33 +321,34 @@ def _stats(conn) -> dict[str, Any]:
     return {"evaluated": int(row["n"]) if row else 0}
 
 
-def build_dashboard(conn, *, netuid: int, history_limit: int, artifact_base: str) -> dict[str, Any]:
-    current = _current_eval(conn)
+def build_dashboard(conn, *, netuid: int, history_limit: int, artifact_base: str, model_filter: str) -> dict[str, Any]:
+    current = _current_eval(conn, model_filter=model_filter)
     return {
         "updated_at": datetime.now(UTC).isoformat(),
         "chain": {"netuid": netuid, "judge_models": list(JUDGE_MODELS)},
         "stats": _stats(conn),
         "reign": _reign(conn),
         "current_eval": current,
-        "queue": _queue(conn, exclude_submission_id=current["submission_id"] if current else None),
-        "eval_runs": _eval_runs(conn, limit=history_limit, base=artifact_base),
-        "fails": _fails(conn, limit=history_limit, base=artifact_base),
+        "queue": _queue(conn, exclude_submission_id=current["submission_id"] if current else None, model_filter=model_filter),
+        "eval_runs": _eval_runs(conn, limit=history_limit, base=artifact_base, model_filter=model_filter),
+        "fails": _fails(conn, limit=history_limit, base=artifact_base, model_filter=model_filter),
     }
 
 
 # --------------------------------------------------------------------------- state.json
 
 
-def build_state(conn) -> dict[str, Any]:
+def build_state(conn, *, model_filter: str) -> dict[str, Any]:
     tracked = sorted({s for stage in STAGE_BUCKETS.values() for bucket in stage.values() for s in bucket})
     rows = conn.execute(
         """
         SELECT id AS submission_id, state, uid, hotkey, model_uri, updated_at
         FROM model_submissions
         WHERE state = ANY(%s)
+          AND model_uri LIKE %s
         ORDER BY updated_at DESC
         """,
-        (tracked,),
+        (tracked, f"%{model_filter}%"),
     ).fetchall()
 
     stages: dict[str, dict[str, list]] = {name: {"running": [], "queued": []} for name in STAGE_BUCKETS}
@@ -416,13 +421,13 @@ def _signature(conn) -> tuple:
     return (row["ms_max"], row["ms_count"], row["er_max"], row["reign_max"])
 
 
-def generate(*, database_url: str, netuid: int, history_limit: int, artifact_base: str) -> None:
+def generate(*, database_url: str, netuid: int, history_limit: int, artifact_base: str, model_filter: str) -> None:
     import psycopg
     from psycopg.rows import dict_row
 
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
-        dashboard = build_dashboard(conn, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base)
-        state = build_state(conn)
+        dashboard = build_dashboard(conn, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base, model_filter=model_filter)
+        state = build_state(conn, model_filter=model_filter)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     uploads: dict[str, bool] = {}
     for name, data in (("dashboard.json", dashboard), ("state.json", state)):
@@ -461,10 +466,13 @@ def main() -> int:
     netuid = args.netuid if args.netuid is not None else int(os.environ.get("ALBEDO_DASHBOARD_NETUID", "97"))
     history_limit = args.history_limit if args.history_limit is not None else int(os.environ.get("ALBEDO_DASHBOARD_HISTORY_LIMIT", "200"))
     artifact_base = os.environ.get("ALBEDO_DASHBOARD_ARTIFACT_BASE_URL", "https://s3.hippius.com")
+    # Only surface the current reference-model family (in-place cutover leaves 4B rows in the DB).
+    # SQL LIKE substring; "qwen3.6-35b" matches the 35B genesis + albedo-qwen3.6-35b-* challengers.
+    model_filter = os.environ.get("ALBEDO_DASHBOARD_MODEL_FILTER", "qwen3.6-35b")
     interval = float(os.environ.get("ALBEDO_MONITOR_INTERVAL_S", "2"))
 
     def run_once() -> None:
-        generate(database_url=database_url, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base)
+        generate(database_url=database_url, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base, model_filter=model_filter)
 
     if args.once:
         run_once()
