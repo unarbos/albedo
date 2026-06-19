@@ -1,7 +1,7 @@
-"""Bittensor chain reading — discover v6 model commits as Commit records.
+"""Bittensor chain reading — discover v7 model commits as Commit records.
 
-Self-contained (no external albedo imports). A v6 commitment is a pipe-delimited
-reveal string: ``v6|<repo>|<sha256:digest>``.
+Self-contained (no external albedo imports). A v7 commitment is a pipe-delimited
+reveal string: ``v7|<repo>|<sha256:digest>``.
 """
 from __future__ import annotations
 
@@ -103,9 +103,9 @@ def _block_hash(subtensor: Any, block: int) -> str | None:
         return None
 
 
-def _parse_v6(data: str, chain_hotkey: str) -> dict[str, Any] | None:
-    """Parse a v6 reveal into a payload dict, or None if not a well-formed v6 reveal."""
-    if not data.startswith("v6|"):
+def _parse_v7(data: str, chain_hotkey: str) -> dict[str, Any] | None:
+    """Parse a v7 reveal into a payload dict, or None if not a well-formed v7 reveal."""
+    if not data.startswith("v7|"):
         return None
     parts = data.split("|")
     if len(parts) != 3:
@@ -114,7 +114,7 @@ def _parse_v6(data: str, chain_hotkey: str) -> dict[str, Any] | None:
     if "/" not in repo or not digest.startswith("sha256:"):
         return None
     return {
-        "version": "v6",
+        "version": "v7",
         "repo": repo,
         "digest": digest,
         "author_hotkey": chain_hotkey,
@@ -128,7 +128,7 @@ def _payload_hash(payload: dict[str, Any]) -> str:
 
 
 def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0) -> list[Commit]:
-    """Read all revealed commitments on ``netuid`` and return v6 Commit records.
+    """Read all revealed commitments on ``netuid`` and return v7 Commit records.
 
     Commits before ``start_block`` are skipped — they are not eval candidates (the chain_guard
     ledger covers them instead).
@@ -142,7 +142,7 @@ def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0) -> list[
         if block < start_block:
             n_skipped += 1
             continue
-        payload = _parse_v6(data, hotkey)
+        payload = _parse_v7(data, hotkey)
         if payload is None:
             n_skipped += 1
             continue
@@ -163,5 +163,5 @@ def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0) -> list[
             payload_hash=_payload_hash(payload),
         ))
 
-    log.info("scan: total={} v6_commits={} skipped={}", n_total, len(commits), n_skipped)
+    log.info("scan: total={} v7_commits={} skipped={}", n_total, len(commits), n_skipped)
     return commits
