@@ -1,10 +1,12 @@
 """Single-model judge prompts and parsers for the sanity pre-eval gate - injection + viability."""
+
 from __future__ import annotations
 
 import json
 import re
 
-from sanity_service.rubricisity import PROBE_SYSTEM, VIABILITY_SYSTEM
+from sanity_service.rubricisity import PROBE_SYSTEM
+from sanity_service.rubricisity import VIABILITY_SYSTEM
 
 # ── Injection auditor ─────────────────────────────────────────────────────────
 # Source of truth for the probe system prompt is rubricisity.PROBE_SYSTEM; it expects the user

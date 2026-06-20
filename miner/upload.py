@@ -9,15 +9,15 @@ from loguru import logger
 from config_validation.config import REPO_PATTERN
 from config_validation.models import ModelRef
 
-_PREFIX = os.environ.get("ALBEDO_REPO_PREFIX", "albedo-qwen3-4b")
+_PREFIX = os.environ.get("ALBEDO_REPO_PREFIX", "albedo-qwen3.6-35b")
 
 
 def make_repo(namespace: str, name: str) -> str:
     """Build ``{namespace}/{prefix}-{name}`` from the miner's suffix.
 
     The miner supplies only the suffix; we strip an accidental leading prefix so
-    ``--name v1`` and ``--name albedo-qwen3-4b-v1`` both yield ``ns/albedo-qwen3-4b-v1``
-    (never a doubled ``albedo-qwen3-4b-albedo-qwen3-4b-…``).
+    ``--name v1`` and ``--name albedo-qwen3.6-35b-v1`` both yield ``ns/albedo-qwen3.6-35b-v1``
+    (never a doubled ``albedo-qwen3.6-35b-albedo-qwen3.6-35b-…``).
     """
     namespace = namespace.strip().strip("/").lower()
     name = name.strip().lower()

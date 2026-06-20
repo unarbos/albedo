@@ -34,11 +34,13 @@ class RemoteSettings(BaseSettings):
     challenger_model: str | None = None
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
-    max_new_tokens: int = 1024
+    max_new_tokens: int = 8192
     temperature: float = 0.0
     top_p: float = 1.0
     max_model_len: int | None = None
     enforce_eager: bool = False
+    gpu_memory_utilization: float = 0.95
+    kv_cache_dtype: str = "auto"
     use_canonical_model_config: bool = True
     canonical_model_config_ref: str = GENESIS_MODEL_CONFIG_REF
 

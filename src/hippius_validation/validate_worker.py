@@ -17,10 +17,10 @@ from loguru import logger as log
 from config_validation.fingerprint import compute_fingerprint
 
 from hippius_validation import config, db
-from hippius_validation.hippius import download_full, list_files, make_ref
+from hippius_validation.hippius import download_full, list_files, make_ref, safetensors_dtypes
 from hippius_validation.opensearch import find_duplicate, health, index_fingerprint
 from hippius_validation.uploads import put_fault, update_fingerprint_corpus
-from hippius_validation.validate import check_architecture, check_repo
+from hippius_validation.validate import check_architecture, check_dtypes, check_index, check_repo
 
 _WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -73,6 +73,17 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     if not ok:
         return _miner("file_manifest", msg, {"files": sorted(files)[:50]})
 
+    # 1.5 — preflight: reject non-16-bit weights from shard headers only (HTTP Range),
+    try:
+        shard_dtypes = safetensors_dtypes(ref)
+    except Exception as exc:  # noqa: BLE001
+        if _is_not_found(exc):
+            return _miner("repo_not_found", f"repo/revision not found on Hippius: {exc}", {})
+        return _infra("preflight_failed", f"could not read safetensors headers: {exc}")
+    ok, msg = check_dtypes(shard_dtypes)
+    if not ok:
+        return _miner("weight_dtype", msg, {})
+
     # 2 — download
     try:
         model_dir = download_full(ref)
@@ -85,6 +96,11 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     if not (mdir / "config.json").exists() or not any(mdir.glob("*.safetensors")):
         return _miner("incomplete_repo",
                       "downloaded repo is missing config.json or *.safetensors", {})
+
+    # 2.5 — safetensors match model.safetensors.index.json (no unused shards/tensors)
+    ok, msg = check_index(model_dir, files)
+    if not ok:
+        return _miner("safetensors_index", msg, {})
 
     # 3 — universal, spec-driven architecture
     try:
@@ -101,6 +117,18 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         fp = compute_fingerprint(model_dir)
     except Exception as exc:  # noqa: BLE001
         return _infra("fingerprint_failed", f"could not fingerprint model: {exc}")
+
+    # The norm_vector has one element per tensor; OpenSearch's lucene knn_vector (and thus the
+    # per-architecture dedup index) caps dimension at MAX_KNN_DIM. A vector over the cap is a
+    # non-canonical architecture (canonical models are a few thousand tensors), so reject it
+    # terminally — otherwise the ensure_index mapping error surfaces as a retryable infra fault
+    # and the model re-downloads and loops until MAX_ATTEMPTS.
+    dim = len(fp.get("norm_vector") or [])
+    if dim > config.MAX_KNN_DIM:
+        return _miner("fingerprint_too_large",
+                      f"model fingerprint has {dim} dimensions (tensors), over the "
+                      f"{config.MAX_KNN_DIM} max — non-canonical architecture",
+                      {"fingerprint_dim": dim, "max_dim": config.MAX_KNN_DIM})
 
     # Record this model's fingerprint into the two aggregate corpus files (all fingerprinted models).
     fp_uri, tensors_uri = update_fingerprint_corpus(model_uri, fp)

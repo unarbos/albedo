@@ -34,4 +34,5 @@ design/
 albedo-remote-artifacts/
 albedo-remote-models/
 src/sanity_service/rubricisity.py
+src/sanity_service/prompts.json
 website/data/*

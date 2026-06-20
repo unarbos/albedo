@@ -14,9 +14,9 @@ class FakeMeta:
 class FakeSubtensor:
     def get_all_commitments(self, netuid):
         return [
-            ("hk-good", [(100, "v6|alice/model|sha256:" + "a" * 64)]),
+            ("hk-good", [(100, "v7|alice/model|sha256:" + "a" * 64)]),
             ("hk-v5", [(101, "v5|alice/model|sha256:" + "b" * 64)]),
-            ("hk-four", [(102, "v6|alice/model|sha256:" + "c" * 64 + "|hk-four")]),
+            ("hk-four", [(102, "v7|alice/model|sha256:" + "c" * 64 + "|hk-four")]),
         ]
 
     def query_map(self, *_args):
@@ -29,7 +29,7 @@ class FakeSubtensor:
         return f"0x{block}"
 
 
-def test_scan_commitments_accepts_only_three_part_v6_payloads():
+def test_scan_commitments_accepts_only_three_part_v7_payloads():
     commits = scan_commitments(FakeSubtensor(), 1)
 
     assert len(commits) == 1
@@ -38,7 +38,7 @@ def test_scan_commitments_accepts_only_three_part_v6_payloads():
     assert commit.uid == 7
     assert commit.model_uri == "alice/model@sha256:" + "a" * 64
     assert commit.commit_payload == {
-        "version": "v6",
+        "version": "v7",
         "repo": "alice/model",
         "digest": "sha256:" + "a" * 64,
         "author_hotkey": "hk-good",

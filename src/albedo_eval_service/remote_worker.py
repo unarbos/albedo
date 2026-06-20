@@ -214,6 +214,8 @@ class RemoteEvalWorker:
             top_k=sampling_config["top_k"],
             max_model_len=self._effective_max_model_len(),
             enforce_eager=self.settings.enforce_eager,
+            gpu_memory_utilization=self.settings.gpu_memory_utilization,
+            kv_cache_dtype=self.settings.kv_cache_dtype,
         )
 
     def _effective_max_model_len(self) -> int | None:

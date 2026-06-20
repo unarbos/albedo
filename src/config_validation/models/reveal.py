@@ -1,8 +1,8 @@
-"""Decode + parse on-chain reveal commitments (v6 format).
+"""Decode + parse on-chain reveal commitments (v7 format).
 
-A v6 reveal is a pipe-delimited string committed on-chain:
+A v7 reveal is a pipe-delimited string committed on-chain:
 
-    v6|<repo>|<sha256:digest>   (the chain hotkey is always the author)
+    v7|<repo>|<sha256:digest>   (the chain hotkey is always the author)
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, NamedTuple
 
 from config_validation.models.ref import ModelRef
 
-_VERSION = "v6"
+_VERSION = "v7"
 _SEP = "|"
 
 
@@ -37,17 +37,17 @@ class Reveal(NamedTuple):
 
 
 def parse_reveal(data: str) -> Reveal:
-    """Parse a v6 reveal string into a validated ModelRef.
+    """Parse a v7 reveal string into a validated ModelRef.
 
-    Raises ValueError if the payload is not a well-formed 3-part v6 reveal
-    (``v6|<repo>|<sha256:digest>``).
+    Raises ValueError if the payload is not a well-formed 3-part v7 reveal
+    (``v7|<repo>|<sha256:digest>``).
     """
     if not data.startswith(_VERSION + _SEP):
         raise ValueError(f"not a {_VERSION} reveal: {data[:16]!r}")
 
     parts = data.split(_SEP)
     if len(parts) != 3:
-        raise ValueError(f"unexpected v6 part count {len(parts)}: {data[:32]!r}")
+        raise ValueError(f"unexpected v7 part count {len(parts)}: {data[:32]!r}")
 
     _, repo, digest = parts
     ref = ModelRef(repo=repo, digest=digest)  # validates repo + digest

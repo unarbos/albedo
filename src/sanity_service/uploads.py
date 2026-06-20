@@ -6,6 +6,7 @@ fault_code, and the full per-judge injection/viability evidence) so it can be li
 Env-gated and best-effort: when ALBEDO_S3_* is unset the uploader is disabled and calls are no-ops,
 so pre-eval still runs without publishing. Mirrors hippius_validation/uploads/artifacts.py.
 """
+
 from __future__ import annotations
 
 import functools
@@ -33,8 +34,9 @@ def _client():
         aws_access_key_id=S3_ACCESS_KEY,
         aws_secret_access_key=S3_SECRET_KEY,
         region_name="decentralized",
-        config=Config(connect_timeout=15, read_timeout=60,
-                      retries={"mode": "adaptive", "max_attempts": 3}),
+        config=Config(
+            connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+        ),
     )
 
 
@@ -50,9 +52,11 @@ def put_sanity_fault(submission_id: str, digest: str, detail: dict) -> str | Non
     key = f"sanity/{submission_id}/{_safe_digest(digest)}/fault.json"
     try:
         _client().put_object(
-            Bucket=S3_BUCKET, Key=key,
+            Bucket=S3_BUCKET,
+            Key=key,
             Body=json.dumps(detail, default=str).encode(),
-            ContentType="application/json", ACL="public-read",
+            ContentType="application/json",
+            ACL="public-read",
         )
         uri = f"s3://{S3_BUCKET}/{key}"
         log.info("uploaded sanity fault {}", uri)
