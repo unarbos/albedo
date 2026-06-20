@@ -134,6 +134,9 @@ def _vllm_worker(
             "reasoning_parser": "qwen3",
             "gpu_memory_utilization": gpu_memory_utilization,
             "kv_cache_dtype": kv_cache_dtype,
+            # Text-only eval: cap multimodal inputs to 0 so vLLM skips vision-encoder
+            # profiling, which hangs for the multimodal Qwen3.6 genesis architecture.
+            "limit_mm_per_prompt": {"image": 0, "video": 0},
         }
         if max_model_len is not None:
             llm_kwargs["max_model_len"] = max_model_len

@@ -141,6 +141,29 @@ GENESIS_GENERATION_CONFIG: dict[str, Any] = {
     "top_p": 0.95,
 }
 
+GENESIS_PREPROCESSOR_CONFIG: dict[str, Any] = {
+    "size": {"longest_edge": 16777216, "shortest_edge": 65536},
+    "patch_size": 16,
+    "temporal_patch_size": 2,
+    "merge_size": 2,
+    "image_mean": [0.5, 0.5, 0.5],
+    "image_std": [0.5, 0.5, 0.5],
+    "processor_class": "Qwen3VLProcessor",
+    "image_processor_type": "Qwen2VLImageProcessorFast",
+}
+
+GENESIS_VIDEO_PREPROCESSOR_CONFIG: dict[str, Any] = {
+    "size": {"longest_edge": 25165824, "shortest_edge": 4096},
+    "patch_size": 16,
+    "temporal_patch_size": 2,
+    "merge_size": 2,
+    "image_mean": [0.5, 0.5, 0.5],
+    "image_std": [0.5, 0.5, 0.5],
+    "processor_class": "Qwen3VLProcessor",
+    "video_processor_type": "Qwen3VLVideoProcessor",
+}
+
+
 GENESIS_ARCH_SPEC: dict[str, Any] = {
     "architectures": GENESIS_MODEL_CONFIG["architectures"],
     "expected": GENESIS_MODEL_CONFIG,
@@ -196,4 +219,14 @@ def apply_canonical_model_config(model_dir: Path) -> bool:
         json.dumps(canonical_generation_config(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    # Pin the canonical image+video processor configs so vLLM can construct the
+    # multimodal model. Text-only eval never uses them, but vLLM/HF refuse to load
+    # the multimodal Qwen3.6 architecture without an image+video processor present.
+    (model_dir / "preprocessor_config.json").write_text(
+        json.dumps(GENESIS_PREPROCESSOR_CONFIG, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (model_dir / "video_preprocessor_config.json").write_text(
+        json.dumps(GENESIS_VIDEO_PREPROCESSOR_CONFIG, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
     return True
