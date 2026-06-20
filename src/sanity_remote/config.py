@@ -35,6 +35,7 @@ class SanityRemoteSettings(BaseSettings):
     model_cache_dir: str = "/root/miners_models"
     max_model_len: int = 8192
     kv_cache_dtype: str = "auto"
+    vllm_limit_mm: str = '{"image": 0, "video": 0}'
     gen_temperature: float = 0.7
     gen_top_p: float = 0.8
     gen_top_k: int = 20

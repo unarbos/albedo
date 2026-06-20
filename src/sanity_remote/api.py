@@ -56,6 +56,11 @@ async def start_run(request: SanityRunRequest, background_tasks: BackgroundTasks
     # Accepts a generation job (idempotent on run_id) and runs it in the background.
     if not settings.ready:
         raise HTTPException(status_code=503, detail="sanity worker is not ready")
+    # One sanity run at a time: refuse a new run while another is active (same run_id is idempotent).
+    active = store.list_active()
+    incoming = getattr(request, "run_id", None)
+    if active and (incoming is None or all(r.run_id != incoming for r in active)):
+        raise HTTPException(status_code=409, detail=f"sanity worker busy: {len(active)} active run(s)")
     run = store.start(request)
     queued = store.mark_worker_started(run.run_id)
     if queued is not None:
