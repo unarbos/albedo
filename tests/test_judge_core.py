@@ -135,14 +135,14 @@ def test_aggregate_scoring_records_median_picks_middle_judge():
     assert summary["score_king"] == 0.4
 
 
-def test_challenger_win_requires_two_percent_margin():
-    assert CHALLENGER_WIN_MARGIN == 0.02
-    assert challenger_beats_king(0.51, 0.49) is True
-    assert challenger_beats_king(0.505, 0.495) is False
+def test_challenger_win_requires_six_percent_margin():
+    assert CHALLENGER_WIN_MARGIN == 0.06
+    assert challenger_beats_king(0.53, 0.47) is True
+    assert challenger_beats_king(0.52, 0.48) is False
 
     summary = aggregate_scoring_records([_record("s1", "j1", 0.505)])
     assert summary["challenger_won"] is False
-    assert summary["required_win_margin"] == 0.02
+    assert summary["required_win_margin"] == 0.06
 
 
 def _record(sample_id: str, judge_model: str, score: float) -> dict[str, object]:

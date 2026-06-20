@@ -28,7 +28,7 @@ from sanity_service.checks import (
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _FORBIDDEN_CONFIG_KEYS = frozenset({"auto_map", "quantization_config"})
-_QWEN3_IM_END_TOKEN_ID = 151645
+_QWEN3_IM_END_TOKEN_ID = 248046
 
 
 def _strip_thinking(text: str) -> str:
@@ -43,6 +43,7 @@ def _strip_thinking(text: str) -> str:
 
 def _strip_model_config(model_dir: str) -> None:
     # Removes keys that can redirect model loading or force unexpected quantization modes.
+    # Also strips from text_config (nested HF layout used by Qwen3.5/3.6 MoE models).
     config_path = Path(model_dir) / "config.json"
     if not config_path.exists():
         return
@@ -53,15 +54,17 @@ def _strip_model_config(model_dir: str) -> None:
         return
     stripped = {k: v for k, v in config.items() if k not in _FORBIDDEN_CONFIG_KEYS}
     removed = set(config) - set(stripped)
+    if isinstance(stripped.get("text_config"), dict):
+        clean_tc = {k: v for k, v in stripped["text_config"].items() if k not in _FORBIDDEN_CONFIG_KEYS}
+        removed |= {f"text_config.{k}" for k in set(stripped["text_config"]) - set(clean_tc)}
+        stripped["text_config"] = clean_tc
     if not removed:
         return
     config_path.write_text(json.dumps(stripped, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     logger.info("[sanity-remote] stripped forbidden keys from config.json: {}", removed)
 
 
-def _format_prompt_messages(
-    tokenizer_path: str, prompt_messages: list[list[dict[str, str]]]
-) -> list[str]:
+def _format_prompt_messages(tokenizer_path: str, prompt_messages: list[list[dict[str, str]]]) -> list[str]:
     return [
         format_messages(messages, tokenizer_path=tokenizer_path, enable_thinking=False)
         for messages in prompt_messages
@@ -89,6 +92,38 @@ class WorkerFault(Exception):
         self.retryable = retryable
 
 
+_SEED_PROCESSOR_FILES = ("preprocessor_config.json", "video_preprocessor_config.json", "configuration.json")
+
+
+def _inject_seed_processor_files(model_dir: str) -> None:
+    """Copy canonical multimodal processor files from the genesis seed into a model dir when
+    absent. Qwen3.6 declares a vision config, so vLLM refuses to construct the model without an
+    image processor even for text-only sanity generation; miner repos often omit these files."""
+    if all((Path(model_dir) / f).exists() for f in _SEED_PROCESSOR_FILES):
+        return
+    try:
+        from config_validation.config import SEED_DIGEST, SEED_REPO
+        from config_validation.hippius import download_config
+        from hippius_validation.hippius import make_ref
+        if not SEED_REPO or not SEED_DIGEST:
+            return
+        seed_dir = "/root/albedo-seed-processor"
+        if not all((Path(seed_dir) / f).exists() for f in _SEED_PROCESSOR_FILES):
+            staged = download_config(make_ref(SEED_REPO, SEED_DIGEST))
+            Path(seed_dir).mkdir(parents=True, exist_ok=True)
+            for _name in _SEED_PROCESSOR_FILES:
+                if (Path(staged) / _name).exists():
+                    shutil.copy2(Path(staged) / _name, Path(seed_dir) / _name)
+    except Exception as exc:  # noqa: BLE001 - never block a run on the inject helper
+        logger.warning("[sanity-remote] seed processor inject skipped: {}", exc)
+        return
+    for name in _SEED_PROCESSOR_FILES:
+        src, dst = Path(seed_dir) / name, Path(model_dir) / name
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+            logger.info("[sanity-remote] injected canonical {} from seed", name)
+
+
 class VllmEngine:
     # One warm vLLM process; swaps the model only when the digest changes (ported from runner.py).
 
@@ -100,15 +135,10 @@ class VllmEngine:
         self._lock = asyncio.Lock()
         self._kill_port_squatter()
 
-    async def run_job(
-        self,
-        model_uri: str,
-        digest: str,
-        prompts: list[str],
-        max_tokens: int,
-        prompt_messages: list[list[dict[str, str]]] | None = None,
-    ) -> list[str]:
+    async def run_job(self, model_uri: str, digest: str, prompts: list[str], max_tokens: int, prompt_messages: list[list[dict[str, str]]] | None = None,) -> list[str]:
         # Serializes one generation job: ensure the model is loaded, then generate the prompts.
+        n = len(prompt_messages) if prompt_messages is not None else len(prompts)
+        logger.info("[sanity-remote] run_job digest={:.16} prompts={} max_tokens={}", digest, n, max_tokens)
         async with self._lock:
             await self._ensure_model(model_uri, digest)
             if prompt_messages is not None:
@@ -116,6 +146,13 @@ class VllmEngine:
                     _format_prompt_messages, self._loaded_dir, prompt_messages
                 )
             return await self._run_prompts(digest, prompts, max_tokens)
+
+    async def teardown(self) -> None:
+        # Frees the GPUs after a run by killing vLLM and forcing a cold load next time.
+        # Mirrors the eval server's per-run fresh-process pattern (remote_generation.py).
+        async with self._lock:
+            await self._kill_vllm()
+            self._loaded_digest = ""
 
     def _kill_port_squatter(self) -> None:
         # On startup, kill any orphaned vLLM process that may still hold the configured port.
@@ -141,11 +178,7 @@ class VllmEngine:
             for pid_str in result.stdout.split():
                 try:
                     os.kill(int(pid_str), signal.SIGKILL)
-                    logger.info(
-                        "[sanity-remote] killed orphan vLLM pid={} on port {}",
-                        pid_str,
-                        self._s.vllm_port,
-                    )
+                    logger.info("[sanity-remote] killed orphan vLLM pid={} on port {}", pid_str, self._s.vllm_port,)
                 except Exception:
                     pass
         except Exception:
@@ -160,14 +193,11 @@ class VllmEngine:
         if digest == self._loaded_digest and await self._healthy():
             logger.info("[sanity-remote] reusing warm model {:.16}", digest)
             return
+        logger.info("[sanity-remote] cold load — digest={:.16} uri={}", digest, model_uri)
         try:
-            model_dir = await asyncio.wait_for(
-                self._materialize(model_uri, digest), timeout=self._s.download_timeout_s
-            )
+            model_dir = await asyncio.wait_for(self._materialize(model_uri, digest), timeout=self._s.download_timeout_s)
         except asyncio.TimeoutError as exc:
-            raise WorkerFault(
-                "download_timeout", f"download exceeded {self._s.download_timeout_s}s"
-            ) from exc
+            raise WorkerFault("download_timeout", f"download exceeded {self._s.download_timeout_s}s") from exc
         except Exception as exc:  # noqa: BLE001 - download failures are retryable infra by default
             raise WorkerFault("download_failed", f"model download failed: {exc}") from exc
 
@@ -193,11 +223,15 @@ class VllmEngine:
         dest = str(cache_dir(ref))
         if _model_present(dest):
             logger.info("[sanity-remote] reusing on-disk model at {} — skipping download", dest)
-            return dest
-        return await asyncio.to_thread(download_full, ref)
+        else:
+            logger.info("[sanity-remote] downloading {} digest={:.16} to {}", repo, ref_digest, dest)
+            dest = await asyncio.to_thread(download_full, ref)
+        await asyncio.to_thread(_inject_seed_processor_files, dest)
+        return dest
 
     async def _start_vllm(self, model_dir: str, model_name: str) -> None:
         # Launches a vLLM subprocess (no --trust-remote-code) and waits until it reports healthy.
+        logger.info("[sanity-remote] starting vLLM port={} model={:.40}", self._s.vllm_port, model_name)
         cmd = [
             self._s.vllm_python,
             "-m",
@@ -214,12 +248,32 @@ class VllmEngine:
             self._s.vllm_dtype,
             "--max-model-len",
             str(self._s.max_model_len),
+            "--kv-cache-dtype",
+            self._s.kv_cache_dtype,
             "--generation-config",
             "vllm",
         ]
+        if self._s.tensor_parallel_size > 1:
+            cmd += ["--tensor-parallel-size", str(self._s.tensor_parallel_size)]
+        if self._s.vllm_limit_mm:
+            cmd += ["--limit-mm-per-prompt", self._s.vllm_limit_mm]
+        if self._s.cpu_offload_gb > 0:
+            cmd += ["--cpu-offload-gb", str(self._s.cpu_offload_gb)]
+        if self._s.vllm_quantization:
+            cmd += ["--quantization", self._s.vllm_quantization]
+        if self._s.vllm_enforce_eager:
+            cmd += ["--enforce-eager"]
+        if self._s.vllm_moe_backend:
+            cmd += ["--moe-backend", self._s.vllm_moe_backend]
         self._proc = subprocess.Popen(
             cmd,
-            env={**os.environ, "CUDA_VISIBLE_DEVICES": self._s.gpu_ids},
+            env={
+                **os.environ,
+                "CUDA_VISIBLE_DEVICES": self._s.gpu_ids,
+                # Disables the FlashInfer sampler; required on A6000 (CUB version mismatch),
+                # harmless on 5090/B200 (falls back to PyTorch-native sampler).
+                "VLLM_USE_FLASHINFER_SAMPLER": "0",
+            },
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -261,7 +315,7 @@ class VllmEngine:
         # Keep this aligned with the full eval worker: SWE-ZERO prompts are already formatted
         # with the Qwen chat template, so they should be sent as raw completions.
         url = f"http://localhost:{self._s.vllm_port}/v1/completions"
-        timeout = httpx.Timeout(connect=5.0, read=60.0, write=5.0, pool=5.0)
+        timeout = httpx.Timeout(connect=5.0, read=self._s.gen_read_timeout_s, write=5.0, pool=5.0)
 
         async def _one(prompt: str) -> str:
             async with httpx.AsyncClient(timeout=timeout) as c:
@@ -311,6 +365,7 @@ class VllmEngine:
         # Kills the vLLM process group; retries once if it doesn't exit within 5 seconds.
         if not self._proc:
             return
+        logger.info("[sanity-remote] killing vLLM pid={}", self._proc.pid)
         try:
             os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
         except Exception:  # noqa: BLE001 - process may already be gone
@@ -343,16 +398,19 @@ def _engine() -> VllmEngine:
 def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict[str, Any]]:
     # Per-response heuristic verdicts; a set-level collapse signal fails all responses.
     if skip:
+        logger.info("[sanity-remote] heuristics skipped for {} responses", len(responses))
         return [{"passed": True, "reason": "heuristics disabled"} for _ in responses]
 
     out: list[dict[str, Any]] = []
-    for resp in responses:
+    for i, resp in enumerate(responses):
         r = check_one(
             resp,
             min_tokens=req.min_tokens,
             max_repetition=req.max_repetition,
             min_vocab_ratio=req.min_vocab_ratio,
         )
+        if not r.passed:
+            logger.warning("[sanity-remote] per-response heuristic failed i={} reason={!r}", i, r.reason)
         out.append({"passed": r.passed, "reason": r.reason})
     if any(not item["passed"] for item in out):
         return out
@@ -370,7 +428,9 @@ def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict
         None,
     )
     if set_fail is not None:
+        logger.warning("[sanity-remote] set-level heuristic failed reason={!r}", set_fail.reason)
         return [{"passed": False, "reason": set_fail.reason} for _ in responses]
+    logger.info("[sanity-remote] all heuristics passed responses={}", len(responses))
     return out
 
 
@@ -378,6 +438,7 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
     # Executes one run: ensure model -> generate -> heuristics -> emit result (or a fault).
     s = settings or get_remote_settings()
     req = run.request
+    logger.info("[sanity-remote] generate start run={} digest={:.16} uri={}", run.run_id, req.digest, req.model_uri,)
     if s.mock_auto_result:
         run.succeed(
             responses=[f"mock response to: {p[:30]}" for p in req.prompts],
@@ -395,10 +456,15 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
             req.gen_max_tokens,
             req.prompt_messages,
         )
-        run.succeed(
-            responses=responses,
-            heuristics=_heuristics(responses, req, skip=s.skip_heuristics),
+        heuristics = _heuristics(responses, req, skip=s.skip_heuristics)
+        all_passed = all(h["passed"] for h in heuristics)
+        logger.info(
+            "[sanity-remote] generate done run={} responses={} heuristics_passed={}",
+            run.run_id,
+            len(responses),
+            all_passed,
         )
+        run.succeed(responses=responses, heuristics=heuristics)
     except WorkerFault as fault:
         engine.forget()
         logger.warning(
@@ -413,3 +479,10 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
         engine.forget()
         logger.exception("[sanity-remote] generation failed for {}", req.digest)
         run.fail(fault_code="worker_error", fault_message=str(exc), retryable=True)
+    finally:
+        # Tear down vLLM so both GPUs free up between preevals (eval-server parity);
+        # the next run cold-loads. Best-effort: never let teardown strand the run.
+        try:
+            await engine.teardown()
+        except Exception:  # noqa: BLE001
+            logger.warning("[sanity-remote] vLLM teardown after run failed (best-effort)")

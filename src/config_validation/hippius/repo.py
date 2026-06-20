@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from config_validation.config import MODEL_CACHE_DIR
@@ -12,6 +15,30 @@ log = logging.getLogger(__name__)
 
 _HUB_TOKEN_ENV = "HIPPIUS_HUB_TOKEN"
 _CONFIG_ONLY_PATTERNS = ["*.json"]
+_HEARTBEAT_INTERVAL_S = 10.0
+
+
+@contextmanager
+def _download_heartbeat(label: str):
+    """Log every ``_HEARTBEAT_INTERVAL_S`` seconds that ``label`` is still downloading.
+
+    snapshot_download() blocks with no progress output, so a daemon thread emits a
+    periodic heartbeat until the download returns.
+    """
+    stop = threading.Event()
+    start = time.monotonic()
+
+    def _beat() -> None:
+        while not stop.wait(_HEARTBEAT_INTERVAL_S):
+            log.info("hippius: still downloading %s (%.0fs elapsed)", label, time.monotonic() - start)
+
+    thread = threading.Thread(target=_beat, name="hippius-dl-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
 
 
 def _hub():
@@ -48,14 +75,15 @@ def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:
         log.debug("hippius: config cache hit at %s", dest)
         return str(dest)
     log.info("hippius: downloading %s (config_only=%s) → %s", ref.immutable_ref, config_only, dest)
-    _hub().snapshot_download(
-        ref.repo,
-        revision=ref.digest,
-        local_dir=str(dest),
-        max_workers=max_workers,
-        allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else None,
-        token=_token(),
-    )
+    with _download_heartbeat(ref.immutable_ref):
+        _hub().snapshot_download(
+            ref.repo,
+            revision=ref.digest,
+            local_dir=str(dest),
+            max_workers=max_workers,
+            allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else None,
+            token=_token(),
+        )
     return str(dest)
 
 

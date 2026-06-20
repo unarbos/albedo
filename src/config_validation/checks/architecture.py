@@ -1,6 +1,6 @@
-"""Check #3: the model's config.json matches the genesis seed's Qwen3-4B architecture.
+"""Check #3: the model's config.json matches the genesis seed's Qwen3.6-35B-A3B architecture.
 
-The challenger must share `architectures` and every arch-lock key (identity + 4B
+The challenger must share `architectures` and every arch-lock key (identity + MoE
 capacity keys) with the genesis seed, and must not smuggle remote code or quantization.
 """
 from __future__ import annotations

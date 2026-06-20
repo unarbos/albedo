@@ -4,9 +4,9 @@ How to mine on the Albedo subnet using the `albedo` miner CLI in [miner/](miner/
 
 ## What mining is
 
-Albedo is a **king-of-the-hill** subnet for **Qwen3-4B** language models. As a miner you:
+Albedo is a **king-of-the-hill** subnet for **Qwen3.6-35B-A3B** language models. As a miner you:
 
-1. Fine-tune a Qwen3-4B model (your secret sauce).
+1. Fine-tune a Qwen3.6-35B-A3B model (your secret sauce).
 2. Upload the model directory to **Hippius** (a HuggingFace-Hub–style model store).
 3. Commit an on-chain *reveal* pointing at that exact upload (`repo` + content `digest`).
 
@@ -14,7 +14,7 @@ Validators then read your commitment off-chain, download the model from Hippius,
 the **same validation checks you can run locally** (file manifest + architecture lock +
 near-duplicate dedup), and finally **evaluate** the model. A model that beats the current
 king earns weight/emissions. So your job is: produce a model that (a) passes validation and
-(b) scores higher than the incumbent.
+(b) scores higher than the incumbent by at least the **6% win margin**.
 
 The whole publish flow is one pipeline:
 
@@ -35,11 +35,11 @@ validate (local) → upload to Hippius → check Hippius repo → hotkey registe
   **namespace** to upload under.
 - Python ≥ 3.11.
 
-### The model must be a valid Qwen3-4B checkpoint
+### The model must be a valid Qwen3.6-35B-A3B checkpoint
 
 Validation is strict and defined in [chain.toml](chain.toml). Your uploaded repo must:
 
-**Repo naming** — `<namespace>/albedo-qwen3-4b-<suffix>` (pattern `^[^/]+/albedo-qwen3-4b-.+$`).
+**Repo naming** — `<namespace>/albedo-qwen3.6-35b-<suffix>` (pattern `^[^/]+/albedo-qwen3\.6-35b-.+$`).
 The CLI builds this for you from `--namespace` + `--name`.
 
 **File manifest** (`[files]` in [chain.toml](chain.toml)) — the repo's file set is checked
@@ -54,14 +54,16 @@ against a strict allowlist:
 - Any other file is flagged as an **unexpected extra** and fails validation.
 
 **Architecture lock** (`[arch]` / `[seed]` in [chain.toml](chain.toml)) — your `config.json`
-must match the genesis Qwen3-4B seed exactly on:
+must match the genesis Qwen3.6-35B-A3B seed exactly on:
 
 - `architectures` and `model_type`, `vocab_size`
 - capacity keys: `max_position_embeddings`, `tie_word_embeddings`, `rope_theta`, `hidden_size`,
   `num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`, `intermediate_size`, `head_dim`
+- MoE keys: `moe_intermediate_size`, `shared_expert_intermediate_size`, `num_experts`,
+  `num_experts_per_tok`
 - It must **not** contain `auto_map` (no remote code) or `quantization_config` (no quantized models).
 
-In short: fine-tune the weights, keep the Qwen3-4B architecture and tokenizer intact, don't add
+In short: fine-tune the weights, keep the Qwen3.6-35B-A3B architecture and tokenizer intact, don't add
 custom code or quantize.
 
 **Dedup** — validators also reject models that are near-duplicates (≥ 0.95 fingerprint similarity)
@@ -114,7 +116,7 @@ real env vars and CLI flags always override):
 | `HIPPIUS_HUB_TOKEN` | Hippius auth token (wins over username/password) |
 | `HIPPIUS_HUB_USERNAME` / `HIPPIUS_HUB_PASSWORD` | alternative Hippius login |
 | `ALBEDO_NAMESPACE` | your Hippius namespace; lets you omit `--namespace` |
-| `ALBEDO_REPO_PREFIX` | leave as `albedo-qwen3-4b` unless the subnet changes it |
+| `ALBEDO_REPO_PREFIX` | leave as `albedo-qwen3.6-35b` unless the subnet changes it |
 | `ALBEDO_MODEL_CACHE_DIR` | where remote `check-hippius` caches `config.json` |
 
 `.env` is loaded from the repo root and the current working directory before any defaults are read.
@@ -130,10 +132,10 @@ With `.env` filled in (namespace + wallet + Hippius creds):
 albedo register
 
 # 2. publish a model: validate → upload → check → commit
-albedo publish --path /path/to/your/qwen3-4b-model --name v1
+albedo publish --path /path/to/your/qwen3.6-35b-model --name v1
 ```
 
-`publish` will validate locally, upload to `<namespace>/albedo-qwen3-4b-v1`, re-check the
+`publish` will validate locally, upload to `<namespace>/albedo-qwen3.6-35b-v1`, re-check the
 uploaded repo, confirm your hotkey is registered, print a commit preview, and ask `Proceed? [y/N]`
 before writing on-chain. Add `--yes` to skip the prompt, or `--skip-commit` to stop after upload.
 
@@ -155,7 +157,7 @@ Prints `[PASS]/[FAIL]` per check and `VALID`/`INVALID`. Note: dedup is **not** c
 ### Validate an already-uploaded repo
 
 ```bash
-albedo check-hippius --repo <ns>/albedo-qwen3-4b-v1 --digest sha256:...
+albedo check-hippius --repo <ns>/albedo-qwen3.6-35b-v1 --digest sha256:...
 ```
 
 Lists the repo's files on Hippius and downloads only `config.json` to re-run the checks.
@@ -165,11 +167,11 @@ Lists the repo's files on Hippius and downloads only `config.json` to re-run the
 ```bash
 albedo upload --path /path/to/model --name v1            # uses ALBEDO_NAMESPACE
 albedo upload --path /path/to/model --namespace you --name v1
-albedo upload --path /path/to/model --repo you/albedo-qwen3-4b-v1   # full repo override
+albedo upload --path /path/to/model --repo you/albedo-qwen3.6-35b-v1   # full repo override
 ```
 
-`--name` is just the suffix; the prefix `albedo-qwen3-4b-` is added automatically (and a
-doubled prefix is stripped, so `--name albedo-qwen3-4b-v1` also works). Prints the immutable
+`--name` is just the suffix; the prefix `albedo-qwen3.6-35b-` is added automatically (and a
+doubled prefix is stripped, so `--name albedo-qwen3.6-35b-v1` also works). Prints the immutable
 reference `repo@sha256:digest` and the on-chain `reveal` string. The digest is the content hash
 of exactly what you uploaded — keep it for the commit step.
 
@@ -188,22 +190,22 @@ balance is below the recycle cost.
 ### Commit a reveal on-chain
 
 ```bash
-albedo commit --repo <ns>/albedo-qwen3-4b-v1 --digest sha256:... \
+albedo commit --repo <ns>/albedo-qwen3.6-35b-v1 --digest sha256:... \
   --coldkey mine --hotkey hk1
 ```
 
-Writes the v6 reveal `v6|<repo>|<digest>` on-chain via `set_reveal_commitment`. Before submitting
+Writes the v7 reveal `v7|<repo>|<digest>` on-chain via `set_reveal_commitment`. Before submitting
 it **checks your hotkey is registered** on the netuid, prints a preview, and prompts `Proceed? [y/N]`
 (skip with `--yes`). Use this when you uploaded earlier and just need to commit a specific digest.
 
 ### Read on-chain commitments
 
 ```bash
-albedo check-commit                      # all v6 commits on the subnet
+albedo check-commit                      # all v7 commits on the subnet
 albedo check-commit --hotkey 5F...        # filter to one hotkey ss58
 ```
 
-Scans the chain for v6 commitments (oldest block first) and prints `block / hotkey / model_uri`.
+Scans the chain for v7 commitments (oldest block first) and prints `block / hotkey / model_uri`.
 Useful to confirm your own commit landed, or to see what others have submitted.
 
 ### Publish (full pipeline)
@@ -238,10 +240,10 @@ paste (use this in VS Code; `Ctrl+V` works in most terminals), `y/n` to answer a
 albedo register
 
 # iterate on your model, then before spending an upload:
-albedo check-hippius --path ./out/qwen3-4b-mymodel        # must say VALID
+albedo check-hippius --path ./out/qwen3.6-35b-mymodel        # must say VALID
 
 # publish it
-albedo publish --path ./out/qwen3-4b-mymodel --name v2
+albedo publish --path ./out/qwen3.6-35b-mymodel --name v2
 
 # confirm it's on-chain
 albedo check-commit --hotkey <your hotkey ss58>

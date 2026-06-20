@@ -52,6 +52,10 @@ OPENSEARCH_URL: str = os.environ.get("ALBEDO_OPENSEARCH_URL", "http://127.0.0.1:
 OPENSEARCH_USER: str = os.environ.get("ALBEDO_OPENSEARCH_USER", "")
 OPENSEARCH_PASSWORD: str = os.environ.get("ALBEDO_OPENSEARCH_PASSWORD", "")
 OPENSEARCH_INDEX: str = os.environ.get("ALBEDO_OPENSEARCH_INDEX", "albedo_fingerprints")
+# OpenSearch's lucene knn_vector caps dimension at 16000. The per-dimension index is the
+# architecture signature (one element per tensor), so a fingerprint above this cap is a
+# non-canonical model, not an infra problem — it is rejected rather than indexed.
+MAX_KNN_DIM: int = int(os.environ.get("ALBEDO_MAX_KNN_DIM", "16000"))
 
 # --- Hippius S3 (artifact publishing) ---
 S3_BUCKET: str = os.environ.get("ALBEDO_S3_BUCKET", "")
@@ -70,13 +74,14 @@ SIM_THRESHOLD: float = float(os.environ.get("ALBEDO_SIM_THRESHOLD", "0.95"))
 KNN_CANDIDATES: int = int(os.environ.get("ALBEDO_KNN_CANDIDATES", "20"))
 
 # --- Strict file allowlist (file-manifest check) ---
-REQUIRED_FILES: tuple[str, ...] = ("config.json", "tokenizer_config.json", "tokenizer.json")
+REQUIRED_FILES: tuple[str, ...] = ("config.json", "tokenizer_config.json", "tokenizer.json", "preprocessor_config.json", "video_preprocessor_config.json")
 REQUIRE_SAFETENSORS: bool = True
 ALLOWED_FILES: tuple[str, ...] = (
     "generation_config.json", "special_tokens_map.json", "added_tokens.json",
     # chat_template.jinja may be present, but the system uses its OWN canonical template
     "chat_template.jinja", "merges.txt", "vocab.json",
     "model.safetensors.index.json",
+    ".gitattributes", "LICENSE", "README.md", "configuration.json",
 )
 ALLOWED_GLOBS: tuple[str, ...] = ("model-*-of-*.safetensors", "model.safetensors")
 FORBIDDEN_GLOBS: tuple[str, ...] = ("*.py",)

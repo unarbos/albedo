@@ -57,6 +57,9 @@ async def enqueue_from_commits(pool: asyncpg.Pool, netuid: int) -> int:
                 JOIN miners m ON m.hotkey = cc.hotkey
                 WHERE cc.netuid = $1
                   AND cc.submission_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM model_submissions ms WHERE ms.chain_commit_id = cc.id
+                  )
                 ON CONFLICT (idempotency_key) DO UPDATE SET
                     miner_id = EXCLUDED.miner_id,
                     chain_commit_id = EXCLUDED.chain_commit_id,

@@ -51,8 +51,10 @@ def check(model_dir: str, spec_path: str | None = None) -> tuple[bool, str]:
         return False, (f"architectures mismatch: expected {spec['architectures']!r}, "
                        f"got {cfg.get('architectures')!r}")
 
+    text_cfg = cfg.get("text_config") or {}
     for key, want in spec["expected"].items():
-        if cfg.get(key) != want:
-            return False, f"arch key {key!r} mismatch: expected {want!r}, got {cfg.get(key)!r}"
+        got = cfg[key] if key in cfg else text_cfg.get(key)
+        if got != want:
+            return False, f"arch key {key!r} mismatch: expected {want!r}, got {got!r}"
 
     return True, ""
