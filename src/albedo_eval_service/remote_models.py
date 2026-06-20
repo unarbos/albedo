@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import threading
 import time
 from contextlib import contextmanager
@@ -192,8 +191,9 @@ class ModelArtifactResolver:
             )
 
         temp_dir = cache_dir.with_suffix(".partial")
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+        # Resume an interrupted download: keep shards already fetched into .partial instead of
+        # wiping and re-downloading everything on each retry. A shard's final filename only
+        # appears after it is fully streamed and digest-verified, so anything present is complete.
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         with httpx.Client(timeout=None, follow_redirects=True) as client:
@@ -220,6 +220,9 @@ class ModelArtifactResolver:
                 name = _layer_filename(layer, index)
                 destination = temp_dir / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists():
+                    print(f"model_download_skip ref={name} (already cached)", flush=True)
+                    continue
                 blob_url = f"https://{registry}/v2/{repository}/blobs/{layer_digest}"
                 blob_headers = {"Authorization": f"Bearer {token}"} if token else {}
                 auth_response = _stream_blob_to_file(
