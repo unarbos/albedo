@@ -118,6 +118,18 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     except Exception as exc:  # noqa: BLE001
         return _infra("fingerprint_failed", f"could not fingerprint model: {exc}")
 
+    # The norm_vector has one element per tensor; OpenSearch's lucene knn_vector (and thus the
+    # per-architecture dedup index) caps dimension at MAX_KNN_DIM. A vector over the cap is a
+    # non-canonical architecture (canonical models are a few thousand tensors), so reject it
+    # terminally — otherwise the ensure_index mapping error surfaces as a retryable infra fault
+    # and the model re-downloads and loops until MAX_ATTEMPTS.
+    dim = len(fp.get("norm_vector") or [])
+    if dim > config.MAX_KNN_DIM:
+        return _miner("fingerprint_too_large",
+                      f"model fingerprint has {dim} dimensions (tensors), over the "
+                      f"{config.MAX_KNN_DIM} max — non-canonical architecture",
+                      {"fingerprint_dim": dim, "max_dim": config.MAX_KNN_DIM})
+
     # Record this model's fingerprint into the two aggregate corpus files (all fingerprinted models).
     fp_uri, tensors_uri = update_fingerprint_corpus(model_uri, fp)
 

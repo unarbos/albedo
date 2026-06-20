@@ -52,6 +52,10 @@ OPENSEARCH_URL: str = os.environ.get("ALBEDO_OPENSEARCH_URL", "http://127.0.0.1:
 OPENSEARCH_USER: str = os.environ.get("ALBEDO_OPENSEARCH_USER", "")
 OPENSEARCH_PASSWORD: str = os.environ.get("ALBEDO_OPENSEARCH_PASSWORD", "")
 OPENSEARCH_INDEX: str = os.environ.get("ALBEDO_OPENSEARCH_INDEX", "albedo_fingerprints")
+# OpenSearch's lucene knn_vector caps dimension at 16000. The per-dimension index is the
+# architecture signature (one element per tensor), so a fingerprint above this cap is a
+# non-canonical model, not an infra problem — it is rejected rather than indexed.
+MAX_KNN_DIM: int = int(os.environ.get("ALBEDO_MAX_KNN_DIM", "16000"))
 
 # --- Hippius S3 (artifact publishing) ---
 S3_BUCKET: str = os.environ.get("ALBEDO_S3_BUCKET", "")
