@@ -4,6 +4,9 @@ import hashlib
 import json
 import re
 import shutil
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,33 @@ from .remote_config import RemoteSettings
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _DEFAULT_OCI_REGISTRY = "registry.hippius.com"
+_HEARTBEAT_INTERVAL_S = 10.0
+
+
+@contextmanager
+def _download_heartbeat(label: str):
+    """Print every ``_HEARTBEAT_INTERVAL_S`` seconds that ``label`` is still downloading.
+
+    Model fetches block with no progress output, so a daemon thread emits a periodic
+    heartbeat until the download finishes.
+    """
+    stop = threading.Event()
+    start = time.monotonic()
+
+    def _beat() -> None:
+        while not stop.wait(_HEARTBEAT_INTERVAL_S):
+            print(
+                f"model_download_progress ref={label} elapsed_s={time.monotonic() - start:.0f}",
+                flush=True,
+            )
+
+    thread = threading.Thread(target=_beat, name="model-dl-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
 
 
 @dataclass(frozen=True)
@@ -123,16 +153,17 @@ class ModelArtifactResolver:
 
         paginator = client.get_paginator("list_objects_v2")
         found = False
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            for item in page.get("Contents", []):
-                key = item["Key"]
-                if key.endswith("/"):
-                    continue
-                found = True
-                rel = key[len(prefix) :].lstrip("/") if prefix else key
-                destination = cache_dir / rel
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                client.download_file(bucket, key, str(destination))
+        with _download_heartbeat(model_ref):
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    key = item["Key"]
+                    if key.endswith("/"):
+                        continue
+                    found = True
+                    rel = key[len(prefix) :].lstrip("/") if prefix else key
+                    destination = cache_dir / rel
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    client.download_file(bucket, key, str(destination))
         if not found:
             raise FileNotFoundError(f"no model objects found under {model_ref}")
         done_marker.write_text(
@@ -244,7 +275,7 @@ def _stream_blob_to_file(
         if response.status_code == 401:
             return response
         response.raise_for_status()
-        with temp_destination.open("wb") as handle:
+        with _download_heartbeat(label), temp_destination.open("wb") as handle:
             for chunk in response.iter_bytes(chunk_size=1024 * 1024):
                 if not chunk:
                     continue
