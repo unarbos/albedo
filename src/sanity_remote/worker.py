@@ -92,6 +92,38 @@ class WorkerFault(Exception):
         self.retryable = retryable
 
 
+_SEED_PROCESSOR_FILES = ("preprocessor_config.json", "video_preprocessor_config.json", "configuration.json")
+
+
+def _inject_seed_processor_files(model_dir: str) -> None:
+    """Copy canonical multimodal processor files from the genesis seed into a model dir when
+    absent. Qwen3.6 declares a vision config, so vLLM refuses to construct the model without an
+    image processor even for text-only sanity generation; miner repos often omit these files."""
+    if all((Path(model_dir) / f).exists() for f in _SEED_PROCESSOR_FILES):
+        return
+    try:
+        from config_validation.config import SEED_DIGEST, SEED_REPO
+        from config_validation.hippius import download_config
+        from hippius_validation.hippius import make_ref
+        if not SEED_REPO or not SEED_DIGEST:
+            return
+        seed_dir = "/root/albedo-seed-processor"
+        if not all((Path(seed_dir) / f).exists() for f in _SEED_PROCESSOR_FILES):
+            staged = download_config(make_ref(SEED_REPO, SEED_DIGEST))
+            Path(seed_dir).mkdir(parents=True, exist_ok=True)
+            for _name in _SEED_PROCESSOR_FILES:
+                if (Path(staged) / _name).exists():
+                    shutil.copy2(Path(staged) / _name, Path(seed_dir) / _name)
+    except Exception as exc:  # noqa: BLE001 - never block a run on the inject helper
+        logger.warning("[sanity-remote] seed processor inject skipped: {}", exc)
+        return
+    for name in _SEED_PROCESSOR_FILES:
+        src, dst = Path(seed_dir) / name, Path(model_dir) / name
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+            logger.info("[sanity-remote] injected canonical {} from seed", name)
+
+
 class VllmEngine:
     # One warm vLLM process; swaps the model only when the digest changes (ported from runner.py).
 
@@ -191,9 +223,11 @@ class VllmEngine:
         dest = str(cache_dir(ref))
         if _model_present(dest):
             logger.info("[sanity-remote] reusing on-disk model at {} — skipping download", dest)
-            return dest
-        logger.info("[sanity-remote] downloading {} digest={:.16} to {}", repo, ref_digest, dest)
-        return await asyncio.to_thread(download_full, ref)
+        else:
+            logger.info("[sanity-remote] downloading {} digest={:.16} to {}", repo, ref_digest, dest)
+            dest = await asyncio.to_thread(download_full, ref)
+        await asyncio.to_thread(_inject_seed_processor_files, dest)
+        return dest
 
     async def _start_vllm(self, model_dir: str, model_name: str) -> None:
         # Launches a vLLM subprocess (no --trust-remote-code) and waits until it reports healthy.
@@ -221,6 +255,8 @@ class VllmEngine:
         ]
         if self._s.tensor_parallel_size > 1:
             cmd += ["--tensor-parallel-size", str(self._s.tensor_parallel_size)]
+        if self._s.vllm_limit_mm:
+            cmd += ["--limit-mm-per-prompt", self._s.vllm_limit_mm]
         if self._s.cpu_offload_gb > 0:
             cmd += ["--cpu-offload-gb", str(self._s.cpu_offload_gb)]
         if self._s.vllm_quantization:
