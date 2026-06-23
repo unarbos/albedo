@@ -1,4 +1,5 @@
 import { toRoman } from "./format.js";
+import { GENESIS_KING_VERSION } from "./config.js";
 
 export const JUDGE_META = {
   "z-ai/glm-5.1":            { letter: "G", label: "GLM" },
@@ -20,10 +21,16 @@ export function judgeMeta(model) {
   return { letter: short.charAt(0).toUpperCase(), label: short.toUpperCase().slice(0, 12) };
 }
 
-export function kingTitleName(reignNumber) {
-  const n = Number(reignNumber);
-  if (reignNumber == null || !Number.isFinite(n) || n <= 0) return "BASE MODEL";
-  const roman = toRoman(n);
+// Roman reign names are reserved for the 35b lineage. The 35b genesis seed
+// (king_version === GENESIS_KING_VERSION) shows as GENESIS; the first miner-crowned
+// 35b king (genesis + 1) is ALBEDO-I; pre-35b (4b era) kings are BASE MODEL.
+export function kingTitleName(kingVersion) {
+  const n = Number(kingVersion);
+  if (kingVersion == null || !Number.isFinite(n)) return "BASE MODEL";
+  if (n === GENESIS_KING_VERSION) return "GENESIS";
+  const reign = n - GENESIS_KING_VERSION; // kv 41 -> 1 -> ALBEDO-I
+  if (reign < 1) return "BASE MODEL";
+  const roman = toRoman(reign);
   return roman ? `ALBEDO-${roman}` : "BASE MODEL";
 }
 

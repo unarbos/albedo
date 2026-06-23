@@ -9,14 +9,16 @@ export function renderReign(container, reign, netuid) {
     return;
   }
 
-  // Glow the most recently coronated king (highest king_version), not just slot 0.
+  const orderedMembers = [...members].sort((a, b) => (Number(a.king_version) || 0) - (Number(b.king_version) || 0));
+
+  // Mark the most recently coronated king (highest king_version), not just slot 0.
   let glowIdx = 0, bestVersion = -Infinity;
-  members.forEach((m, i) => {
+  orderedMembers.forEach((m, i) => {
     const v = Number(m.king_version);
     if (Number.isFinite(v) && v > bestVersion) { bestVersion = v; glowIdx = i; }
   });
 
-  const cards = members.map((m, i) => {
+  const cards = orderedMembers.map((m, i) => {
     const repo = modelRepo(m.model_uri);
     const repoUrl = hubRepoUrl(m.model_uri);
     const tao = taoMinerUrl(netuid, m.hotkey);
