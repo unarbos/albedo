@@ -23,11 +23,6 @@ export const LLMS_URLS = [
 export const ENDPOINT_CACHE_KEY = "albedo.endpoint.v3";
 export const SUBNET_NETUID = 97;
 
-// king_version of the 35b genesis seed model (qwen3.6-35b-a3b-genesis). The 35b
-// reign numbering (ALBEDO-I, II, …) is relative to this: the first miner-crowned
-// 35b king (genesis + 1) is ALBEDO-I. Earlier king_versions are pre-35b (4b era).
-export const GENESIS_KING_VERSION = 40;
-
 export const ARTIFACT_TYPES = [
   { key: "EVAL_VERDICT", label: "verdict.json", type: "json" },
   { key: "GENERATED_SAMPLES", label: "generated-samples.jsonl", type: "jsonl" },
