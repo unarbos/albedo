@@ -75,8 +75,8 @@ async function tickPipeline() {
   if (!st) return;
   renderPipeline($("pipeline-wrap"), st, netuid ?? 97);
   const c = st.counts || {};
-  const total = Object.values(c).reduce((a, x) => a + (x.running || 0) + (x.queued || 0), 0);
-  $("pipeline-meta").textContent = `${total} in flight`;
+  const total = Object.values(c).reduce((sum, x) => sum + (Number(x.running) || 0) + (Number(x.queued) || 0), 0);
+  $("pipeline-meta").textContent = total ? `${total} in queue` : "queue idle";
 }
 
 async function writeClipboard(text) {

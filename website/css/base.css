@@ -87,7 +87,6 @@ main {
 .hero-king {
   font-size: 18px; font-weight: 700; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--color-gold);
-  text-shadow: 0 0 18px rgba(243, 196, 73, 0.45);
 }
 .hero-king a { color: inherit; transition: filter 0.15s; }
 .hero-king a:hover { filter: brightness(1.15); }

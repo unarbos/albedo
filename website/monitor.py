@@ -104,7 +104,26 @@ def _public_url(uri: str | None, base: str) -> str | None:
 # --------------------------------------------------------------------------- dashboard.json
 
 
-def _reign(conn) -> dict[str, Any]:
+def _king_version_map(conn, *, model_filter: str) -> dict[int, int]:
+    """Map raw king_versions.version -> display regnal number within the current model family.
+
+    The DB version counter is global across eras (4B + 35B); for display we renumber the
+    current family's kings from 1, ordered by raw version (so the 35B genesis -> 1 -> ALBEDO-I).
+    """
+    rows = conn.execute(
+        """
+        SELECT kv.version,
+               ROW_NUMBER() OVER (ORDER BY kv.version ASC) AS regnal
+        FROM king_versions kv
+        JOIN model_submissions ms ON ms.id = kv.submission_id
+        WHERE ms.model_uri LIKE %s
+        """,
+        (f"%{model_filter}%",),
+    ).fetchall()
+    return {int(row["version"]): int(row["regnal"]) for row in rows}
+
+
+def _reign(conn, *, version_map: dict[int, int]) -> dict[str, Any]:
     rows = conn.execute(
         """
         SELECT rm.slot, rm.uid, rm.hotkey, rm.weight_bps, rm.model_hash,
@@ -121,7 +140,7 @@ def _reign(conn) -> dict[str, Any]:
     ).fetchall()
     members = [
         {
-            "king_version": row["king_version"],
+            "king_version": version_map.get(row["king_version"]),
             "model_uri": row["model_uri"],
             "model_hash": row["model_hash"],
             "hotkey": row["hotkey"],
@@ -156,7 +175,7 @@ def _artifacts_for(conn, submission_ids: list, base: str) -> dict[str, dict[str,
     return out
 
 
-def _eval_runs(conn, *, limit: int, base: str, model_filter: str) -> list[dict[str, Any]]:
+def _eval_runs(conn, *, limit: int, base: str, model_filter: str, version_map: dict[int, int]) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT er.id AS eval_run_id, er.submission_id,
@@ -198,7 +217,7 @@ def _eval_runs(conn, *, limit: int, base: str, model_filter: str) -> list[dict[s
                 "eval_run_id": str(row["eval_run_id"]),
                 "challenger_won": row["challenger_won"],
                 "coronated": row["crowned_king_version"] is not None,
-                "king_version": row["crowned_king_version"],
+                "king_version": version_map.get(row["crowned_king_version"]),
                 "score_challenger": _num(row["score_challenger"]),
                 "score_king": _num(row["score_king"]),
                 "win_margin": _num(row["win_margin"]),
@@ -215,7 +234,7 @@ def _eval_runs(conn, *, limit: int, base: str, model_filter: str) -> list[dict[s
                     "by_metric": breakdown.get("by_metric", {}),
                 },
                 "king": {
-                    "king_version": row["king_king_version"],
+                    "king_version": version_map.get(row["king_king_version"]),
                     "model_uri": row["king_model_uri"],
                     "uid": row["king_uid"],
                     "hotkey": row["king_hotkey"],
@@ -316,21 +335,32 @@ def _fails(conn, *, limit: int, base: str, model_filter: str) -> list[dict[str, 
     ]
 
 
-def _stats(conn) -> dict[str, Any]:
-    row = conn.execute("SELECT count(*) AS n FROM eval_runs WHERE state = 'SUCCEEDED'").fetchone()
+def _stats(conn, *, model_filter: str) -> dict[str, Any]:
+    # Distinct models evaluated, not eval runs: a model re-evaluated several times counts once.
+    row = conn.execute(
+        """
+        SELECT count(DISTINCT er.submission_id) AS n
+        FROM eval_runs er
+        JOIN model_submissions ms ON ms.id = er.submission_id
+        WHERE er.state = 'SUCCEEDED'
+          AND ms.model_uri LIKE %s
+        """,
+        (f"%{model_filter}%",),
+    ).fetchone()
     return {"evaluated": int(row["n"]) if row else 0}
 
 
 def build_dashboard(conn, *, netuid: int, history_limit: int, artifact_base: str, model_filter: str) -> dict[str, Any]:
     current = _current_eval(conn, model_filter=model_filter)
+    version_map = _king_version_map(conn, model_filter=model_filter)
     return {
         "updated_at": datetime.now(UTC).isoformat(),
         "chain": {"netuid": netuid, "judge_models": list(JUDGE_MODELS)},
-        "stats": _stats(conn),
-        "reign": _reign(conn),
+        "stats": _stats(conn, model_filter=model_filter),
+        "reign": _reign(conn, version_map=version_map),
         "current_eval": current,
         "queue": _queue(conn, exclude_submission_id=current["submission_id"] if current else None, model_filter=model_filter),
-        "eval_runs": _eval_runs(conn, limit=history_limit, base=artifact_base, model_filter=model_filter),
+        "eval_runs": _eval_runs(conn, limit=history_limit, base=artifact_base, model_filter=model_filter, version_map=version_map),
         "fails": _fails(conn, limit=history_limit, base=artifact_base, model_filter=model_filter),
     }
 
