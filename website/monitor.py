@@ -108,12 +108,13 @@ def _king_version_map(conn, *, model_filter: str) -> dict[int, int]:
     """Map raw king_versions.version -> display regnal number within the current model family.
 
     The DB version counter is global across eras (4B + 35B); for display we renumber the
-    current family's kings from 1, ordered by raw version (so the 35B genesis -> 1 -> ALBEDO-I).
+    current family from 0, ordered by raw version: the 35B genesis seed -> 0 (shown as GENESIS),
+    the first miner-crowned king -> 1 -> ALBEDO-I. Pre-35B versions aren't in the map (-> null).
     """
     rows = conn.execute(
         """
         SELECT kv.version,
-               ROW_NUMBER() OVER (ORDER BY kv.version ASC) AS regnal
+               ROW_NUMBER() OVER (ORDER BY kv.version ASC) - 1 AS regnal
         FROM king_versions kv
         JOIN model_submissions ms ON ms.id = kv.submission_id
         WHERE ms.model_uri LIKE %s
