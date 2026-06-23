@@ -1,47 +1,69 @@
 import { el, mount, link } from "../dom.js";
-import { fmtRelative, fmtDateTime, shortHotkey } from "../format.js";
+import { fmtRelative, fmtDateTime } from "../format.js";
 import { hubRepoUrl, modelRepo, modelName, taoMinerUrl } from "../model.js";
 
 const STAGES = [
-  { key: "hippius_validate", label: "hippius validate" },
-  { key: "pre_eval", label: "pre-eval" },
   { key: "eval", label: "eval" },
+  { key: "pre_eval", label: "pre-eval" },
+  { key: "hippius_validate", label: "hippius" },
 ];
 
-function row(item, netuid) {
+const STAGE_RANK = Object.fromEntries(STAGES.map((s, i) => [s.key, i]));
+const STATUS_RANK = { working: 0, queued: 1 };
+const updatedMs = row => new Date(row.item.updated_at || 0).getTime();
+
+const byQueueOrder = (a, b) => {
+  const stage = STAGE_RANK[a.stageKey] - STAGE_RANK[b.stageKey];
+  if (stage) return stage;
+  const status = STATUS_RANK[a.status] - STATUS_RANK[b.status];
+  if (status) return status;
+  return updatedMs(b) - updatedMs(a);
+};
+
+function collectRows(stages) {
+  return STAGES.flatMap(stage => {
+    const data = stages[stage.key] || { running: [], queued: [] };
+    return [
+      ...(data.running || []).map(item => ({ stageKey: stage.key, stage: stage.label, status: "working", item })),
+      ...(data.queued || []).map(item => ({ stageKey: stage.key, stage: stage.label, status: "queued", item })),
+    ];
+  }).sort(byQueueOrder);
+}
+
+function queueRow(row, netuid) {
+  const item = row.item;
   const name = modelName(item);
   const repo = modelRepo(item.model_uri);
   const repoUrl = hubRepoUrl(item.model_uri);
   const tao = taoMinerUrl(netuid, item.hotkey);
-  return el("tr", {},
-    el("td", { class: "uid" }, tao ? link(tao, String(item.uid ?? "—")) : String(item.uid ?? "—")),
+  return el("tr", { class: row.status === "working" ? "q-row working" : "q-row" },
+    el("td", {}, el("span", { class: "q-stage-badge" }, row.stage)),
+    el("td", {}, el("span", { class: row.status === "working" ? "q-status working" : "q-status" }, row.status)),
+    el("td", { class: "uid" }, tao ? link(tao, String(item.uid ?? "-")) : String(item.uid ?? "-")),
     el("td", { class: "model" }, repoUrl ? link(repoUrl, name, { class: "model-cell", title: repo }) : el("span", { class: "model-cell", title: repo }, name)),
     el("td", { class: "r when", title: fmtDateTime(item.updated_at) }, fmtRelative(item.updated_at)));
 }
 
-function bucket(title, items, live, netuid) {
-  const head = el("div", { class: "pl-bucket-head" },
-    live ? el("span", { class: "pl-dot" }) : false,
-    el("span", { class: "pl-bucket-label" }, title),
-    el("span", { class: "pl-bucket-count" }, String(items.length)));
-  const body = items.length
-    ? el("table", { class: "data-table" }, el("tbody", {}, items.map(it => row(it, netuid))))
-    : el("div", { class: "empty" }, "—");
-  return el("div", { class: live ? "pl-bucket running" : "pl-bucket" }, head, body);
+function idleRow() {
+  return el("tr", { class: "q-row" },
+    el("td", {}, el("span", { class: "q-stage-badge" }, "-")),
+    el("td", {}, el("span", { class: "q-status" }, "idle")),
+    el("td", { class: "uid" }, "-"),
+    el("td", { class: "model" }, "-"),
+    el("td", { class: "r when" }, "-"));
 }
 
 export function renderPipeline(container, state, netuid) {
-  const stages = state?.stages || {};
-  const counts = state?.counts || {};
-  const cards = STAGES.map(s => {
-    const stage = stages[s.key] || { running: [], queued: [] };
-    const c = counts[s.key] || { running: (stage.running || []).length, queued: (stage.queued || []).length };
-    return el("div", { class: "pl-card" },
-      el("div", { class: "pl-card-head" },
-        el("span", { class: "pl-card-title" }, s.label),
-        el("span", { class: "pl-card-meta" }, `${c.running ?? 0} running · ${c.queued ?? 0} queued`)),
-      bucket("running", stage.running || [], true, netuid),
-      bucket("queued", stage.queued || [], false, netuid));
-  });
-  mount(container, el("div", { class: "pipeline-grid" }, cards));
+  const rows = collectRows(state?.stages || {});
+  mount(container,
+    el("section", { class: "queue-panel" },
+      el("div", { class: "q-table-wrap" },
+        el("table", { class: "data-table q-table" },
+          el("thead", {}, el("tr", {},
+            el("th", {}, "stage"),
+            el("th", {}, "state"),
+            el("th", {}, "uid"),
+            el("th", {}, "model"),
+            el("th", { class: "r" }, "updated"))),
+          el("tbody", {}, rows.length ? rows.map(row => queueRow(row, netuid)) : idleRow())))));
 }

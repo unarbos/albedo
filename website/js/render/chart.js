@@ -18,9 +18,9 @@ export function renderChart(container, crownings) {
     return Math.max(3, Math.min(BAR_H, Math.round(frac * BAR_H)));
   };
 
-  const ordered = [...crownings].reverse();
+  const ordered = [...crownings].sort((a, b) => (a.king_version || 0) - (b.king_version || 0));
   const cols = ordered.map((c, i) => {
-    const current = i === 0;
+    const current = i === ordered.length - 1;
     const [eraTop, eraBot = ""] = kingTitleName(c.king_version).split(/[-\s]/);
     return el("div", { class: current ? "chart-col current" : "chart-col" },
       el("div", { class: "chart-vals" }, el("span", { class: "chal" }, pct(c.chal_mean, 1)), " / " + pct(c.king_mean, 1)),
@@ -30,5 +30,7 @@ export function renderChart(container, crownings) {
       el("div", { class: "chart-era" }, el("div", {}, eraTop), el("div", {}, eraBot)));
   });
 
-  mount(container, el("div", { class: "chart-scroll" }, el("div", { class: "chart" }, cols)));
+  const scroller = el("div", { class: "chart-scroll" }, el("div", { class: "chart" }, cols));
+  mount(container, scroller);
+  requestAnimationFrame(() => { scroller.scrollLeft = scroller.scrollWidth; });
 }

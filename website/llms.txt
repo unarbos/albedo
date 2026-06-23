@@ -1,10 +1,12 @@
 # Albedo (SN97)
 
 > King-of-the-hill trajectory-distillation subnet on Bittensor (netuid 97, finney).
-> Miners fine-tune **Qwen3-4B** models and commit them on-chain; a backend pipeline
-> ingests commits, validates artifacts, runs a stability pre-eval, then duels each
-> challenger against the reigning king on SWE-ZERO coding trajectories judged by an
-> ensemble of LLMs. Winners are crowned into a rolling 5-king chain and earn emissions.
+> Miners fine-tune **Qwen3.6-35B-A3B** models (MoE — 256 experts, 8 active per token;
+> multimodal Qwen3VL architecture) and commit them on-chain; a backend pipeline ingests
+> commits, validates artifacts, runs a stability pre-eval, then duels each challenger
+> against the reigning king on SWE-ZERO coding trajectories judged by an ensemble of LLMs.
+> A challenger must beat the king by a **6% margin** to win. Winners are crowned into a
+> rolling 5-king chain and earn emissions.
 >
 > This codebase is the **production backend + miner CLI** — a set of independent,
 > PM2-managed services backed by a single Postgres state machine, plus an `albedo`
@@ -12,7 +14,7 @@
 > repo; this repo splits that flow across ingest → validate → pre-eval → eval →
 > reign → weight services so each stage scales, retries, and recovers independently.)
 
-**Subnet:** netuid `97` (finney mainnet) · **Model class:** Qwen3-4B only · **Reveal format:** `v6|<repo>|<digest>`
+**Subnet:** netuid `97` (finney mainnet) · **Model class:** Qwen3.6-35B-A3B only · **Reveal format:** `v7|<repo>|<digest>`
 
 ---
 
@@ -22,7 +24,7 @@
 albedo/
 │
 ├── pyproject.toml              All console entrypoints (see "Services" below) + deps (bittensor, fastapi, asyncpg, opensearch, vllm-via-remote)
-├── chain.toml                  Subnet constants: seed digest, arch-lock keys, file allowlist, dedup threshold
+├── chain.toml                  Subnet constants for the config_validation commit-validator (seed digest, arch-lock keys, file allowlist, dedup threshold). NOTE: the LIVE miner/validator manifest is hippius_validation/config.py + architecture_spec.json — see below.
 ├── schema.sql                  Canonical Postgres schema — the single source of truth for pipeline state
 ├── docker-compose.yml          Local Postgres (albedo-postgres) on host port 65432
 ├── .env.example                Full backend/GPU-host env reference
@@ -30,12 +32,12 @@ albedo/
 │
 ├── miner/                      ← the `albedo` miner CLI (entry point miner.cli:main)
 │   ├── cli.py                      arg parsing + dispatch for all subcommands
-│   ├── validate.py                 local file-manifest + arch checks (same code validators run)
+│   ├── validate.py                 local file-manifest + arch + safetensors-index + 16-bit-dtype checks (same code validators run)
 │   ├── upload.py                   push model dir to Hippius, return repo@sha256:digest
 │   ├── publish.py                  full pipeline: validate→upload→check→registered?→commit
-│   ├── commit.py                   write v6 reveal on-chain (set_reveal_commitment)
+│   ├── commit.py                   write v7 reveal on-chain (set_reveal_commitment)
 │   ├── register.py                 burned_register a hotkey on netuid 97
-│   ├── check_commits.py            scan chain for v6 commits
+│   ├── check_commits.py            scan chain for v7 commits
 │   ├── env.py                      load .env (repo root + cwd) → defaults
 │   └── tui.py                      full-screen prompt_toolkit console (`albedo on`)
 │
@@ -43,10 +45,10 @@ albedo/
 │   │
 │   ├── chain_reader/               INGEST: poll chain → write chain_commits + model_submissions(SUBMITTED)
 │   │   ├── reader.py                   async poll loop (get_current_block every CHAIN_POLL_INTERVAL_S)
-│   │   ├── chain.py                    decode v6 payloads, resolve hotkey→uid via metagraph
+│   │   ├── chain.py                    decode v7 payloads, resolve hotkey→uid via metagraph
 │   │   └── db.py                       upsert chain_commits / miners / model_submissions / events
 │   │
-│   ├── config_validation/          VALIDATION LIBRARY (reused by miner CLI + hippius_validation)
+│   ├── config_validation/          VALIDATION LIBRARY for the standalone commit-validator; also gives the miner CLI its Hippius download/list utils + ModelRef (the miner's actual checks come from hippius_validation, below)
 │   │   ├── pipeline.py                 ordered checks: revision → files → architecture → duplicate
 │   │   ├── checks/revision.py          repo@digest resolves on Hippius (fast fail)
 │   │   ├── checks/files.py             strict allowlist from chain.toml [files]
@@ -54,11 +56,19 @@ albedo/
 │   │   ├── checks/duplicate.py         fingerprint cosine ≥ similarity_threshold → reject
 │   │   ├── fingerprint/compute.py      per-tensor L2 norms + deterministic value samples (layer_norms_v2)
 │   │   ├── fingerprint/store.py        pluggable corpus: Null / Jsonl (CLI) — OpenSearch lives in hippius_validation
-│   │   └── models/reveal.py            parse/build v6 reveal
+│   │   └── models/reveal.py            parse/build v7 reveal
 │   │
-│   ├── hippius_validation/         VALIDATE WORKER: claim submissions → download → validate → dedup → persist
-│   │   ├── validate_worker.py          end-to-end per-model: files→download→arch→fingerprint→OpenSearch dedup
+│   ├── chain_guard/                HOTKEY-REUSE GUARD (imported by chain_reader): a `used_hotkeys` ledger seeded from every hotkey committed before CHAIN_START_BLOCK (all reveal versions); a hotkey is burned into the ledger after its submission finishes eval, so a hotkey can't re-submit to game the duel
+│   │   ├── scan.py                     scan_all_raw(): iterate every RevealedCommitment on the netuid
+│   │   └── db.py                       seed ledger from DB + record a hotkey after eval
+│   │
+│   ├── hippius_validation/         VALIDATE WORKER: claim submissions → download → validate → dedup → persist (the live file/arch/index/dtype authority for miners + validators)
+│   │   ├── validate_worker.py          end-to-end per-model: files→dtype-preflight→download→index→arch→fingerprint→OpenSearch dedup
+│   │   ├── config.py                   the LIVE strict file allowlist (required incl. preprocessor_config.json + video_preprocessor_config.json) + dedup threshold + cache/OpenSearch settings
 │   │   ├── validate/architecture.py    spec-driven arch lock (validate/architecture_spec.json — no hardcoded family)
+│   │   ├── validate/dtype.py           16-bit weight check: every safetensors shard must be F16/BF16 (rejects quantized / F32 / F64)
+│   │   ├── validate/safetensors_index.py  shard/index consistency: model.safetensors.index.json weight_map vs on-disk shards + tensors
+│   │   ├── hippius/preflight.py        header-only dtype preflight via HTTP Range (reject non-16-bit before the full download)
 │   │   ├── opensearch/fingerprints.py  per-dimension kNN index + exact rerank for near-dup detection
 │   │   ├── uploads/artifacts.py        publish fingerprint corpus + fault.json to S3 (best-effort)
 │   │   └── db.py                        state machine + lease/heartbeat (SUBMITTED→HIPPIUS_VALIDATED / TERMINAL_INVALID)
@@ -88,6 +98,7 @@ albedo/
 │   │   ├── remote_artifacts.py         upload JSONL transcripts + verdict.json to S3
 │   │   ├── sampling.py                 deterministic SWE-ZERO sample IDs seeded by commit block_hash
 │   │   ├── dataset_manifest.py         load + sha256-verify the dataset shard manifest
+│   │   ├── canonical_model_config.py   pin the genesis model / generation / processor configs over the challenger's before eval (anti-tamper)
 │   │   ├── faults.py                   fault taxonomy (MINER/INFRA/REMOTE_EVAL/PROVIDER/UNKNOWN)
 │   │   └── requeuer.py                 PRE_EVAL_PASSED→EVAL_QUEUED + retryable eval re-queue
 │   │
@@ -97,12 +108,16 @@ albedo/
 │   └── weight_setter/              WEIGHTS: consume weight_epochs → subtensor.set_weights → PERIODIC_REFRESH
 │       └── service.py                  rate-limited by ALBEDO_WEIGHT_SET_RATE_BLOCKS, burn UID on no-king
 │
-├── pm2/                        One ecosystem.*.config.js per long-running / cron process (incl. ecosystem.monitor.config.js)
+├── pm2/                        One ecosystem.*.config.js per long-running / cron process (incl. ecosystem.monitor.config.js, ecosystem.eval-cache-cleanup.config.js, ecosystem.model-gc.config.js)
 │
 ├── scripts/
 │   ├── create_genesis_king.py      seed genesis king_version + reign + reign_members (UID 0)
-│   ├── generate_arch_spec.py       regenerate architecture_spec.json from the genesis config
+│   ├── generate_arch_spec.py       regenerate architecture_spec.json from the genesis config (handles nested multimodal MoE via text_config)
 │   ├── seed_corpus.py              backfill OpenSearch dedup index from existing SN97 models
+│   ├── backfill_fingerprints.py    rebuild the S3 fingerprint corpus (fingerprint.json + tensors.json) from the OpenSearch index
+│   ├── reindex_opensearch.py       inverse of backfill: rebuild the OpenSearch dedup index from the S3 corpus files
+│   ├── eval_cache_cleanup.py       king-aware model-cache GC (keep active kings + seed + in-flight, drop the rest) — PM2 loop
+│   ├── cleanup_models.sh           hourly disk reclaim: delete model snapshots older than 4h from ALBEDO_MODEL_CACHE_DIR — PM2 cron
 │   ├── full_flow_test.py           end-to-end: real chain commits → full validation pipeline
 │   ├── setup_opensearch.sh         single-node OpenSearch container (:9200, security off)
 │   └── install_deps.sh             install opensearch-py + config_validation into a venv
@@ -130,7 +145,7 @@ stage is an independent service that **claims** work, holds a **lease**, and eit
 state or marks it retryable/terminal. This is the backbone of the whole repo.
 
 ```
-on-chain v6 commit
+on-chain v7 commit
   │
   ▼  chain_reader            poll chain → chain_commits + model_submissions(SUBMITTED)
 SUBMITTED
@@ -168,27 +183,31 @@ mid-stage are recovered by lease expiry, not by in-memory state.
 
 ## chain.toml — subnet constants
 
-Mirrors the on-chain subnet rules so validation is reproducible. Read by the miner CLI and the
-validation services alike.
+Mirrors the subnet rules for the standalone `config_validation` commit-validator. The arch-lock keys,
+seed digest, and dedup threshold here are current; the `[files]` block, however, has **drifted** from
+what miners and the backend actually enforce — the live file-manifest + arch authority is
+`hippius_validation/config.py` + `validate/architecture_spec.json` (see *Validation internals* below).
 
 ```toml
 [chain]
 name         = "Albedo"
-seed_repo    = "teutonic/albedo-qwen3-4b-genesis"
-repo_pattern = "^[^/]+/albedo-qwen3-4b-.+$"          # challenger naming, any namespace
+seed_repo    = "teutonic/qwen3.6-35b-a3b-genesis"
+repo_pattern = "^[^/]+/albedo-qwen3\\.6-35b-.+$"     # challenger naming, any namespace
 
 [arch]                                                # capacity keys, must match genesis exactly
 extra_lock_keys = [
   "max_position_embeddings", "tie_word_embeddings", "rope_theta",
   "hidden_size", "num_hidden_layers", "num_attention_heads",
   "num_key_value_heads", "intermediate_size", "head_dim",
+  "moe_intermediate_size", "shared_expert_intermediate_size",   # MoE capacity
+  "num_experts", "num_experts_per_tok",
 ]
 # vocab_size + model_type are always locked (config_validation COMPAT_KEYS)
 
 [seed]
-seed_digest = "sha256:3368b0c79b619ed90dc5610c20073cf02c3a93275ebc0c5b94a9d332fea6f606"
+seed_digest = "sha256:efd5b8d0a1c1f472be56ff919419cdd0561bdecd9013d5c2a96dd0e23e89c165"
 
-[files]                                               # strict allowlist
+[files]                                               # strict allowlist (see drift note above)
 required            = ["config.json", "tokenizer_config.json", "tokenizer.json"]
 require_safetensors = true
 allowed             = ["generation_config.json", "special_tokens_map.json", "added_tokens.json",
@@ -201,12 +220,20 @@ forbidden_globs     = ["*.py"]                        # no custom modeling code
 similarity_threshold = 0.95                           # fingerprint cosine ≥ this → near-duplicate
 ```
 
+> **Live manifest (what's actually enforced)** — `hippius_validation/config.py` additionally
+> **requires** `preprocessor_config.json` + `video_preprocessor_config.json` (the multimodal
+> Qwen3.6 processor configs) and **allows** `LICENSE` / `configuration.json`. The arch lock
+> compares against `architecture_spec.json` (regenerated from the genesis by `generate_arch_spec.py`),
+> which pins `architectures = ["Qwen3_5MoeForConditionalGeneration"]`, `model_type = "qwen3_5_moe"`,
+> `vocab_size = 248320`, the capacity keys above, and the MoE keys (`num_experts = 256`,
+> `num_experts_per_tok = 8`, `moe_intermediate_size = 512`, `shared_expert_intermediate_size = 512`).
+
 ---
 
 ## Mining (the `albedo` CLI)
 
-Albedo is king-of-the-hill for Qwen3-4B. Fine-tune → upload to Hippius → commit a v6 reveal on-chain.
-A model that passes validation **and** beats the king earns emissions. Full guide: [docs/MINING.md](../docs/MINING.md).
+Albedo is king-of-the-hill for Qwen3.6-35B-A3B. Fine-tune → upload to Hippius → commit a v7 reveal on-chain.
+A model that passes validation **and** beats the king by the **6% win margin** earns emissions. Full guide: [docs/MINING.md](../docs/MINING.md).
 
 ### Install
 
@@ -226,7 +253,7 @@ pip install -e '.[train]'        # optional: trl + accelerate + deepspeed for SF
 | `CHAIN_NETUID` / `CHAIN_NETWORK` | default `97` / `finney` (use `test` for testnet) |
 | `HIPPIUS_HUB_TOKEN` | Hippius auth (or `HIPPIUS_HUB_USERNAME`/`_PASSWORD`) |
 | `ALBEDO_NAMESPACE` | your Hippius namespace (skip `--namespace`) |
-| `ALBEDO_REPO_PREFIX` | leave as `albedo-qwen3-4b` |
+| `ALBEDO_REPO_PREFIX` | leave as `albedo-qwen3.6-35b` |
 
 ### Commands
 
@@ -234,7 +261,7 @@ pip install -e '.[train]'        # optional: trl + accelerate + deepspeed for SF
 albedo register                                   # one-time: burned_register on netuid 97
 albedo check-hippius --path /path/to/model        # local validate (free) — must say VALID
 albedo publish --path /path/to/model --name v1    # validate→upload→check→registered?→commit
-albedo check-commit --hotkey 5F...                # confirm your v6 commit landed
+albedo check-commit --hotkey 5F...                # confirm your v7 commit landed
 albedo on                                         # interactive TUI
 ```
 
@@ -243,15 +270,27 @@ to stop after upload). Individual steps also exist: `upload`, `commit`, `check-c
 
 ### What gets a model rejected
 
-1. Repo name doesn't match `^[^/]+/albedo-qwen3-4b-.+$`
-2. File set violates the `[files]` allowlist (missing required, any `*.py`, unexpected extra)
-3. No `*.safetensors`
-4. `config.json` doesn't match the genesis seed on the arch lock keys
-5. `config.json` contains `auto_map` (remote code) or `quantization_config` (quantized)
-6. **Near-duplicate** (fingerprint cosine ≥ 0.95 of an already-seen model) — *not* checked locally;
-   needs OpenSearch, runs only in `hippius_validation`. Make your model genuinely distinct.
+These are the **live** checks (`hippius_validation`), run by both the local CLI and the validator
+except where noted. Each maps to a `fault_code`.
 
-> **Note:** local `check-hippius` runs checks 1–5 but **not** the dedup check. Passing locally does not guarantee acceptance.
+1. Repo name doesn't match `^[^/]+/albedo-qwen3\.6-35b-.+$`
+2. File set violates the allowlist — **missing** a required file (`config.json`, `tokenizer_config.json`,
+   `tokenizer.json`, `preprocessor_config.json`, `video_preprocessor_config.json`), any `*.py`, or an
+   unexpected extra (`file_manifest`)
+3. No `*.safetensors` (`file_manifest`)
+4. **Weights aren't 16-bit** — every safetensors shard must be F16/BF16; quantized / F32 / F64 is
+   rejected (`weight_dtype`)
+5. **Safetensors index inconsistent** — a sharded checkpoint's `model.safetensors.index.json`
+   weight_map must match the shards + tensors actually on disk (`safetensors_index`)
+6. `config.json` doesn't match the genesis arch spec on the lock keys (incl. the MoE keys), or
+   contains `auto_map` (remote code) / `quantization_config` (quantized) (`architecture`)
+7. **Near-duplicate** (fingerprint cosine ≥ 0.95 of an already-seen model) — *not* checked locally;
+   needs OpenSearch, runs only in `hippius_validation`. Make your model genuinely distinct (`duplicate`)
+
+> **Note:** local `check-hippius --path` runs checks 1–6 (file manifest + arch + safetensors index +
+> 16-bit dtype) but **not** the dedup check; the `--repo/--digest` remote check runs only the file
+> manifest + arch (it lists the repo files and fetches `config.json`). Passing locally does not
+> guarantee acceptance.
 
 ---
 
@@ -276,9 +315,12 @@ Console entrypoints (from `pyproject.toml`) — each has a matching `pm2/ecosyst
 | `set-reign-worker` | coronation | backend | — |
 | `weight-setter` | set_weights on-chain | backend | — |
 | `website/monitor.py` (PM2 `albedo-dashboard-monitor`) | publish dashboard.json + state.json → Hippius | backend | on-change poll (~2s) |
+| `scripts/eval_cache_cleanup.py` (PM2 `albedo-eval-cache-cleanup`) | king-aware model-cache GC | backend | ~60s loop |
+| `scripts/cleanup_models.sh` (PM2 `albedo-model-gc`) | disk reclaim (delete >4h-old model snapshots) | backend | cron hourly |
 
-The dashboard monitor is the one PM2 process that is **not** a `pyproject` console entrypoint — it runs
-`.venv/bin/python website/monitor.py` (standalone script, like `push_to_hippius.py`). See *Dashboard publishing* below.
+The dashboard monitor and the two cleanup jobs are the PM2 processes that are **not** `pyproject`
+console entrypoints — they run standalone scripts (`website/monitor.py`, `scripts/eval_cache_cleanup.py`,
+`scripts/cleanup_models.sh`; the monitor is like `push_to_hippius.py`). See *Dashboard publishing* below.
 
 Backend ↔ GPU host is bridged by an SSH tunnel (`pm2/ecosystem.gpu-host-tunnel.config.js`):
 local `:18090` on the backend → `:8090` on the GPU host. The GPU host is registered as a
@@ -323,9 +365,12 @@ score bridge (backend-initiated WebSocket, GPU→backend)
 **Judge ensemble** (`albedo-judge-api`, calls OpenRouter): 3 judge models score each turn
 **pairwise** on 5 metrics — `correctness, grounding, progress, protocol, efficiency`. Order is
 **counterbalanced** (half the samples shown king-first, half challenger-first) to cancel position
-bias; scores aggregate zero-sum into challenger vs king. Per-model concurrency is capped by a
-semaphore (`ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL`, default 8) with retry + exponential backoff;
-a run needs `ALBEDO_JUDGE_MIN_VALID_FRACTION` (0.5) of judges to resolve or it's a provider fault.
+bias; scores aggregate zero-sum into challenger vs king (`score_king = 1 − score_challenger`). The
+challenger wins (`EVAL_WIN`) only if it beats the king by the **6% margin**
+(`challenger_won = (score_challenger − score_king) ≥ CHALLENGER_WIN_MARGIN`, `0.06`); otherwise the
+duel is a `COMPLETE_LOSS`. Per-model concurrency is capped by a semaphore
+(`ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL`, default 8) with retry + exponential backoff; a run needs
+`ALBEDO_JUDGE_MIN_VALID_FRACTION` (0.5) of judges to resolve or it's a provider fault.
 
 **Deterministic sampling:** `sampling.py` seeds a `Random(block_hash)`, shuffles a flat
 `(shard, row)` list once, then walks rows × turns producing `shard:row:turn` IDs. The same commit
@@ -337,23 +382,31 @@ block always yields the same eval set — reproducible and un-gameable by the mi
 
 ```
 claim model_submissions oldest-first  (SUBMITTED | HIPPIUS_RETRYABLE)  → HIPPIUS_RUNNING
-  1. file manifest    chain.toml [files] allowlist (required / allowed / forbidden globs)
-  2. download         full repo from Hippius → ALBEDO_MODEL_CACHE_DIR
-  3. architecture     config.json vs validate/architecture_spec.json (architectures + expected + forbidden_keys)
-  4. fingerprint      per-tensor L2 norms + deterministic value samples (layer_norms_v2)
-  5. OpenSearch dedup per-dimension kNN prefilter (HNSW cosine, top-20) → exact per-tensor rerank
+  1. file manifest    hippius_validation/config.py allowlist (required / allowed / forbidden globs)
+  2. dtype preflight  header-only HTTP Range read of each shard — must be F16/BF16, else weight_dtype
+                      (rejects quantized / F32 / F64 BEFORE the full download)
+  3. download         full repo from Hippius → ALBEDO_MODEL_CACHE_DIR
+  4. safetensors index  model.safetensors.index.json weight_map vs on-disk shards + tensors
+  5. architecture     config.json vs validate/architecture_spec.json (architectures + expected + forbidden_keys)
+  6. fingerprint      per-tensor L2 norms + deterministic value samples (layer_norms_v2)
+                      (fingerprint dim > MAX_KNN_DIM 16000 → fingerprint_too_large)
+  7. OpenSearch dedup per-dimension kNN prefilter (HNSW cosine, top-20) → exact per-tensor rerank
                       cosine ≥ similarity_threshold (0.95) AND different hotkey → DUPLICATE
   success → HIPPIUS_VALIDATED ; index fingerprint for future dedup ; publish fingerprint corpus to S3
-  miner fault → TERMINAL_INVALID + fault.json (repo_not_found | file_manifest | architecture | duplicate | hotkey_already_validated)
+  miner fault → TERMINAL_INVALID + fault.json
+                (file_manifest | weight_dtype | safetensors_index | architecture | duplicate | hotkey_already_validated)
   infra fault → HIPPIUS_RETRYABLE (≤ 5 attempts) → TERMINAL_INFRA_FAILED
 ```
 
 - **One validated model per hotkey:** a later commit from an already-validated hotkey fails with
-  `hotkey_already_validated`.
+  `hotkey_already_validated`. Hotkey *reuse across submissions* is separately blocked by `chain_guard`
+  (its ledger burns a hotkey after eval — see *Repository layout*).
 - **Spec-driven arch lock:** `architecture.py` reads a JSON spec, so changing the locked model family
   needs no code change — regenerate with `scripts/generate_arch_spec.py`.
-- **`config_validation` is the shared library:** the same file/arch/fingerprint code backs both the
-  miner's local `check-hippius` and this worker (the worker swaps in the OpenSearch fingerprint store).
+- **Where the checks live:** the live file / arch / safetensors-index / dtype checks the miner CLI and
+  this worker both run come from `hippius_validation.validate`. `config_validation` backs the separate
+  commit-validator and supplies the miner's Hippius download/list utilities + `ModelRef`. The local
+  `check-hippius` skips only OpenSearch dedup.
 
 ---
 
@@ -436,9 +489,13 @@ loop every ALBEDO_MONITOR_INTERVAL_S (default 2s):
 - The website renders **state.json as the live queue** (3 stage cards, running + queued) and
   **dashboard.json** as reign / history / chart / fails. Models display as **`ALBEDO-<first-6-of-hotkey>`**,
   upgraded to **`ALBEDO-<Roman>`** (e.g. ALBEDO-II) once crowned; the real repo is the hover tooltip + hub link.
+- **Model filter:** history + chart only include `eval_runs` whose `model_uri` matches
+  `ALBEDO_DASHBOARD_MODEL_FILTER` (SQL `LIKE` substring, default `qwen3.6-35b` — the 35B genesis plus
+  any `albedo-qwen3.6-…` challenger), so a model migration doesn't mix old and new runs.
 - Reactive, not asyncio: a synchronous on-change poll loop, each tick wrapped in try/except (a DB/S3 blip
   just retries next tick). Env: `ALBEDO_MONITOR_INTERVAL_S`, `ALBEDO_DASHBOARD_NETUID` (97),
-  `ALBEDO_DASHBOARD_ARTIFACT_BASE_URL` (https://s3.hippius.com), plus `ALBEDO_EVAL_DATABASE_URL` + `ALBEDO_S3_*`.
+  `ALBEDO_DASHBOARD_ARTIFACT_BASE_URL` (https://s3.hippius.com), `ALBEDO_DASHBOARD_MODEL_FILTER`
+  (`qwen3.6-35b`), plus `ALBEDO_EVAL_DATABASE_URL` + `ALBEDO_S3_*`.
 
 ---
 
@@ -448,7 +505,7 @@ The whole system is a durable state machine in one database. Key tables:
 
 | Table | Holds |
 |---|---|
-| `chain_commits` | raw on-chain v6 commits (netuid, block, hotkey, model_uri, payload_hash) |
+| `chain_commits` | raw on-chain v7 commits (netuid, block, hotkey, model_uri, payload_hash) |
 | `miners` | hotkey → coldkey / uid / netuid |
 | `model_submissions` | **the spine** — one row per submission + its `state` + `fault_class/code` |
 | `stage_attempts` | per-stage claim/lease/heartbeat (`HIPPIUS`/`PRE_EVAL`/`EVAL`/`SET_REIGN`/`WEIGHT_SET`) |
@@ -517,6 +574,7 @@ Full reference in [.env.example](../.env.example) (backend + GPU host) and [.env
 | `ALBEDO_MONITOR_INTERVAL_S` | change-detection poll interval (default 2) |
 | `ALBEDO_DASHBOARD_NETUID` | netuid stamped into dashboard.json (default 97) |
 | `ALBEDO_DASHBOARD_ARTIFACT_BASE_URL` | base for rewriting artifact `s3://` URIs → https (default https://s3.hippius.com) |
+| `ALBEDO_DASHBOARD_MODEL_FILTER` | `model_uri` LIKE-substring for history/chart (default `qwen3.6-35b`) |
 | `ALBEDO_S3_*` | bucket/endpoint/keys for uploading dashboard.json + state.json (shared with hippius_validation) |
 
 ---
@@ -542,7 +600,7 @@ python scripts/create_genesis_king.py     # genesis reign + king_version + reign
 
 ## Key contracts
 
-**Reveal (on-chain):** `v6|<repo>|<digest>` — e.g. `v6|alice/albedo-qwen3-4b-v1|sha256:...`
+**Reveal (on-chain):** `v7|<repo>|<digest>` — e.g. `v7|alice/albedo-qwen3.6-35b-v1|sha256:...`
 
 **EvalRequest (backend → POST /eval-runs):** king + challenger model refs, `dataset_sample_ids`,
 `dataset_manifest_hash`, `judge_config_hash`, `dataset_sample_seed` (= commit block hash).
