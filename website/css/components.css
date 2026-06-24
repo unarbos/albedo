@@ -370,11 +370,12 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
 .bench-score {
   font-family: var(--font-mono);
   font-size: 15px;
+  font-weight: 400;
   color: var(--color-fg);
 }
-.bench-score.ok { color: var(--color-ok); }
-.bench-score.bad { color: var(--color-bad); }
-.bench-score.live { color: var(--color-activity); }
+.bench-score.ok,
+.bench-score.bad,
+.bench-score.live { color: var(--color-fg); }
 .bench-table-head {
   display: flex;
   align-items: center;
@@ -431,9 +432,10 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
   color: var(--color-fg-3);
   white-space: nowrap;
 }
-.bench-suite-chip.ok b { color: var(--color-ok); }
-.bench-suite-chip.bad b { color: var(--color-bad); }
-.bench-suite-chip.live b { color: var(--color-activity); }
+.bench-suite-chip b { color: var(--color-fg); font-weight: 400; }
+.bench-suite-chip.ok b,
+.bench-suite-chip.bad b,
+.bench-suite-chip.live b { color: var(--color-fg); }
 .bench-details-btn {
   font-family: var(--font-mono);
   font-size: 10px;
