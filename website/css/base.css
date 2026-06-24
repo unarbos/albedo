@@ -111,6 +111,23 @@ main {
 .hero-llms:disabled { opacity: 0.5; cursor: wait; }
 .hero-llms svg { flex-shrink: 0; opacity: 0.85; }
 .hero-llms.copied { color: var(--color-ok); }
+/* Chat-with-the-king header button: same look as the current reign card (grey surface, gold border,
+   white text). Overrides the fixed 28x28 icon sizing of .top-header .links a. */
+.top-header .links a.header-chat {
+  width: auto; height: 28px;
+  gap: 6px; padding: 0 12px;
+  background: var(--color-surface);
+  border: 1px solid rgba(243, 196, 73, 0.5);
+  color: var(--color-fg);
+  font-family: var(--font-mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.14em; white-space: nowrap;
+}
+.top-header .links a.header-chat:hover {
+  color: var(--color-fg);
+  border-color: var(--color-gold);
+  background: rgba(243, 196, 73, 0.08);
+}
+.top-header .links a.header-chat svg { flex-shrink: 0; }
 .stat-chip {
   display: inline-flex; align-items: baseline; gap: 6px;
   padding: 5px 11px;
