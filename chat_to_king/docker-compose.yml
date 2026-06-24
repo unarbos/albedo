@@ -1,0 +1,30 @@
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: albedo-king-chat-webui
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8088:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OPENAI_API_BASE_URL=http://host.docker.internal:${KING_CHAT_GATEWAY_PORT:-9202}/v1
+      - OPENAI_API_KEY=sk-noauth
+      - ENABLE_OLLAMA_API=false
+      - WEBUI_NAME=Albedo
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - WEBUI_AUTH=true
+      - WEBUI_AUTH_TRUSTED_EMAIL_HEADER=X-Anon-Id
+      - WEBUI_AUTH_TRUSTED_NAME_HEADER=X-Anon-Name
+      - ENABLE_SIGNUP=true
+      - DEFAULT_USER_ROLE=user
+      - ENABLE_PERSISTENT_CONFIG=false
+      - DEFAULT_MODELS=albedo-king
+      - BYPASS_MODEL_ACCESS_CONTROL=true
+      - ENABLE_EVALUATION_ARENA_MODELS=false
+    volumes:
+      - open-webui-data:/app/backend/data
+
+volumes:
+  open-webui-data:
