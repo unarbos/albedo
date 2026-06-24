@@ -5,7 +5,6 @@ import { el, mount } from "../dom.js";
 import { fmtRelative } from "../format.js";
 import { kingTitleName, hubRepoUrl, modelRepo } from "../model.js";
 import { renderReign } from "../render/reign.js";
-import { renderKingHistory } from "../render/chart.js";
 import { renderBenchmarks } from "../render/benchmarks.js";
 import { renderPipeline } from "../render/pipeline.js";
 import { renderHistory, renderFails } from "../render/history.js";
@@ -55,7 +54,6 @@ function render(d) {
   renderHero(d);
   renderStats(d);
   renderReign($("reign-wrap"), d.reign, netuid);
-  renderKingHistory($("king-history-wrap"), d.crownings);
   renderTables(d);
   if (d.updatedAt) $("updated").textContent = "updated " + fmtRelative(d.updatedAt);
 }
