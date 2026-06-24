@@ -1,4 +1,4 @@
-import { DATA_ENDPOINTS, STATE_ENDPOINTS, LLMS_URLS } from "./config.js";
+import { DATA_ENDPOINTS, STATE_ENDPOINTS, BENCHMARK_ENDPOINTS, LLMS_URLS } from "./config.js";
 
 let llmsTextCache = null;
 
@@ -20,6 +20,10 @@ export async function fetchDashboard() {
 
 export async function fetchState() {
   return fetchFirstJson(STATE_ENDPOINTS);
+}
+
+export async function fetchBenchmarks() {
+  return fetchFirstJson(BENCHMARK_ENDPOINTS);
 }
 
 export async function fetchLlmsText() {
