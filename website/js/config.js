@@ -13,6 +13,14 @@ export const STATE_ENDPOINTS = [
   "./data/state.json",
 ];
 
+
+export const BENCHMARK_ENDPOINTS = [
+  "./data/benchmarks.json",
+  "https://s3.hippius.com/albedo/data/benchmarks.json",
+  "https://us-east-1.hippius.com/albedo/data/benchmarks.json",
+  "https://eu-central-1.hippius.com/albedo/data/benchmarks.json",
+];
+
 export const LLMS_URLS = [
   "./llms.txt",
   "https://s3.hippius.com/albedo/llms.txt",
