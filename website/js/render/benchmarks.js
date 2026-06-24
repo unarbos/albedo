@@ -162,7 +162,6 @@ function renderTableRows(models, baseline) {
   return models.map(model => {
     const latest = latestRun(model);
     return el("tr", {},
-      el("td", { class: "mono" }, `v${model.king_version ?? "—"}`),
       el("td", { class: "model" }, el("span", { class: "model-cell", title: model.model_uri }, modelName(model))),
       el("td", {}, modelBestScores(model, baseline)),
       el("td", { class: "r" }, String(benchmarkCount(model))),
@@ -202,8 +201,8 @@ export function renderBenchmarks(container, metaNode, data) {
     el("div", { class: "data-table-wrap bench-table-wrap" },
       el("table", { class: "data-table" },
         el("thead", {}, el("tr", {},
-          el("th", {}, "king"), el("th", {}, "model"), el("th", {}, "benchmarks"),
+          el("th", {}, "model"), el("th", {}, "benchmarks"),
           el("th", { class: "r" }, "benchmarks"), el("th", {}, "latest"), el("th", { class: "r" }, ""))),
-        el("tbody", {}, shown.length ? renderTableRows(shown, baseline) : el("tr", {}, el("td", { colspan: "6" }, "no other models yet."))))));
+        el("tbody", {}, shown.length ? renderTableRows(shown, baseline) : el("tr", {}, el("td", { colspan: "5" }, "no other models yet."))))));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }
