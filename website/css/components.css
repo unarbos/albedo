@@ -413,6 +413,13 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
 .bench-controls select { margin-left: 6px; }
 .bench-controls button:disabled { opacity: 0.35; cursor: default; }
 .bench-table-wrap { max-height: 360px; }
+.bench-king-col {
+  width: 96px;
+  min-width: 96px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  color: var(--color-fg-2);
+}
 .bench-suite-list { display: flex; flex-wrap: wrap; gap: 5px; }
 .bench-suite-chip {
   display: inline-flex;

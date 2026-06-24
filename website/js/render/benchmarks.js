@@ -1,6 +1,6 @@
 import { el, mount } from "../dom.js";
 import { fmt, fmtRelative, shortDigest } from "../format.js";
-import { modelRepo } from "../model.js";
+import { kingTitleName, modelRepo } from "../model.js";
 
 const BENCHMARK_LABELS = {
   terminal_bench_2: "Terminal-Bench 2.0",
@@ -21,6 +21,11 @@ function benchmarkLabel(suite) {
 
 function modelName(model) {
   return modelRepo(model?.model_uri) || model?.model_uri || "—";
+}
+
+function benchmarkKingTitle(model) {
+  const n = Number(model?.king_version);
+  return kingTitleName(Number.isFinite(n) ? n - 40 : null);
 }
 
 function completedRuns(model) {
@@ -47,9 +52,10 @@ function latestRunTime(model) {
 
 function sortModels(models) {
   return [...(models || [])].sort((a, b) => {
+    const kingDelta = Number(b.king_version || 0) - Number(a.king_version || 0);
+    if (kingDelta) return kingDelta;
     const timeDelta = new Date(latestRunTime(b)).getTime() - new Date(latestRunTime(a)).getTime();
-    if (Number.isFinite(timeDelta) && timeDelta) return timeDelta;
-    return Number(b.king_version || 0) - Number(a.king_version || 0);
+    return Number.isFinite(timeDelta) ? timeDelta : 0;
   });
 }
 
@@ -139,7 +145,7 @@ function renderFeatured(model, baseline) {
   return el("div", { class: "bench-feature" },
     el("div", { class: "bench-feature-main" },
       el("div", { class: "bench-feature-eyebrow" }, "latest benchmark"),
-      el("div", { class: "bench-feature-title" }, `v${model.king_version} · ${modelName(model)}`),
+      el("div", { class: "bench-feature-title" }, `${benchmarkKingTitle(model)} · ${modelName(model)}`),
       el("div", { class: "bench-feature-meta" },
         el("span", {}, shortDigest(model.model_hash)),
         el("span", {}, run ? benchmarkLabel(run.suite) : "pending"),
@@ -162,6 +168,7 @@ function renderTableRows(models, baseline) {
   return models.map(model => {
     const latest = latestRun(model);
     return el("tr", {},
+      el("td", { class: "bench-king-col" }, benchmarkKingTitle(model)),
       el("td", { class: "model" }, el("span", { class: "model-cell", title: model.model_uri }, modelName(model))),
       el("td", {}, modelBestScores(model, baseline)),
       el("td", { class: "r" }, String(benchmarkCount(model))),
@@ -201,8 +208,8 @@ export function renderBenchmarks(container, metaNode, data) {
     el("div", { class: "data-table-wrap bench-table-wrap" },
       el("table", { class: "data-table" },
         el("thead", {}, el("tr", {},
-          el("th", {}, "model"), el("th", {}, "benchmarks"),
+          el("th", { class: "bench-king-col" }, "king"), el("th", {}, "model"), el("th", {}, "benchmarks"),
           el("th", { class: "r" }, "benchmarks"), el("th", {}, "latest"), el("th", { class: "r" }, ""))),
-        el("tbody", {}, shown.length ? renderTableRows(shown, baseline) : el("tr", {}, el("td", { colspan: "5" }, "no other models yet."))))));
+        el("tbody", {}, shown.length ? renderTableRows(shown, baseline) : el("tr", {}, el("td", { colspan: "6" }, "no other models yet."))))));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }

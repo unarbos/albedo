@@ -1,7 +1,7 @@
 import { fetchBenchmarks } from "../fetch.js";
 import { el, mount } from "../dom.js";
 import { fmt, fmtDateTime, shortDigest } from "../format.js";
-import { hubRepoUrl, modelRepo } from "../model.js";
+import { hubRepoUrl, kingTitleName, modelRepo } from "../model.js";
 
 const BENCHMARK_LABELS = {
   terminal_bench_2: "Terminal-Bench 2.0",
@@ -20,6 +20,11 @@ function benchmarkLabel(suite) {
 
 function modelName(model) {
   return modelRepo(model?.model_uri) || model?.model_uri || "—";
+}
+
+function benchmarkKingTitle(model) {
+  const n = Number(model?.king_version);
+  return kingTitleName(Number.isFinite(n) ? n - 40 : null);
 }
 
 function completedRuns(model) {
@@ -113,7 +118,7 @@ function renderTaskTable(run) {
 
 function render(model, selected, baseline) {
   const repo = hubRepoUrl(model.model_uri);
-  mount($("b-title"), repo ? el("a", { href: repo, target: "_blank", rel: "noopener" }, `v${model.king_version} · ${modelName(model)}`) : `v${model.king_version} · ${modelName(model)}`);
+  mount($("b-title"), repo ? el("a", { href: repo, target: "_blank", rel: "noopener" }, `${benchmarkKingTitle(model)} · ${modelName(model)}`) : `${benchmarkKingTitle(model)} · ${modelName(model)}`);
   $("b-sub").textContent = `${model.king_version_id} · ${shortDigest(model.model_hash)}`;
 
   const runs = completedRuns(model);
