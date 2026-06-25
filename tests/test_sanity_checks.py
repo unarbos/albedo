@@ -138,6 +138,85 @@ def test_heuristics_passes_varied_code_responses():
     assert all(v["passed"] for v in out), out
 
 
+# ── _strip_thinking fallback (Option B) ────────────────────────────────────────
+
+
+_CURSED_RAW = (
+    "<think>\n"
+    "THOUGHT: grep the repo for the version constant then patch it.\n"
+    "ACTION: grep -rn 'VERSION' src/\n"
+    "</think is missing so this is unclosed"
+)
+
+_CURSED_RAW_WITH_CODE = (
+    "<think>\n"
+    "THOUGHT: The fix is a one-line sed to bump the version.\n"
+    "ACTION: sed -i 's/3.10.0/3.11.0/' pkg/version/version.go\n"
+)
+
+
+def test_heuristics_passes_cursed_think_output():
+    # Unclosed <think> content fed directly as the answer should pass all checks
+    # because the raw output contains code keywords and is non-empty/non-repetitive.
+    responses = [
+        _CURSED_RAW_WITH_CODE,
+        "<think>\nTHOUGHT: read the file first\nACTION: cat pkg/version/version.go\n",
+        "<think>\nTHOUGHT: verify the change\nACTION: grep VERSION pkg/version/version.go\n",
+    ]
+    out = _heuristics(responses, _req())
+    assert all(v["passed"] for v in out), out
+
+
+def test_heuristics_empty_vllm_still_fails():
+    # A truly empty vLLM response (model produced nothing) must still be caught.
+    out = _heuristics(["", "", ""], _req())
+    assert not any(v["passed"] for v in out)
+    assert all(v["reason"] == "empty response" for v in out)
+
+
+def test_run_prompts_falls_back_to_raw_on_unclosed_think(monkeypatch):
+    # When vLLM returns an unclosed <think> block, _strip_thinking returns "".
+    # The `or raw` fallback must return the raw string so heuristics see real content.
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"choices": [{"text": _CURSED_RAW, "finish_reason": "length"}]}
+
+    class _Client:
+        def __init__(self, *, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            return _Response()
+
+    monkeypatch.setattr("sanity_remote.worker.httpx.AsyncClient", _Client)
+    engine = VllmEngine.__new__(VllmEngine)
+    engine._s = type(
+        "Settings",
+        (),
+        {
+            "vllm_port": 1234,
+            "gen_temperature": 0.7,
+            "gen_top_p": 0.8,
+            "gen_top_k": 20,
+            "gen_min_p": 0.0,
+            "gen_read_timeout_s": 300.0,
+        },
+    )()
+
+    out = asyncio.run(engine._run_prompts("model-name", ["prompt"], 77))
+    # Must return the raw string, not an empty string.
+    assert out == [_CURSED_RAW]
+
+
 def test_run_prompts_uses_raw_completions(monkeypatch):
     captured = {}
 
