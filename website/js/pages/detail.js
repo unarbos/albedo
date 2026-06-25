@@ -70,7 +70,11 @@ function renderEval(r, netuid) {
     kv("result", v.badge, v.won ? "gold" : "bad"),
     kv("challenger", pct(v.chalMean), "gold"),
     kv("king", pct(v.kingMean)),
-    kv("margin", v.winMargin != null ? `${Number(v.winMargin).toFixed(2)} pp` : "—"),
+    kv("margin",
+       v.winMargin != null
+         ? `${Number(v.winMargin) * 100 >= 0 ? "+" : ""}${(Number(v.winMargin) * 100).toFixed(5)}%`
+         : "—",
+       v.winMargin != null ? (Number(v.winMargin) >= 0 ? "ok" : "bad") : undefined),
     kv("turns", r.total_turns != null ? `${r.valid_turns ?? r.total_turns}/${r.total_turns}` : "—"),
     kv("vllm errors", `${r.chal_vllm_errors ?? 0}c / ${r.king_vllm_errors ?? 0}k`),
     kv("finished", fmtDateTime(r.finished_at)));
