@@ -97,6 +97,72 @@ def test_claim_next_eval_is_sequential_and_creates_attempt(db_url: str):
     assert king_submission_id == expected_king_submission_id
 
 
+def test_claim_next_eval_rejects_duplicate_already_scored_hotkey(db_url: str):
+    repo = EvalRepository(db_url)
+    submission_id = _seed_eval_ready_submission(db_url)
+    # Same hotkey already has a model that was scored (lost a prior eval), so the
+    # still-queued duplicate must be rejected instead of dispatched.
+    _seed_scored_duplicate(db_url, hotkey="miner-hotkey")
+
+    claimed = repo.claim_next_eval(
+        worker_id="worker-a", lease_seconds=60, request_builder=_request_builder
+    )
+
+    assert claimed is None
+    with psycopg.connect(db_url) as conn:
+        row = conn.execute(
+            "SELECT state, fault_class, fault_code FROM model_submissions WHERE id = %s",
+            (submission_id,),
+        ).fetchone()
+        eval_run_count = conn.execute(
+            "SELECT count(*) FROM eval_runs WHERE submission_id = %s",
+            (submission_id,),
+        ).fetchone()[0]
+        event_type = conn.execute(
+            """
+            SELECT event_type FROM events
+            WHERE submission_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (submission_id,),
+        ).fetchone()[0]
+
+    assert row == ("TERMINAL_INVALID", "MINER_FAULT", "hotkey_already_validated")
+    assert eval_run_count == 0
+    assert event_type == "eval_skipped_hotkey_already_validated"
+
+
+def _seed_scored_duplicate(database_url: str, *, hotkey: str) -> UUID:
+    submission_id = uuid4()
+    chain_commit_id = uuid4()
+    with psycopg.connect(database_url) as conn, conn.transaction():
+        miner_id = conn.execute(
+            "SELECT id FROM miners WHERE hotkey = %s", (hotkey,)
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO chain_commits (
+                id, netuid, block_number, block_hash, uid, hotkey,
+                commit_payload, model_uri, payload_hash
+            )
+            VALUES (%s, 1, 101, '0xdup', 7, %s, '{}'::jsonb, 's3://models/dup', 'payload-dup')
+            """,
+            (chain_commit_id, hotkey),
+        )
+        conn.execute(
+            """
+            INSERT INTO model_submissions (
+                id, miner_id, chain_commit_id, netuid, uid, hotkey, model_uri,
+                model_hash, state, idempotency_key
+            )
+            VALUES (%s, %s, %s, 1, 7, %s, 's3://models/dup', 'sha256:dup', 'COMPLETE_LOSS', 'idem-dup')
+            """,
+            (submission_id, miner_id, chain_commit_id, hotkey),
+        )
+    return submission_id
+
+
 def test_weight_setter_claims_newest_epoch_and_supersedes_older(db_url: str):
     repo = WeightSetterRepository(db_url)
     oldest_id = uuid4()
