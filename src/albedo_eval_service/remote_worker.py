@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import glob
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,6 +110,7 @@ class RemoteEvalWorker:
         challenger_generator = self._generator_factory(
             "challenger", topology.challenger, challenger_model.local_path
         )
+        _cleanup_stale_vllm_resources()
         with ThreadPoolExecutor(max_workers=2) as executor:
             king_future = executor.submit(king_generator.generate, samples)
             challenger_future = executor.submit(challenger_generator.generate, samples)
@@ -553,6 +557,18 @@ def _valid_generated_pair_count(
         and not king_by_id[sample.sample_id].error
         and not challenger_by_id[sample.sample_id].error
     )
+
+
+def _cleanup_stale_vllm_resources() -> None:
+    # Kill orphaned vLLM EngineCore/WorkerProc children left by a prior crash, then
+    # remove the stale /dev/shm IPC files they leave behind - accumulation causes EAGAIN.
+    subprocess.run(["pkill", "-9", "-f", "vllm.v1.engine.core"], check=False)
+    subprocess.run(["pkill", "-9", "-f", "vllm.v1.executor.multiproc"], check=False)
+    for path in glob.glob("/dev/shm/psm_*") + glob.glob("/dev/shm/sem.mp-*"):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _parse_gpu_ids(raw: str) -> list[str]:
