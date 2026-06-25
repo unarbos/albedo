@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""Mirror SN97 Qwen3.6-35B crowned kings to public Hugging Face repos.
-
-Runs on the eval machine as a PM2 service. On startup it back-fills every crowned
-35B king that is not already on Hugging Face (oldest -> newest), then switches to a
-monitor loop that uploads each newly-coronated king as it appears.
-
-Model bytes are taken from the eval cache dir when present (never deleted); kings the
-eval dir no longer has are downloaded into a delete-safe work dir and removed after
-upload. Each repo is named ``albedo-qwen3.6-35b-king-<ROMAN>`` and carries an
-``albedo.md`` doc (README.md is left to the miner's own files, if any).
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -34,18 +22,14 @@ from psycopg.rows import dict_row
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_models import ModelArtifactResolver, parse_oci_ref
 
-_ROOT = Path(__file__).resolve().parents[1]  # repo root (this file lives in scripts/)
-# All of these are defaults; every one is overridable via the matching ALBEDO_KING_HF_*
-# env var (or CLI flag) in load_settings — see the env names in parentheses.
-_DEFAULT_ENV_PATH = _ROOT / ".env"  # ALBEDO_KING_HF_ENV_FILE
-_DEFAULT_EVAL_DIR = "/workspace/albedo-models"  # ALBEDO_KING_HF_EVAL_DIR (or ALBEDO_CACHE_DIR)
-_DEFAULT_WORK_DIR = "/workspace/king_upload_work_dir"  # ALBEDO_KING_HF_WORK_DIR
-_DEFAULT_LOCK_PATH = "/tmp/albedo-king-hf-uploader.lock"  # ALBEDO_KING_HF_LOCK_PATH
-_DEFAULT_REPO_PREFIX = "albedo-qwen3.6-35b-king"  # ALBEDO_KING_HF_REPO_PREFIX
-_DEFAULT_QWEN_PATTERNS = ("qwen3.6", "qwen3-6", "qwen3_6")  # ALBEDO_KING_HF_QWEN_PATTERNS
-_DEFAULT_SIZE_PATTERNS = ("35b", "35-b")  # ALBEDO_KING_HF_SIZE_PATTERNS
-# Substrings marking the canonical 35B seed; it anchors numbering but gets no repo.
-# (env: ALBEDO_KING_HF_GENESIS_MARKERS)
+_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_ENV_PATH = _ROOT / ".env"
+_DEFAULT_EVAL_DIR = "/workspace/albedo-models"
+_DEFAULT_WORK_DIR = "/workspace/king_upload_work_dir"
+_DEFAULT_LOCK_PATH = "/tmp/albedo-king-hf-uploader.lock"
+_DEFAULT_REPO_PREFIX = "albedo-qwen3.6-35b-king"
+_DEFAULT_QWEN_PATTERNS = ("qwen3.6", "qwen3-6", "qwen3_6")
+_DEFAULT_SIZE_PATTERNS = ("35b", "35-b")
 _DEFAULT_GENESIS_MARKERS = ("qwen3.6-35b-a3b-genesis", "35b-a3b-genesis")
 
 _ROMAN_NUMERALS = (
@@ -56,7 +40,7 @@ _ROMAN_NUMERALS = (
 
 
 class Unreachable(Exception):
-    """The model could not be fetched from Hippius (not found or not reachable)."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -91,7 +75,6 @@ class KingUpload:
     activated_at: datetime
     reign_reason: str
     roman: str = ""
-    # The king this model dethroned in its coronation duel (genesis seed for King I).
     opponent_name: str = ""
     opponent_repo: str = ""
     opponent_url: str | None = None
@@ -99,7 +82,6 @@ class KingUpload:
 
     @property
     def source_ref(self) -> str:
-        """Ref used to locate/download bytes — the same OCI manifest the evaluator used."""
         uri = self.artifact_uri or self.model_uri
         if uri.startswith(("s3://", "file://")) or "@" in uri or not self.model_hash:
             return uri
@@ -111,15 +93,12 @@ class KingUpload:
 
     @property
     def hippius_repo(self) -> str:
-        """The miner's original Hippius repo, e.g. ``alice/albedo-qwen3.6-35b-v1``."""
         return model_repo(self.model_uri or self.artifact_uri)
 
     @property
     def hub_url(self) -> str | None:
         return hub_repo_url(self.model_uri or self.artifact_uri)
 
-
-# --- numbering & naming -------------------------------------------------------
 
 def to_roman(n: int) -> str:
     if n < 1:
@@ -133,7 +112,6 @@ def to_roman(n: int) -> str:
 
 
 def model_repo(uri: str) -> str:
-    """Port of website/js/model.js modelRepo: strip scheme://, @digest, and registry host."""
     if not uri:
         return ""
     s = re.sub(r"^[a-z][a-z0-9+.-]*://", "", uri, flags=re.IGNORECASE)
@@ -145,7 +123,6 @@ def model_repo(uri: str) -> str:
 
 
 def hub_repo_url(uri: str) -> str | None:
-    """Port of website/js/model.js hubRepoUrl."""
     repo = model_repo(uri)
     if not repo:
         return None
@@ -187,8 +164,6 @@ def _is_genesis(king: KingUpload, settings: Settings) -> bool:
     return any(marker in repo for marker in settings.genesis_markers)
 
 
-# --- config -------------------------------------------------------------------
-
 def _load_dotenv(path: Path = _DEFAULT_ENV_PATH) -> None:
     if not path.exists():
         return
@@ -197,7 +172,6 @@ def _load_dotenv(path: Path = _DEFAULT_ENV_PATH) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        # Drop a trailing inline comment ("VALUE   # note") before using the value.
         value = re.split(r"\s#", value.strip(), maxsplit=1)[0].strip()
         os.environ.setdefault(key.strip(), value.strip('"').strip("'"))
 
@@ -272,10 +246,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
     )
 
 
-# --- locks & DB ---------------------------------------------------------------
-
 def acquire_pid_lock(lock_path: Path):
-    """Single-instance PID lock: refuse to start if another uploader is running."""
     handle = open(lock_path, "w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -340,15 +311,10 @@ def _king_from_row(row: dict) -> KingUpload:
 
 
 def list_crowned_kings(conn: psycopg.Connection, settings: Settings) -> list[KingUpload]:
-    """Crowned 35B kings oldest->newest with stable roman numerals (genesis skipped).
-
-    ``kv.version`` is a global counter spanning earlier architecture lines, so the roman
-    numeral is the position within the 35B coronation sequence, not the raw version.
-    """
     rows = conn.execute(_KINGS_SQL).fetchall()
     crowned: list[KingUpload] = []
     counter = 0
-    prev: KingUpload | None = None  # the king reigning just before the next coronation duel
+    prev: KingUpload | None = None
     for row in rows:
         king = _king_from_row(row)
         if not _matches_qwen35(king, settings):
@@ -378,10 +344,7 @@ def list_crowned_kings(conn: psycopg.Connection, settings: Settings) -> list[Kin
     return crowned
 
 
-# --- model sourcing -----------------------------------------------------------
-
 def _oci_cache_path(base_dir: Path, king: KingUpload) -> Path | None:
-    """Where the resolver caches this king's OCI snapshot under ``base_dir`` (None if not OCI)."""
     parsed = parse_oci_ref(king.source_ref)
     if not parsed:
         return None
@@ -392,7 +355,6 @@ def _oci_cache_path(base_dir: Path, king: KingUpload) -> Path | None:
 
 
 def eval_dir_path(king: KingUpload, settings: Settings) -> Path | None:
-    """Path of the king's model inside the eval cache dir, or None if not present there."""
     path = _oci_cache_path(settings.eval_dir, king)
     if path is None:
         return None
@@ -400,11 +362,6 @@ def eval_dir_path(king: KingUpload, settings: Settings) -> Path | None:
 
 
 def work_dir_path(king: KingUpload, settings: Settings) -> Path | None:
-    """Path of an already-downloaded copy left in the delete-safe work dir, or None.
-
-    Lets a pass that was interrupted after download (but before the post-upload delete)
-    reuse the bytes it already pulled instead of downloading the snapshot again.
-    """
     path = _oci_cache_path(settings.work_dir, king)
     if path is None:
         return None
@@ -412,7 +369,6 @@ def work_dir_path(king: KingUpload, settings: Settings) -> Path | None:
 
 
 def download_to_work_dir(king: KingUpload, settings: Settings) -> Path:
-    """Download the king's snapshot from Hippius into the delete-safe work dir."""
     settings.work_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
     resolver = ModelArtifactResolver(
@@ -429,13 +385,12 @@ def download_to_work_dir(king: KingUpload, settings: Settings) -> Path:
     )
     try:
         resolved = resolver.resolve(king.source_ref)
-    except Exception as exc:  # noqa: BLE001 — surface as a skippable "unreachable" condition
+    except Exception as exc:  # noqa: BLE001
         raise Unreachable(str(exc)) from exc
     return Path(resolved.local_path).resolve()
 
 
 def _delete_work_copy(path: Path, work_dir: Path) -> None:
-    """Delete a downloaded copy — but ONLY if it lives under the work dir (never the eval dir)."""
     work = work_dir.resolve()
     resolved = path.resolve()
     if resolved == work or work not in resolved.parents:
@@ -449,11 +404,6 @@ def _delete_work_copy(path: Path, work_dir: Path) -> None:
 
 
 def _missing_layers(manifest: dict, present: set[str], ignore_patterns: list[str]) -> list[tuple[str, str]]:
-    """(filename, blob_digest) for manifest layers whose file is absent from ``present``.
-
-    Maps each OCI layer to its repo-relative filename, drops internal/ignored files, and keeps
-    only the ones the HF repo is missing — so the caller downloads just those blobs.
-    """
     from huggingface_hub.utils import filter_repo_objects
 
     from albedo_eval_service.remote_models import _DIGEST_RE, _layer_filename
@@ -476,12 +426,6 @@ def _missing_layers(manifest: dict, present: set[str], ignore_patterns: list[str
 def download_missing_from_source(
     king: KingUpload, settings: Settings, present: set[str]
 ) -> tuple[Path, list[str]]:
-    """Download ONLY the source files absent from the HF repo. Returns (dir, [downloaded rels]).
-
-    Hippius/OCI sources fetch just the missing files' blobs straight from the manifest (no full
-    snapshot). Non-OCI sources can't address single files, so they fall back to a full download.
-    The returned dir lives under the work dir and is safe to delete after upload.
-    """
     parsed = parse_oci_ref(king.source_ref)
     if parsed is None:
         full = download_to_work_dir(king, settings)
@@ -543,16 +487,11 @@ def download_missing_from_source(
                         label=name,
                     )
                 downloaded.append(name)
-    except Exception as exc:  # noqa: BLE001 — surface as a skippable "unreachable" condition
+    except Exception as exc:  # noqa: BLE001
         raise Unreachable(str(exc)) from exc
     return out_dir, downloaded
 
 
-# --- docs & upload ------------------------------------------------------------
-
-# Files in the model dir that must never be published: the internal cache marker, partial
-# downloads, the HF cache subdir, and our albedo.md (uploaded separately). Shared by the
-# folder upload and the verify pass so both agree on which files a repo is expected to hold.
 _UPLOAD_IGNORE_PATTERNS = [".albedo-model-cache.json", "*.download", ".cache/**", "albedo.md"]
 
 _ALBEDO_MD_TEMPLATE = """\
@@ -609,7 +548,6 @@ def render_albedo_md(king: KingUpload) -> str:
 
 
 def _defeated_line(king: KingUpload) -> str:
-    """Human-readable description of the king this model beat in its coronation duel."""
     name = king.opponent_name or "the previous king"
     if king.opponent_repo and king.opponent_url:
         line = f"{name} — [`{king.opponent_repo}`]({king.opponent_url})"
@@ -629,13 +567,6 @@ def _hf_api(token: str | None):
 
 
 def already_uploaded(api, repo_id: str) -> bool:
-    """True if the repo exists and holds real files (anything beyond a lone ``.gitattributes``).
-
-    HF's ``create_repo`` seeds a brand-new repo with a single ``.gitattributes``; a prior
-    pass that created the repo but died before pushing the model leaves exactly that empty
-    shell behind. Such a repo must still be uploaded, so we only treat a repo by name —
-    if its sole file is ``.gitattributes`` (or it is empty) it counts as not-yet-uploaded.
-    """
     if not api.repo_exists(repo_id=repo_id, repo_type="model"):
         return False
     files = api.list_repo_files(repo_id=repo_id, repo_type="model")
@@ -643,7 +574,6 @@ def already_uploaded(api, repo_id: str) -> bool:
 
 
 def _index_shard_files(repo_id: str, token: str | None, present: set[str]) -> set[str]:
-    """Shard filenames the repo's safetensors index references (empty if no/unreadable index)."""
     if "model.safetensors.index.json" not in present:
         return set()
     from huggingface_hub import hf_hub_download
@@ -657,13 +587,12 @@ def _index_shard_files(repo_id: str, token: str | None, present: set[str]) -> se
         )
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return {name for name in data.get("weight_map", {}).values() if isinstance(name, str)}
-    except Exception as exc:  # noqa: BLE001 — unreadable index, can't check shards from HF side
+    except Exception as exc:  # noqa: BLE001
         logger.warning("could not read safetensors index for {}: {}", repo_id, exc)
         return set()
 
 
 def _repo_problems(repo_id: str, present: set[str], token: str | None) -> list[str]:
-    """HF-side completeness problems for a repo whose file list is already known."""
     problems: list[str] = []
     if "config.json" not in present:
         problems.append("config.json")
@@ -673,7 +602,6 @@ def _repo_problems(repo_id: str, present: set[str], token: str | None) -> list[s
         shards = _index_shard_files(repo_id, token, present)
         problems.extend(sorted(s for s in shards if s not in present))
     elif sharded:
-        # Multiple shards but no index map — the model won't load without it.
         problems.append("model.safetensors.index.json")
     elif not safetensors and not any(f.endswith(".bin") for f in present):
         problems.append("*.safetensors (no weight files)")
@@ -683,11 +611,6 @@ def _repo_problems(repo_id: str, present: set[str], token: str | None) -> list[s
 
 
 def hf_repo_problems(api, repo_id: str, token: str | None) -> list[str]:
-    """Cheap HF-side completeness check (no model download). [] means the repo looks complete.
-
-    Catches the breakage left by the old multi-commit uploads: missing safetensors shards, a
-    sharded model with no index, or a repo missing config.json / albedo.md.
-    """
     if not api.repo_exists(repo_id=repo_id, repo_type="model"):
         return ["repo does not exist"]
     present = set(api.list_repo_files(repo_id=repo_id, repo_type="model"))
@@ -701,8 +624,6 @@ def _add_op(path_in_repo: str, data):
 
 
 def _upload_model(api, king: KingUpload, model_dir: Path, settings: Settings, repo_id: str) -> None:
-    # Exactly two commits per repo: create_repo seeds the "initial" commit (.gitattributes),
-    # then a single create_commit lands every model file together with albedo.md.
     logger.info("creating public HF repo {} (exist_ok)", repo_id)
     api.create_repo(repo_id=repo_id, repo_type="model", private=False, exist_ok=True)
     files = _iter_model_files(model_dir, _UPLOAD_IGNORE_PATTERNS)
@@ -710,8 +631,6 @@ def _upload_model(api, king: KingUpload, model_dir: Path, settings: Settings, re
         "uploading {} model files + albedo.md to {} in one commit", len(files), repo_id
     )
     operations = [_add_op(rel, str(Path(model_dir) / rel)) for rel in files]
-    # albedo.md is rendered in-memory and committed alongside the miner's files so we never
-    # write into the eval dir and never leave a half-mirrored repo without its doc.
     operations.append(_add_op("albedo.md", render_albedo_md(king).encode("utf-8")))
     api.create_commit(
         repo_id=repo_id,
@@ -760,7 +679,6 @@ def _upload_one(api, king: KingUpload, settings: Settings, repo_id: str) -> None
 
 
 def _iter_model_files(model_dir: Path, ignore_patterns: list[str]) -> list[str]:
-    """Repo-relative paths the uploader would push from ``model_dir`` (same ignore filter)."""
     from huggingface_hub.utils import filter_repo_objects
 
     base = Path(model_dir)
@@ -769,13 +687,6 @@ def _iter_model_files(model_dir: Path, ignore_patterns: list[str]) -> list[str]:
 
 
 def _verify_and_repair(api, king: KingUpload, settings: Settings, repo_id: str) -> bool:
-    """Check the HF repo first, then download + commit only the files it is missing.
-
-    The cheap HF-side check runs first so a repo that already looks complete never triggers a
-    model download. If it is incomplete, the model bytes are sourced (eval-dir copy, leftover
-    work-dir copy, or a fresh download — only when a model file is actually missing) and every
-    file the repo lacks is committed in one commit. Returns True if anything was (re)uploaded.
-    """
     present = set(api.list_repo_files(repo_id=repo_id, repo_type="model"))
     problems = _repo_problems(repo_id, present, settings.hf_token)
     if not problems:
@@ -788,11 +699,9 @@ def _verify_and_repair(api, king: KingUpload, settings: Settings, repo_id: str) 
     operations = []
     cleanup: Path | None = None
     try:
-        # Only source model bytes when something other than albedo.md is missing.
         if any(p != "albedo.md" for p in problems):
             local = eval_dir_path(king, settings) or work_dir_path(king, settings)
             if local is not None:
-                # Full copy already on disk — upload only the files the repo lacks, no download.
                 logger.info("{} — sourcing missing files from local copy {}", king.king_name, local)
                 operations.extend(
                     _add_op(rel, str(local / rel))
@@ -800,7 +709,6 @@ def _verify_and_repair(api, king: KingUpload, settings: Settings, repo_id: str) 
                     if rel not in present
                 )
             else:
-                # Not cached anywhere — pull ONLY the missing files from Hippius.
                 logger.info(
                     "{} — downloading only the missing files from {}",
                     king.king_name,
@@ -837,9 +745,6 @@ def _verify_and_repair(api, king: KingUpload, settings: Settings, repo_id: str) 
 
 
 def process_once(api, settings: Settings, *, limit: int | None = None, verify: bool = False) -> dict:
-    # Fresh, short-lived read-only connection per pass: a dropped connection self-heals
-    # on the next poll instead of wedging the monitor, and the DB isn't held open during
-    # the (potentially long) model uploads.
     with _connect(settings) as conn:
         conn.execute("SET TRANSACTION READ ONLY")
         kings = list_crowned_kings(conn, settings)
@@ -863,7 +768,7 @@ def process_once(api, settings: Settings, *, limit: int | None = None, verify: b
                 "{} unreachable on Hippius: {} — skipping to next king", king.king_name, exc
             )
             counts["failed"] += 1
-        except Exception as exc:  # noqa: BLE001 — one bad king must not abort the pass
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "{} failed ({}): {} — skipping to next king",
                 king.king_name,
@@ -875,8 +780,6 @@ def process_once(api, settings: Settings, *, limit: int | None = None, verify: b
             break
     return counts
 
-
-# --- dry-run explain ----------------------------------------------------------
 
 def explain(settings: Settings) -> None:
     api = _hf_api(settings.hf_token)
@@ -893,7 +796,7 @@ def explain(settings: Settings) -> None:
         try:
             exists = already_uploaded(api, repo_id)
             status = "SKIP (already uploaded)" if exists else "WILL UPLOAD"
-        except Exception as exc:  # noqa: BLE001 — read-only probe, report and continue
+        except Exception as exc:  # noqa: BLE001
             exists = False
             status = f"WILL UPLOAD (HF check failed: {type(exc).__name__})"
         hit = eval_dir_path(king, settings)
@@ -922,8 +825,6 @@ def explain(settings: Settings) -> None:
         f"{n_up} to upload ({n_hit} cached locally, {n_dl} would download)"
     )
 
-
-# --- entrypoint ---------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -957,7 +858,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_parser().parse_args()
     settings = load_settings(args)
-    lock = acquire_pid_lock(settings.lock_path)  # noqa: F841 — held for process lifetime
+    lock = acquire_pid_lock(settings.lock_path)  # noqa: F841
 
     logger.info(
         "king HF uploader starting: namespace={} eval_dir={} work_dir={} poll={}s dry_run={}",
@@ -976,8 +877,6 @@ def main() -> None:
         raise SystemExit("no Hugging Face token; set ALBEDO_KING_HF_TOKEN or HF_TOKEN")
 
     api = _hf_api(settings.hf_token)
-    # Dedicated connection held for the process lifetime so the DB advisory lock stays held;
-    # query/upload passes use their own short-lived connections.
     lock_conn = _connect(settings)
     try:
         if not _claim_advisory_lock(lock_conn):
@@ -1005,7 +904,7 @@ def main() -> None:
             time.sleep(settings.poll_interval_s)
             try:
                 counts = process_once(api, settings)
-            except Exception as exc:  # noqa: BLE001 — keep the monitor alive across transient errors
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("monitor pass error ({}): {}", type(exc).__name__, exc)
                 continue
             if counts["uploaded"]:
