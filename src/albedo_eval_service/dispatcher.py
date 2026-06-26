@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from loguru import logger
 
 from .config import Settings, get_settings
 from .dataset_manifest import load_manifest_file
@@ -202,10 +203,21 @@ class EvalDispatcher:
         remote_run_id: str,
     ) -> dict[str, Any]:
         seen_event_count = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         while True:
-            events: list[dict[str, Any]] = []
-            async for event in client.iter_events(remote_run_id):
-                events.append(event)
+            try:
+                events: list[dict[str, Any]] = []
+                async for event in client.iter_events(remote_run_id):
+                    events.append(event)
+                consecutive_errors = 0
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                logger.warning(f"[eval-dispatch] transient poll error ({consecutive_errors}/{max_consecutive_errors}), retrying: {exc}")
+                await asyncio.sleep(min(10 * consecutive_errors, 60))
+                continue
 
             for event in events[seen_event_count:]:
                 self.repository.record_remote_event(
@@ -218,7 +230,17 @@ class EvalDispatcher:
                     return event
             seen_event_count = max(seen_event_count, len(events))
 
-            remote_state = await client.get_eval(remote_run_id)
+            try:
+                remote_state = await client.get_eval(remote_run_id)
+                consecutive_errors = 0
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                logger.warning(f"[eval-dispatch] transient state error ({consecutive_errors}/{max_consecutive_errors}), retrying: {exc}")
+                await asyncio.sleep(min(10 * consecutive_errors, 60))
+                continue
+
             if remote_state.get("type") == "verdict" or remote_state.get("state") in {"succeeded", "failed"}:
                 if len(events) == seen_event_count and remote_state.get("type") == "verdict":
                     self.repository.record_remote_event(
@@ -227,12 +249,19 @@ class EvalDispatcher:
                         event=remote_state,
                     )
                 return remote_state
+            # renew the lease even when no new events arrive (generation takes 30+ min with no events)
+            self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
             await asyncio.sleep(self.settings.remote_event_poll_seconds)
 
     async def run_forever(self) -> None:
+        # Keeps the loop alive across unexpected errors (DB glitch, transient exception).
         while True:
-            did_work = await self.dispatch_once()
-            if not did_work:
+            try:
+                did_work = await self.dispatch_once()
+                if not did_work:
+                    await asyncio.sleep(self.settings.dispatch_poll_seconds)
+            except Exception as exc:  # noqa: BLE001 - keep loop alive across unexpected errors
+                logger.exception(f"[eval-dispatch] unhandled error, retrying in {self.settings.dispatch_poll_seconds}s: {exc}")
                 await asyncio.sleep(self.settings.dispatch_poll_seconds)
 
 

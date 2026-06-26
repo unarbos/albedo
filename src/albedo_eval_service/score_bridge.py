@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -59,11 +60,18 @@ class ScoreBridgeHub:
                     self._pending.clear()
 
     def request(self, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
-        with self._lock:
-            loop = self._loop
-            websocket = self._websocket
-        if loop is None or websocket is None:
-            raise ScoreBridgeUnavailable("no score bridge client connected")
+        # Wait up to 120s for the bridge to (re)connect - handles transient disconnects during vLLM cleanup.
+        _deadline = time.monotonic() + 120.0
+        while True:
+            with self._lock:
+                loop = self._loop
+                websocket = self._websocket
+            if loop is not None and websocket is not None:
+                break
+            remaining = _deadline - time.monotonic()
+            if remaining <= 0:
+                raise ScoreBridgeUnavailable("no score bridge client connected")
+            time.sleep(min(2.0, remaining))
         future = asyncio.run_coroutine_threadsafe(
             self._request_on_loop(websocket, payload, timeout_seconds=timeout_seconds),
             loop,
