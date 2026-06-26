@@ -14,6 +14,7 @@ from .config import Settings, get_settings
 from .dataset_manifest import load_manifest_file
 from .faults import broken_stream_fault, classify_failure_verdict
 from .models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
+from .notifications import EvalErrorNotification, notify_eval_error
 from .remote_client import RemoteEvalClient
 from .repository import ActiveEval, ClaimedEval, EvalRepository
 from .sampling import swe_zero_manifest_sample_ids
@@ -75,6 +76,31 @@ def _build_sample_ids(settings: Settings, block_hash: str) -> list[str]:
     )
 
 
+def _notify_dispatch_failure(
+    *,
+    submission_id: UUID,
+    eval_run_id: UUID,
+    fault_class: str,
+    fault_code: str,
+    fault_message: str,
+    retryable: bool,
+    remote_run_id: str | None = None,
+) -> None:
+    notify_eval_error(
+        EvalErrorNotification(
+            component="eval-dispatcher",
+            severity="error",
+            message=fault_message,
+            eval_run_id=str(eval_run_id),
+            submission_id=str(submission_id),
+            fault_class=fault_class,
+            fault_code=fault_code,
+            retryable=retryable,
+            details={"remote_run_id": remote_run_id or ""},
+        )
+    )
+
+
 class EvalDispatcher:
     def __init__(self, *, settings: Settings, repository: EvalRepository):
         self.settings = settings
@@ -97,6 +123,7 @@ class EvalDispatcher:
         if not claimed:
             return False
 
+        remote_run_id = str(claimed.eval_run_id)
         client = RemoteEvalClient(
             base_url=claimed.remote_host.base_url,
             auth_token=self.settings.remote_auth_token,
@@ -131,6 +158,15 @@ class EvalDispatcher:
                 fault_code=fault.fault_code,
                 fault_message=fault.fault_message,
                 retryable=fault.retryable,
+            )
+            _notify_dispatch_failure(
+                submission_id=claimed.submission_id,
+                eval_run_id=claimed.eval_run_id,
+                fault_class=fault.fault_class,
+                fault_code=fault.fault_code,
+                fault_message=fault.fault_message,
+                retryable=fault.retryable,
+                remote_run_id=remote_run_id,
             )
             return True
         finally:
@@ -192,6 +228,15 @@ class EvalDispatcher:
                 fault_code=fault.fault_code,
                 fault_message=fault.fault_message,
                 retryable=fault.retryable,
+            )
+            _notify_dispatch_failure(
+                submission_id=submission_id,
+                eval_run_id=eval_run_id,
+                fault_class=fault.fault_class,
+                fault_code=fault.fault_code,
+                fault_message=fault.fault_message,
+                retryable=fault.retryable,
+                remote_run_id=str(verdict.get("eval_run_id") or eval_run_id),
             )
 
     async def _follow_until_verdict(

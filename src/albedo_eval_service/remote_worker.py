@@ -93,6 +93,7 @@ class RemoteEvalWorker:
         )
         tokenizer_path = king_model.local_path if Path(king_model.local_path).exists() else None
         samples = self._load_samples(request, tokenizer_path=tokenizer_path)
+        category_prep_id = self._start_category_prep(run, request, samples)
         run.set_state("generating")
         run.append_event(
             {
@@ -133,6 +134,7 @@ class RemoteEvalWorker:
             samples=samples,
             king_results=king_results,
             challenger_results=challenger_results,
+            category_prep_id=category_prep_id,
         )
         scoring_records = scoring_result["records"]
         self._emit_scoring_batches(run, request, scoring_records)
@@ -156,6 +158,38 @@ class RemoteEvalWorker:
         )
         run.append_event(verdict)
         run.set_state(str(verdict["state"]))
+
+    def _start_category_prep(
+        self, run: RemoteRun, request: EvalRequest, samples: list[EvalSample]
+    ) -> str | None:
+        run.append_event(
+            {
+                "type": "category_prep_started",
+                "eval_run_id": str(request.eval_run_id),
+                "sample_count": len(samples),
+            }
+        )
+        try:
+            category_prep_id = self._scorer.start_category_prep(request=request, samples=samples)
+        except Exception as exc:
+            run.append_event(
+                {
+                    "type": "category_prep_failed",
+                    "eval_run_id": str(request.eval_run_id),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "fallback": "score_batch_synchronous_or_fixed_metrics",
+                }
+            )
+            return None
+        run.append_event(
+            {
+                "type": "category_prep_done",
+                "eval_run_id": str(request.eval_run_id),
+                "category_prep_id": category_prep_id,
+                "state": "started" if category_prep_id else "skipped",
+            }
+        )
+        return category_prep_id
 
     def _load_samples(
         self, request: EvalRequest, *, tokenizer_path: str | None = None
@@ -326,6 +360,10 @@ class RemoteEvalWorker:
                     "allowed_scores": request.scoring.allowed_scores,
                     "scored_sample_count": scored_so_far,
                     "judge_errors": judge_errors,
+                    "scoring_modes": sorted({str(record.get("scoring_mode") or "") for record in batch}),
+                    "category_generation_errors": sum(
+                        1 for record in batch if record.get("category_generation_error")
+                    ),
                     "state": "succeeded"
                     if batch_scored == len(batch) and judge_errors == 0
                     else "failed",
@@ -339,6 +377,7 @@ class RemoteEvalWorker:
         samples: list[EvalSample],
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
+        category_prep_id: str | None = None,
     ) -> dict[str, object]:
         valid_pair_count = _valid_generated_pair_count(samples, king_results, challenger_results)
         if valid_pair_count == 0:
@@ -365,6 +404,7 @@ class RemoteEvalWorker:
                 samples=samples,
                 king_results=king_results,
                 challenger_results=challenger_results,
+                category_prep_id=category_prep_id,
             )
         except Exception as exc:
             return {
@@ -428,7 +468,9 @@ class RemoteEvalWorker:
             "score_breakdown": {
                 "by_judge": scoring_summary.get("by_judge", {}),
                 "by_metric": scoring_summary.get("by_metric", {}),
+                "by_category": scoring_summary.get("by_category", {}),
             },
+            "scoring_mode": scoring_summary.get("scoring_mode"),
             "artifacts": {},
             "artifact_metadata": {},
             "fault_class": scoring_summary.get("fault_class") if state != "succeeded" else None,

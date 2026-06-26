@@ -20,6 +20,11 @@ class ScoringResult:
 
 
 class Scorer(Protocol):
+    def start_category_prep(
+        self, *, request: EvalRequest, samples: list[EvalSample]
+    ) -> str | None:
+        ...
+
     def score(
         self,
         *,
@@ -27,6 +32,7 @@ class Scorer(Protocol):
         samples: list[EvalSample],
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
+        category_prep_id: str | None = None,
     ) -> ScoringResult:
         ...
 
@@ -39,6 +45,23 @@ class HttpScoringClient:
             raise ValueError("ALBEDO_REMOTE_SCORING_AUTH_TOKEN is required when scoring backend is http")
         self.settings = settings
 
+    def start_category_prep(
+        self, *, request: EvalRequest, samples: list[EvalSample]
+    ) -> str | None:
+        with httpx.Client(
+            base_url=self.settings.scoring_base_url.rstrip("/"),
+            headers={"Authorization": f"Bearer {self.settings.scoring_auth_token}"},
+            timeout=httpx.Timeout(self.settings.scoring_timeout_seconds),
+        ) as client:
+            response = client.post(
+                "/category-prep",
+                json=_category_prep_payload(request, samples),
+            )
+            response.raise_for_status()
+            body = response.json()
+            value = body.get("category_prep_id")
+            return value if isinstance(value, str) and value else None
+
     def score(
         self,
         *,
@@ -46,6 +69,7 @@ class HttpScoringClient:
         samples: list[EvalSample],
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
+        category_prep_id: str | None = None,
     ) -> ScoringResult:
         all_records: list[dict[str, Any]] = []
         summaries: list[dict[str, Any]] = []
@@ -54,7 +78,9 @@ class HttpScoringClient:
             headers={"Authorization": f"Bearer {self.settings.scoring_auth_token}"},
             timeout=httpx.Timeout(self.settings.scoring_timeout_seconds),
         ) as client:
-            for payload in _score_batch_payloads(request, samples, king_results, challenger_results):
+            for payload in _score_batch_payloads(
+                request, samples, king_results, challenger_results, category_prep_id=category_prep_id
+            ):
                 response = client.post("/score-batch", json=payload)
                 response.raise_for_status()
                 body = response.json()
@@ -75,6 +101,17 @@ class WebSocketScoringClient:
     def __init__(self, settings: RemoteSettings):
         self.settings = settings
 
+    def start_category_prep(
+        self, *, request: EvalRequest, samples: list[EvalSample]
+    ) -> str | None:
+        body = score_bridge_hub.request(
+            _category_prep_payload(request, samples),
+            timeout_seconds=self.settings.scoring_timeout_seconds,
+            endpoint="/category-prep",
+        )
+        value = body.get("category_prep_id")
+        return value if isinstance(value, str) and value else None
+
     def score(
         self,
         *,
@@ -82,10 +119,13 @@ class WebSocketScoringClient:
         samples: list[EvalSample],
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
+        category_prep_id: str | None = None,
     ) -> ScoringResult:
         all_records: list[dict[str, Any]] = []
         summaries: list[dict[str, Any]] = []
-        for payload in _score_batch_payloads(request, samples, king_results, challenger_results):
+        for payload in _score_batch_payloads(
+            request, samples, king_results, challenger_results, category_prep_id=category_prep_id
+        ):
             body = score_bridge_hub.request(payload, timeout_seconds=self.settings.scoring_timeout_seconds)
             records = body.get("scoring_records", [])
             if not isinstance(records, list):
@@ -106,6 +146,11 @@ class MockScoringClient:
     def __init__(self, settings: RemoteSettings):
         self.settings = settings
 
+    def start_category_prep(
+        self, *, request: EvalRequest, samples: list[EvalSample]
+    ) -> str | None:
+        return None
+
     def score(
         self,
         *,
@@ -113,6 +158,7 @@ class MockScoringClient:
         samples: list[EvalSample],
         king_results: list[GenerationResult],
         challenger_results: list[GenerationResult],
+        category_prep_id: str | None = None,
     ) -> ScoringResult:
         king_by_id = {result.sample_id: result for result in king_results}
         challenger_by_id = {result.sample_id: result for result in challenger_results}
@@ -145,6 +191,7 @@ class MockScoringClient:
                     "judge_scores": [score] * len(judge_models),
                     "sample_score": score,
                     "scored": True,
+                    "scoring_mode": "mock",
                 }
             )
         return ScoringResult(
@@ -163,11 +210,29 @@ def build_scorer(settings: RemoteSettings) -> Scorer:
     raise ValueError(f"unsupported scoring backend: {settings.scoring_backend}")
 
 
+def _category_prep_payload(request: EvalRequest, samples: list[EvalSample]) -> dict[str, Any]:
+    return {
+        "eval_run_id": str(request.eval_run_id),
+        "batch_id": "category-prep",
+        "total_sample_count": len(samples),
+        "samples": [
+            {
+                "sample_id": sample.sample_id,
+                "prompt": sample.prompt,
+                "sample_index": index,
+            }
+            for index, sample in enumerate(samples)
+        ],
+    }
+
+
 def _score_batch_payloads(
     request: EvalRequest,
     samples: list[EvalSample],
     king_results: list[GenerationResult],
     challenger_results: list[GenerationResult],
+    *,
+    category_prep_id: str | None = None,
 ) -> list[dict[str, Any]]:
     king_by_id = {result.sample_id: result for result in king_results}
     challenger_by_id = {result.sample_id: result for result in challenger_results}
@@ -187,6 +252,7 @@ def _score_batch_payloads(
                 "batch_id": f"score-{batch_idx:04d}",
                 "judge_models": list(JUDGE_MODELS[: request.scoring.judge_count]),
                 "total_sample_count": len(samples),
+                "category_prep_id": category_prep_id,
                 "samples": [
                     {
                         "sample_id": sample.sample_id,

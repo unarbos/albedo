@@ -27,7 +27,7 @@ class DatasetConfig(BaseModel):
     sample_seed: str
     sampling_algo: str
     generation_batch_size: int = 8
-    scoring_batch_size: int = 32
+    scoring_batch_size: int = 8
     sample_ids: list[str] = Field(default_factory=list)
 
 

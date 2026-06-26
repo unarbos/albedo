@@ -52,7 +52,7 @@ class RemoteSettings(BaseSettings):
     scoring_backend: str = "http"
     scoring_base_url: str | None = None
     scoring_auth_token: str = ""
-    scoring_timeout_seconds: float = 300.0
+    scoring_timeout_seconds: float = 1800.0
     scoring_min_valid_fraction: float = 0.5
 
     upload_artifacts: bool = True

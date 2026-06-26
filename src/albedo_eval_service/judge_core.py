@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -17,15 +18,15 @@ JUDGE_MODELS: tuple[str, ...] = (
 )
 
 JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {
-    "z-ai/glm-5.1": {"order": ["baidu", "z-ai"], "allow_fallbacks": True, "quantizations": ["fp8"]},
+    "z-ai/glm-5.1": {"order": ["baidu"], "allow_fallbacks": False, "quantizations": ["fp8"]},
     "qwen/qwen3.5-397b-a17b": {
-        "order": ["deepinfra", "chutes"],
-        "allow_fallbacks": True,
+        "order": ["deepinfra"],
+        "allow_fallbacks": False,
         "quantizations": ["fp8"],
     },
     "deepseek/deepseek-v3.2": {
-        "order": ["atlas-cloud", "baidu"],
-        "allow_fallbacks": True,
+        "order": ["atlas-cloud"],
+        "allow_fallbacks": False,
         "quantizations": ["fp8"],
     },
 }
@@ -62,6 +63,184 @@ PAIRWISE_RUBRIC_SYSTEM = (
     "dimension. Reply with STRICT JSON only, no prose and no code fences.\n\n"
     f"{_SECURITY}"
 )
+
+CATEGORY_PROMPT_SYSTEM = (
+    "You generate scoring categories for a pairwise code-agent evaluation. "
+    "Return STRICT JSON only. Do not include prose or code fences."
+)
+
+
+def build_candidate_response_messages(*, context_prompt: str) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a capable code-agent assistant. Answer the user's task as the "
+                "next assistant turn. Do not discuss evaluation or scoring."
+            ),
+        },
+        {"role": "user", "content": context_prompt.rstrip()},
+    ]
+
+
+def build_category_generation_messages(
+    *, context_prompt: str, glm_response: str, category_count: int = 5
+) -> list[dict[str, str]]:
+    user = (
+        "Create exactly {count} independent scoring categories for judging two candidate "
+        "assistant next turns for the conversation below. Base the categories on the task "
+        "and on the GLM response, but do not mention the GLM response as a reference answer.\n\n"
+        "CONVERSATION SO FAR:\n------\n{prompt}\n------\n\n"
+        "GLM RESPONSE USED ONLY TO DERIVE CATEGORIES:\n------\n{response}\n------\n\n"
+        "Return strict JSON with this exact shape:\n"
+        '{{"categories":[{{"id":"cat_01","name":"...","description":"...",'
+        '"scoring_guidance":"..."}}]}}\n'
+        "IDs must be cat_01 through cat_{count:02d}."
+    ).format(count=category_count, prompt=context_prompt.rstrip(), response=glm_response.rstrip())
+    return [{"role": "system", "content": CATEGORY_PROMPT_SYSTEM}, {"role": "user", "content": user}]
+
+
+def validate_category_payload(raw: str, *, expected_count: int = 5) -> tuple[list[dict[str, str]], str]:
+    try:
+        obj = json.loads(raw.strip())
+    except Exception:
+        obj = _extract_json(raw) or {}
+    categories = _category_list_from_payload(obj)
+    if not isinstance(categories, list):
+        raise ValueError("category payload must contain a categories array")
+    if len(categories) != expected_count:
+        raise ValueError(f"category payload must contain exactly {expected_count} categories")
+    normalised: list[dict[str, str]] = []
+    names: set[str] = set()
+    for index, item in enumerate(categories, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("each category must be an object")
+        expected_id = f"cat_{index:02d}"
+        category_id = _required_str(item.get("id"), "id")
+        if category_id != expected_id:
+            raise ValueError(f"category id must be {expected_id}, got {category_id}")
+        name = _required_str(item.get("name"), "name")
+        description = _required_str(item.get("description"), "description")
+        scoring_guidance = _required_str(item.get("scoring_guidance"), "scoring_guidance")
+        key = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+        if key in names:
+            raise ValueError(f"duplicate category name: {name}")
+        names.add(key)
+        normalised.append(
+            {
+                "id": category_id,
+                "name": name,
+                "description": description,
+                "scoring_guidance": scoring_guidance,
+            }
+        )
+    return normalised, category_hash(normalised)
+
+
+def _category_list_from_payload(obj: Any) -> list[Any] | None:
+    if isinstance(obj, list):
+        return obj
+    if not isinstance(obj, dict):
+        return None
+    categories = obj.get("categories")
+    if isinstance(categories, list):
+        return categories
+    for key in ("rubric", "scoring_rubric", "data", "result", "response"):
+        value = obj.get(key)
+        if isinstance(value, dict):
+            nested = _category_list_from_payload(value)
+            if nested is not None:
+                return nested
+    return None
+
+
+def category_hash(categories: list[dict[str, str]]) -> str:
+    payload = json.dumps(categories, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}"
+
+
+def build_category_pairwise_messages(
+    *,
+    context_prompt: str,
+    previous_king_output: str,
+    challenger_output: str,
+    challenger_first: bool,
+    categories: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if challenger_first:
+        model_1 = challenger_output
+        model_2 = previous_king_output
+    else:
+        model_1 = previous_king_output
+        model_2 = challenger_output
+    category_lines = []
+    for category in categories:
+        category_lines.append(
+            "- {id}: {name} -- {description} Guidance: {guidance}".format(
+                id=category["id"],
+                name=category["name"],
+                description=category["description"],
+                guidance=category["scoring_guidance"],
+            )
+        )
+    category_ids = [category["id"] for category in categories]
+    schema_hint = json.dumps({category_id: 0 for category_id in category_ids})
+    system = (
+        "You are a strict pairwise code-agent judge. Judge each category independently. "
+        "For each category answer 1 if MODEL 1 is better, 2 if MODEL 2 is better, or 0 "
+        "if they are genuinely equal. Reply with STRICT JSON only using exactly the "
+        f"category IDs as keys, like {schema_hint}.\n\n{_SECURITY}"
+    )
+    user = (
+        "CONVERSATION SO FAR:\n------\n"
+        f"{context_prompt.rstrip()}\n"
+        "------\n\n"
+        "SCORING CATEGORIES:\n"
+        f"{chr(10).join(category_lines)}\n\n"
+        "MODEL 1 candidate next turn:\n------\n"
+        f"{strip_reply_injection(model_1).rstrip()}\n"
+        "------\n\n"
+        "MODEL 2 candidate next turn:\n------\n"
+        f"{strip_reply_injection(model_2).rstrip()}\n"
+        "------\n\n"
+        "Compare MODEL 1 and MODEL 2 as the assistant's next move. Return the strict JSON verdict."
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def category_response_schema(categories: list[dict[str, str]]) -> dict[str, Any]:
+    category_ids = [category["id"] for category in categories]
+    return {
+        "type": "object",
+        "properties": {key: {"type": "integer", "enum": [0, 1, 2]} for key in category_ids},
+        "required": category_ids,
+        "additionalProperties": False,
+    }
+
+
+def parse_category_verdict(
+    raw: str,
+    *,
+    categories: list[dict[str, str]],
+    model: str = "",
+    provider: str | None = None,
+    challenger_position: int = 2,
+    error: str | None = None,
+) -> MetricVerdict:
+    return _parse_verdict_for_keys(
+        raw,
+        [category["id"] for category in categories],
+        model=model,
+        provider=provider,
+        challenger_position=challenger_position,
+        error=error,
+    )
+
+
+def _required_str(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"category {field} is required")
+    return value.strip()
 
 JUDGE_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -192,10 +371,32 @@ def parse_metric_verdict(
     error: str | None = None,
 ) -> MetricVerdict:
     obj = _normalise_metric_obj(_extract_json(raw) or {})
+    return _parse_verdict_for_keys(
+        raw,
+        list(METRIC_KEYS),
+        model=model,
+        provider=provider,
+        challenger_position=challenger_position,
+        error=error,
+        obj=obj,
+    )
+
+
+def _parse_verdict_for_keys(
+    raw: str,
+    keys: list[str],
+    *,
+    model: str = "",
+    provider: str | None = None,
+    challenger_position: int = 2,
+    error: str | None = None,
+    obj: dict[str, Any] | None = None,
+) -> MetricVerdict:
+    source = obj if obj is not None else (_extract_json(raw) or {})
     scores: dict[str, float] = {}
     ok = True
-    for key in METRIC_KEYS:
-        role = _map_token(obj.get(key))
+    for key in keys:
+        role = _map_token(source.get(key)) if isinstance(source, dict) else None
         if role is None:
             scores[key] = 0.0
             ok = False
@@ -213,30 +414,44 @@ def parse_metric_verdict(
     )
 
 
-def _extract_json(raw: str) -> dict[str, Any] | None:
+def _extract_json(raw: str) -> Any | None:
     if not raw:
         return None
     decoder = json.JSONDecoder()
-    candidates: list[dict[str, Any]] = []
+    candidates: list[Any] = []
     for match in _JSON_FENCE_RE.finditer(raw):
         try:
             obj = json.loads(match.group(1).strip())
         except Exception:
             continue
-        if isinstance(obj, dict):
+        if isinstance(obj, (dict, list)):
             candidates.append(obj)
-    index = raw.find("{")
-    while index != -1:
+    starts = [index for index, char in enumerate(raw) if char in "{["]
+    for index in starts:
+        if index > 0 and raw[index - 1] == "`":
+            continue
         try:
             obj, _ = decoder.raw_decode(raw[index:])
         except Exception:
-            index = raw.find("{", index + 1)
             continue
-        if isinstance(obj, dict):
+        if isinstance(obj, (dict, list)):
             candidates.append(obj)
-        index = raw.find("{", index + 1)
-    keyed = [candidate for candidate in candidates if set(METRIC_KEYS) & set(candidate)]
-    return (keyed or candidates)[-1] if candidates else None
+    keyed = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and set(METRIC_KEYS) & set(candidate)
+    ]
+    if keyed:
+        return keyed[-1]
+    category_payloads = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, list)
+        or (isinstance(candidate, dict) and _category_list_from_payload(candidate) is not None)
+    ]
+    if category_payloads:
+        return category_payloads[0]
+    return candidates[-1] if candidates else None
 
 
 def _normalise_metric_obj(obj: dict[str, Any]) -> dict[str, Any]:
@@ -304,26 +519,29 @@ def aggregate_scoring_records(
             if result.get("parse_ok")
         }
     )
+    metric_keys = _metric_keys_for_records(scored)
     for judge_model in judge_models:
         metric_means = []
-        for metric in METRIC_KEYS:
+        for metric in metric_keys:
             values = [
                 float(result["metric_scores"][metric])
                 for record in scored
                 for result in record.get("judge_results", [])
-                if result.get("parse_ok") and result.get("judge_model") == judge_model
+                if result.get("parse_ok")
+                and result.get("judge_model") == judge_model
+                and metric in result.get("metric_scores", {})
             ]
             if values:
                 metric_mean = mean(values)
                 metric_means.append(metric_mean)
         if metric_means:
             by_judge[judge_model] = mean(metric_means)
-    for metric in METRIC_KEYS:
+    for metric in metric_keys:
         values = [
             float(result["metric_scores"][metric])
             for record in scored
             for result in record.get("judge_results", [])
-            if result.get("parse_ok")
+            if result.get("parse_ok") and metric in result.get("metric_scores", {})
         ]
         if values:
             by_metric[metric] = mean(values)
@@ -343,11 +561,52 @@ def aggregate_scoring_records(
         "scored_sample_count": valid_count,
         "by_judge": by_judge,
         "by_metric": by_metric,
+        "by_category": by_metric if _records_use_categories(scored) else {},
+        "scoring_mode": _scoring_mode_for_records(scored),
         "fault_class": None,
         "fault_code": None,
         "fault_message": None,
         "retryable": None,
     }
+
+
+def _metric_keys_for_records(records: list[dict[str, Any]]) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for metric in METRIC_KEYS:
+        seen.add(metric)
+    dynamic = False
+    for record in records:
+        for result in record.get("judge_results", []):
+            if not isinstance(result, dict):
+                continue
+            metric_scores = result.get("metric_scores", {})
+            if not isinstance(metric_scores, dict):
+                continue
+            for key in metric_scores:
+                if key not in METRIC_KEYS:
+                    dynamic = True
+                if key not in seen:
+                    seen.add(str(key))
+                    keys.append(str(key))
+    if not dynamic:
+        return list(METRIC_KEYS)
+    return keys or list(METRIC_KEYS)
+
+
+def _records_use_categories(records: list[dict[str, Any]]) -> bool:
+    return any(record.get("scoring_mode") == "glm_categories" for record in records)
+
+
+def _scoring_mode_for_records(records: list[dict[str, Any]]) -> str:
+    modes = {str(record.get("scoring_mode") or "") for record in records}
+    if "glm_categories" in modes and "fixed_metrics_fallback" not in modes:
+        return "glm_categories"
+    if "fixed_metrics_fallback" in modes and "glm_categories" not in modes:
+        return "fixed_metrics_fallback"
+    if "glm_categories" in modes and "fixed_metrics_fallback" in modes:
+        return "mixed"
+    return "fixed_metrics"
 
 
 def challenger_beats_king(score_challenger: float, score_king: float) -> bool:

@@ -115,9 +115,9 @@ def _vllm_worker(
     top_k: int | None,
     max_model_len: int | None,
     enforce_eager: bool,
-    gpu_memory_utilization: float,
-    kv_cache_dtype: str,
-    queue,
+    gpu_memory_utilization: float = 0.95,
+    kv_cache_dtype: str = "auto",
+    queue=None,
 ) -> None:
     try:
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_ids)
