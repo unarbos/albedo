@@ -98,7 +98,7 @@ def write_manifest(
     """Build the combined manifest, write it locally, and return (path, manifest, sha256)."""
     out_path = Path(out_path) if out_path else Path(root) / "manifest.json"
     manifest = build_manifest_dict(Path(root), weights, version=version, max_workers=max_workers)
-    payload = json.dumps(manifest, sort_keys=True).encode("utf-8")
+    payload = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
     out_path.write_bytes(payload)
     return out_path, manifest, hashlib.sha256(payload).hexdigest()
 
