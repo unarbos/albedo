@@ -8,6 +8,8 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+from .sampling import _SHARD_RE
+
 _IM_START = "<|im_start|>"
 _IM_END = "<|im_end|>"
 _QWEN3_CHAT_TEMPLATE = """{%- for message in messages %}
@@ -69,7 +71,7 @@ def _load_sample(
 
 def _parse_sample_id(sample_id: str) -> tuple[str, int, int]:
     shard_name, row_idx_raw, turn_idx_raw = sample_id.rsplit(":", 2)
-    if not shard_name.startswith("data/train-") or not shard_name.endswith(".parquet"):
+    if not _SHARD_RE.match(shard_name):
         raise ValueError(f"unsupported SWE-ZERO shard in sample_id: {sample_id}")
     return shard_name, int(row_idx_raw), int(turn_idx_raw)
 

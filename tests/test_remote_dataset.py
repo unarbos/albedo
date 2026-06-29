@@ -125,3 +125,24 @@ def test_load_swe_zero_sample_from_prompt_column(tmp_path):
 
     assert samples[0].prompt == "Explain pytest fixtures."
     assert samples[0].target is None
+
+
+def test_load_sample_from_namespaced_source(tmp_path):
+    # mini-coder shards live under a namespaced subdir; the sample_id carries the prefix.
+    shard_dir = tmp_path / "mini-coder" / "data"
+    shard_dir.mkdir(parents=True)
+    messages = [
+        {"role": "user", "content": "Fix the bug."},
+        {"role": "assistant", "content": "Patched it."},
+    ]
+    table = pa.table({"messages": [json.dumps(messages)]})
+    pq.write_table(table, shard_dir / "train-00000-of-00060.parquet")
+
+    samples = load_swe_zero_samples(
+        dataset_root=tmp_path,
+        sample_ids=["mini-coder/data/train-00000-of-00060.parquet:0:0"],
+    )
+
+    assert len(samples) == 1
+    assert samples[0].sample_id == "mini-coder/data/train-00000-of-00060.parquet:0:0"
+    assert samples[0].target == "Patched it."

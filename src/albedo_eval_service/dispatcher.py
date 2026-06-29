@@ -17,7 +17,7 @@ from .models import Challenger, DatasetConfig, EvalRequest, PreviousKing, Scorin
 from .notifications import EvalErrorNotification, notify_eval_error
 from .remote_client import RemoteEvalClient
 from .repository import ActiveEval, ClaimedEval, EvalRepository
-from .sampling import swe_zero_manifest_sample_ids
+from .sampling import multi_source_manifest_sample_ids
 
 
 def build_eval_request(
@@ -68,7 +68,7 @@ def _build_sample_ids(settings: Settings, block_hash: str) -> list[str]:
         settings.dataset_manifest_path,
         expected_sha256=settings.dataset_manifest_hash,
     )
-    return swe_zero_manifest_sample_ids(
+    return multi_source_manifest_sample_ids(
         manifest,
         block_hash=block_hash,
         sample_count=settings.sample_count,
