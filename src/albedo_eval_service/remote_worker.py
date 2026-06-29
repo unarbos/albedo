@@ -468,7 +468,6 @@ class RemoteEvalWorker:
             "score_breakdown": {
                 "by_judge": scoring_summary.get("by_judge", {}),
                 "by_metric": scoring_summary.get("by_metric", {}),
-                "by_category": scoring_summary.get("by_category", {}),
             },
             "scoring_mode": scoring_summary.get("scoring_mode"),
             "artifacts": {},
