@@ -19,7 +19,7 @@ from .remote_generation import GenerationResult, Generator, VllmProcessGenerator
 from .remote_models import ModelArtifactResolver, ResolvedModel
 from .remote_scoring import Scorer, build_scorer
 from .remote_state import RemoteRun
-from .sampling import swe_zero_manifest_sample_ids
+from .sampling import multi_source_manifest_sample_ids
 
 GeneratorFactory = Callable[[str, list[str], str], Generator]
 T = TypeVar("T")
@@ -203,7 +203,7 @@ class RemoteEvalWorker:
             manifest = load_manifest_file(
                 manifest_path, expected_sha256=request.dataset.manifest_hash
             )
-            sample_ids = swe_zero_manifest_sample_ids(
+            sample_ids = multi_source_manifest_sample_ids(
                 manifest,
                 block_hash=request.dataset.sample_seed,
                 sample_count=request.dataset.sample_count,

@@ -22,10 +22,10 @@ def sample_prompts(*, seed: str, n: int = 3, max_turns: int = 10, manifest_path:
         # Heavy deps (pyarrow via remote_dataset) load only when a real manifest is configured.
         from albedo_eval_service.dataset_manifest import load_manifest_file
         from albedo_eval_service.remote_dataset import load_swe_zero_samples
-        from albedo_eval_service.sampling import swe_zero_manifest_sample_ids
+        from albedo_eval_service.sampling import multi_source_manifest_sample_ids
 
         manifest = load_manifest_file(manifest_path, expected_sha256=manifest_hash)
-        sample_ids = swe_zero_manifest_sample_ids(manifest, block_hash=str(seed), sample_count=n, max_turns_per_sample=max_turns)
+        sample_ids = multi_source_manifest_sample_ids(manifest, block_hash=str(seed), sample_count=n, max_turns_per_sample=max_turns)
         loaded = load_swe_zero_samples(dataset_root=dataset_root, sample_ids=sample_ids)
         return [SanitySample(s.prompt, s.messages) for s in loaded]
     return _fallback_prompts(n)

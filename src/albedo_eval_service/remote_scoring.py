@@ -164,13 +164,14 @@ class MockScoringClient:
         challenger_by_id = {result.sample_id: result for result in challenger_results}
         records: list[dict[str, Any]] = []
         judge_models = list(JUDGE_MODELS[: request.scoring.judge_count])
-        for index, sample in enumerate(samples):
+        sample_index = _counterbalanced_sample_indices(samples)
+        for sample in samples:
             king = king_by_id[sample.sample_id]
             challenger = challenger_by_id[sample.sample_id]
             if king.error or challenger.error:
                 continue
             score = 1.0 if len(challenger.text) > len(king.text) else 0.5 if len(challenger.text) == len(king.text) else 0.0
-            order = ["challenger", "previous_king"] if should_show_challenger_first(index, len(samples)) else ["previous_king", "challenger"]
+            order = ["challenger", "previous_king"] if should_show_challenger_first(sample_index[sample.sample_id], len(samples)) else ["previous_king", "challenger"]
             judge_results = [
                 {
                     "judge_model": model,
@@ -210,7 +211,39 @@ def build_scorer(settings: RemoteSettings) -> Scorer:
     raise ValueError(f"unsupported scoring backend: {settings.scoring_backend}")
 
 
+def _counterbalanced_sample_indices(samples: list[EvalSample]) -> dict[str, int]:
+    """Assign each sample a position index so every dataset source is split ~50/50 across the
+    judge's ``(total + 1) // 2`` position boundary (``should_show_challenger_first``).
+
+    The judge counterbalances position bias purely by the sample's index: indices below the
+    boundary show one model first, the rest the other. The sampler emits each source's
+    coordinates as a contiguous block, so a plain enumerate would push a small source entirely
+    onto one position. We re-index so each source straddles the boundary: group by source (the
+    ``<source>/`` prefix of the sample id), then lay out ``[all fronts][all backs]`` with each
+    source giving ~half its samples to each side. Odd-sized sources split 50/50 ± 1; the extra
+    goes to the front for ``ceil(odd_count / 2)`` of them (chosen by name), so the front length
+    lands exactly on the boundary for any number of sources and any weights.
+    """
+    by_source: dict[str, list[str]] = {}
+    for sample in samples:
+        source = sample.sample_id.split("/", 1)[0]
+        by_source.setdefault(source, []).append(sample.sample_id)
+
+    odd = sorted(name for name, ids in by_source.items() if len(ids) % 2 == 1)
+    bump_to_front = set(odd[: (len(odd) + 1) // 2])
+
+    fronts: list[str] = []
+    backs: list[str] = []
+    for name in sorted(by_source):
+        ids = by_source[name]
+        cut = len(ids) // 2 + (1 if name in bump_to_front else 0)
+        fronts.extend(ids[:cut])
+        backs.extend(ids[cut:])
+    return {sample_id: index for index, sample_id in enumerate(fronts + backs)}
+
+
 def _category_prep_payload(request: EvalRequest, samples: list[EvalSample]) -> dict[str, Any]:
+    sample_index = _counterbalanced_sample_indices(samples)
     return {
         "eval_run_id": str(request.eval_run_id),
         "batch_id": "category-prep",
@@ -219,9 +252,9 @@ def _category_prep_payload(request: EvalRequest, samples: list[EvalSample]) -> d
             {
                 "sample_id": sample.sample_id,
                 "prompt": sample.prompt,
-                "sample_index": index,
+                "sample_index": sample_index[sample.sample_id],
             }
-            for index, sample in enumerate(samples)
+            for sample in samples
         ],
     }
 
@@ -236,9 +269,10 @@ def _score_batch_payloads(
 ) -> list[dict[str, Any]]:
     king_by_id = {result.sample_id: result for result in king_results}
     challenger_by_id = {result.sample_id: result for result in challenger_results}
+    sample_index = _counterbalanced_sample_indices(samples)
     valid_samples = [
-        (index, sample)
-        for index, sample in enumerate(samples)
+        (sample_index[sample.sample_id], sample)
+        for sample in samples
         if sample.sample_id in king_by_id
         and sample.sample_id in challenger_by_id
         and not king_by_id[sample.sample_id].error
