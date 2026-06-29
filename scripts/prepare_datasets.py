@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import importlib.util
 import logging
 import os
@@ -92,6 +93,41 @@ def download_source(name: str, repo_id: str, shard_glob: str, root: Path, *, for
     return dest
 
 
+def _upload_manifest_to_hippius(manifest_path: Path, key: str) -> str:
+    """Upload manifest.json to Hippius S3 (public-read) and return the s3:// URI.
+
+    Uploads the exact on-disk bytes so the object's sha256 equals the pinned manifest hash.
+    Reuses the validators' ALBEDO_S3_* Hippius credentials (auto-loaded from albedo/.env).
+    """
+    import boto3
+    from botocore.config import Config
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from hippius_validation import config as hv
+
+    if not (hv.S3_BUCKET and hv.S3_ACCESS_KEY and hv.S3_SECRET_KEY):
+        raise SystemExit(
+            "--upload needs Hippius S3 credentials: set ALBEDO_S3_BUCKET, ALBEDO_S3_ACCESS_KEY "
+            "and ALBEDO_S3_SECRET_KEY (in albedo/.env)."
+        )
+
+    body = manifest_path.read_bytes()
+    client = boto3.client(
+        "s3",
+        endpoint_url=hv.S3_ENDPOINT,
+        aws_access_key_id=hv.S3_ACCESS_KEY,
+        aws_secret_access_key=hv.S3_SECRET_KEY,
+        region_name="decentralized",
+        config=Config(connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}),
+    )
+    client.put_object(
+        Bucket=hv.S3_BUCKET, Key=key, Body=body,
+        ContentType="application/json", ACL="public-read",
+    )
+    log.info("manifest sha256: %s", hashlib.sha256(body).hexdigest())
+    return f"s3://{hv.S3_BUCKET}/{key}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Download eval datasets from HuggingFace and build the combined manifest locally."
@@ -120,6 +156,14 @@ def main() -> None:
     )
     parser.add_argument("--skip-manifest", action="store_true", help="Only download; do not build manifest.json.")
     parser.add_argument("--out", default=None, help="Manifest output path (default: <dataset-root>/manifest.json).")
+    parser.add_argument(
+        "--upload", action="store_true",
+        help="Upload only manifest.json to Hippius S3 (ALBEDO_S3_* creds); does not upload the datasets.",
+    )
+    parser.add_argument(
+        "--upload-key", default="datasets/manifest.json",
+        help="Destination key in the Hippius bucket for --upload (default: datasets/manifest.json).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -138,23 +182,29 @@ def main() -> None:
             name, meta["repo"], meta["shard_glob"], root, force=args.force, max_workers=args.max_workers
         )
 
+    out_path = Path(args.out) if args.out else root / "manifest.json"
+
     if args.skip_manifest:
         log.info("skipping manifest build (--skip-manifest)")
-        return
+    else:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from build_manifest import _parse_weights, print_manifest_summary, write_manifest
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from build_manifest import _parse_weights, print_manifest_summary, write_manifest
+        all_weights = _parse_weights(args.weights)
+        missing = [n for n in names if n not in all_weights]
+        if missing:
+            raise SystemExit(f"no --weights entry for downloaded source(s): {missing}")
+        weights = {n: all_weights[n] for n in names}
 
-    all_weights = _parse_weights(args.weights)
-    missing = [n for n in names if n not in all_weights]
-    if missing:
-        raise SystemExit(f"no --weights entry for downloaded source(s): {missing}")
-    weights = {n: all_weights[n] for n in names}
+        out_path, manifest, digest = write_manifest(
+            root, weights, out_path=out_path, max_workers=args.max_workers
+        )
+        print_manifest_summary(out_path, manifest, digest)
 
-    out_path, manifest, digest = write_manifest(
-        root, weights, out_path=Path(args.out) if args.out else None, max_workers=args.max_workers
-    )
-    print_manifest_summary(out_path, manifest, digest)
+    if args.upload:
+        if not out_path.exists():
+            raise SystemExit(f"--upload: no manifest at {out_path} (build one first, or drop --skip-manifest).")
+        log.info("uploaded manifest -> %s", _upload_manifest_to_hippius(out_path, args.upload_key))
 
 
 if __name__ == "__main__":
