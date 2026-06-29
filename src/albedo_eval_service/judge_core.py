@@ -561,7 +561,6 @@ def aggregate_scoring_records(
         "scored_sample_count": valid_count,
         "by_judge": by_judge,
         "by_metric": by_metric,
-        "by_category": by_metric if _records_use_categories(scored) else {},
         "scoring_mode": _scoring_mode_for_records(scored),
         "fault_class": None,
         "fault_code": None,

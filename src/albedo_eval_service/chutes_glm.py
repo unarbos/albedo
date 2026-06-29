@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +29,7 @@ class GLMProviderClient:
         self.settings = settings
         self._chutes_client: httpx.AsyncClient | None = None
         self._openrouter_client: httpx.AsyncClient | None = None
+        self._utilization_client: httpx.AsyncClient | None = None
         if settings.chutes_api_key:
             self._chutes_client = httpx.AsyncClient(
                 base_url=settings.chutes_base_url.rstrip("/"),
@@ -42,13 +44,26 @@ class GLMProviderClient:
                 timeout=httpx.Timeout(settings.glm_request_timeout_seconds),
                 limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
             )
+        if settings.chutes_utilization_check_enabled and settings.chutes_utilization_url:
+            self._utilization_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(min(settings.glm_request_timeout_seconds, 15.0)),
+                limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            )
         self._semaphore = asyncio.Semaphore(max(1, settings.glm_max_concurrency))
+        self._chutes_error_count = 0
+        self._chutes_error_lock = asyncio.Lock()
+        self._chutes_disabled_logged = False
+        self._utilization_lock = asyncio.Lock()
+        self._utilization_cache_expires_at = 0.0
+        self._utilization_disabled_reason = ""
 
     async def aclose(self) -> None:
         if self._chutes_client is not None:
             await self._chutes_client.aclose()
         if self._openrouter_client is not None:
             await self._openrouter_client.aclose()
+        if self._utilization_client is not None:
+            await self._utilization_client.aclose()
 
     async def __aenter__(self) -> "GLMProviderClient":
         return self
@@ -65,17 +80,31 @@ class GLMProviderClient:
     ) -> GLMRawResponse:
         async with self._semaphore:
             chutes_error = ""
+            chutes_disabled_reason = ""
             if self._chutes_client is not None:
-                response = await self._complete_with_retries(
-                    provider="chutes",
-                    model=self.settings.glm52_model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-                if response.error is None:
-                    return response
-                chutes_error = response.error or "chutes request failed"
+                chutes_disabled_reason = await self._chutes_disabled_reason()
+                if not chutes_disabled_reason:
+                    response = await self._complete_with_retries(
+                        provider="chutes",
+                        model=self.settings.glm52_model,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                    if response.error is None:
+                        return response
+                    chutes_error = response.error or "chutes request failed"
+                    await self._record_chutes_error(chutes_error)
+                elif not self._chutes_disabled_logged:
+                    self._chutes_disabled_logged = True
+                    logger.warning(
+                        "GLM 5.2 category generation routing directly to OpenRouter FP8: "
+                        "primary_provider=chutes primary_model={} disabled_reason={} "
+                        "fallback_model={}",
+                        self.settings.glm52_model,
+                        chutes_disabled_reason,
+                        self.settings.openrouter_glm52_model,
+                    )
             openrouter_error = ""
             if self._openrouter_client is not None:
                 if chutes_error:
@@ -106,6 +135,8 @@ class GLMProviderClient:
             error_parts = []
             if chutes_error:
                 error_parts.append(f"chutes: {chutes_error}")
+            elif chutes_disabled_reason:
+                error_parts.append(f"chutes: {chutes_disabled_reason}")
             elif self._chutes_client is None:
                 error_parts.append("chutes: missing CHUTES_API_KEY")
             if openrouter_error:
@@ -117,6 +148,61 @@ class GLMProviderClient:
                 provider="glm-unavailable",
                 raw="",
                 error="; ".join(error_parts) or "no GLM provider configured",
+            )
+
+    async def _chutes_disabled_reason(self) -> str:
+        threshold = max(1, self.settings.chutes_disable_after_errors)
+        async with self._chutes_error_lock:
+            if self._chutes_error_count >= threshold:
+                return f"disabled after {self._chutes_error_count} errors"
+        utilization_reason = await self._chutes_utilization_disabled_reason()
+        if utilization_reason:
+            return utilization_reason
+        return ""
+
+    async def _chutes_utilization_disabled_reason(self) -> str:
+        if self._utilization_client is None:
+            return ""
+        now = time.monotonic()
+        async with self._utilization_lock:
+            if now < self._utilization_cache_expires_at:
+                return self._utilization_disabled_reason
+            self._utilization_cache_expires_at = (
+                now + max(1.0, self.settings.chutes_utilization_cache_seconds)
+            )
+            self._utilization_disabled_reason = ""
+            try:
+                response = await self._utilization_client.get(
+                    self.settings.chutes_utilization_url
+                )
+                response.raise_for_status()
+                utilization = _chute_utilization_15m(
+                    response.json(), chute_id=self.settings.glm52_chute_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "GLM 5.2 Chutes utilization check failed; keeping Chutes enabled. reason={}",
+                    f"{type(exc).__name__}: {exc}",
+                )
+                return ""
+            threshold = self.settings.chutes_utilization_15m_threshold
+            if utilization is not None and utilization > threshold:
+                self._utilization_disabled_reason = (
+                    f"utilization_15m={utilization:.3f} above threshold={threshold:.3f}"
+                )
+            return self._utilization_disabled_reason
+
+    async def _record_chutes_error(self, error: str) -> None:
+        threshold = max(1, self.settings.chutes_disable_after_errors)
+        async with self._chutes_error_lock:
+            self._chutes_error_count += 1
+            error_count = self._chutes_error_count
+        if error_count == threshold:
+            logger.warning(
+                "GLM 5.2 Chutes provider disabled after {} errors; "
+                "routing subsequent requests to OpenRouter FP8. last_error={}",
+                error_count,
+                error,
             )
 
     async def _complete_with_retries(
@@ -180,6 +266,22 @@ class GLMProviderClient:
         response.raise_for_status()
         raw = _message_content(response.json().get("choices", []))
         return GLMRawResponse(model=model, provider=provider, raw=raw)
+
+
+def _chute_utilization_15m(payload: Any, *, chute_id: str) -> float | None:
+    if not isinstance(payload, list):
+        return None
+    for item in payload:
+        if not isinstance(item, dict) or item.get("chute_id") != chute_id:
+            continue
+        value = item.get("utilization_15m")
+        if isinstance(value, int | float):
+            return float(value)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _split_csv(raw: str) -> list[str]:

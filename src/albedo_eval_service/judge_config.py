@@ -27,6 +27,11 @@ class JudgeSettings(BaseSettings):
 
     chutes_api_key: str = ""
     chutes_base_url: str = "https://llm.chutes.ai"
+    chutes_disable_after_errors: int = 3
+    chutes_utilization_check_enabled: bool = True
+    chutes_utilization_url: str = "https://api.chutes.ai/chutes/utilization"
+    chutes_utilization_15m_threshold: float = 0.75
+    chutes_utilization_cache_seconds: float = 60.0
     glm52_model: str = "zai-org/GLM-5.2-TEE"
     glm52_chute_id: str = "08901219-159f-55a7-87cf-9d0d02744668"
     openrouter_glm52_model: str = "z-ai/glm-5.2"
