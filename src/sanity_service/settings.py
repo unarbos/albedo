@@ -19,7 +19,7 @@ class SanitySettings(BaseSettings):
     consensus: bool = False
 
     dataset_manifest_path: str = ""
-    dataset_manifest_hash: str = "982a92bd85d122d287b15f2ddb4e2050b9e345fb3921aa9a63382c7af022bd7f"
+    dataset_manifest_hash: str = "980d50ad40e0b5863a4e624b9e313441bda38626fbba089efb95cbec8aa1a9f4"
     dataset_root: str = ""
     sample_count: int = 3
     max_turns_per_sample: int = 10

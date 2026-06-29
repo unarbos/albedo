@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # TODO: still the single-source SWE-ZERO hash. Repin to the combined swe-zero+mini-coder
     # manifest sha256 from `scripts/build_manifest.py` output before deploying 2 datasets
     # (also update src/sanity_service/settings.py).
-    dataset_manifest_hash: str = "982a92bd85d122d287b15f2ddb4e2050b9e345fb3921aa9a63382c7af022bd7f"
+    dataset_manifest_hash: str = "980d50ad40e0b5863a4e624b9e313441bda38626fbba089efb95cbec8aa1a9f4"
     dataset_manifest_path: str | None = None
     sample_count: int = 128
     max_turns_per_sample: int = 10
