@@ -180,9 +180,47 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
 .judges-table td.lose { color: var(--color-bad); }
 .judges-table td.tie { color: var(--color-fg-3); }
 
+.sample-source {
+  margin-bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-fg-3);
+}
+.sample-list { display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--color-border); border-radius: 4px; overflow: hidden; }
+.sample-card { background: var(--color-surface); border-bottom: 1px solid var(--color-border-subtle); }
+.sample-card:last-child { border-bottom: 0; }
+.sample-card summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px minmax(180px, auto);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.sample-card summary:hover { background: rgba(90,200,250,0.06); }
+.sample-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-fg); }
+.sample-score { text-align: right; }
+.sample-score.ok, .sample-cat-table td.ok, .sample-judge-table td.ok { color: var(--color-ok); }
+.sample-score.bad, .sample-cat-table td.bad, .sample-judge-table td.bad { color: var(--color-bad); }
+.sample-meta { color: var(--color-fg-3); text-align: right; white-space: nowrap; }
+.sample-body { padding: 0 12px 14px; }
+.sample-cat-table, .sample-judge-table { margin-top: 10px; }
+.sample-cat-table td { vertical-align: top; }
+.sample-cat { min-width: 190px; }
+.sample-cat b { display: block; color: var(--color-fg); font-weight: 500; }
+.sample-cat span { color: var(--color-fg-2); }
+.metric-line { color: var(--color-fg-3); white-space: normal; word-break: break-word; }
+
 .detail-section { margin-top: 36px; }
 .detail-section > h2 { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.2em;
   color: var(--color-fg); padding-bottom: 12px; margin-bottom: 18px; border-bottom: 1px solid var(--color-fg); }
+
+@media (max-width: 720px) {
+  .sample-card summary { grid-template-columns: 1fr 64px; }
+  .sample-meta { grid-column: 1 / -1; text-align: left; }
+}
 
 /* ---------- pipeline ---------- */
 .queue-panel {
