@@ -16,6 +16,12 @@ near-duplicate dedup), and finally **evaluate** the model. A model that beats th
 king earns weight/emissions. So your job is: produce a model that (a) passes validation and
 (b) scores higher than the incumbent by at least the **6% win margin**.
 
+Your model is scored by dueling the reigning king on coding trajectories from two datasets —
+**SWE-ZERO** ([12M](https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories)) and
+**mini-coder** ([400k](https://huggingface.co/datasets/ricdomolm/mini-coder-trajs-400k)). Both are
+used in full; at scoring time the eval tasks are split **70/30** across them (SWE-ZERO / mini-coder).
+Both are linked from the dashboard header.
+
 The whole publish flow is one pipeline:
 
 ```
