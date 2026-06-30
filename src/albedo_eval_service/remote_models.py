@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import threading
 import time
 from contextlib import contextmanager
@@ -127,11 +128,14 @@ class ModelArtifactResolver:
         cache_dir = self.cache_root / "s3" / bucket / prefix.strip("/")
         done_marker = cache_dir / ".albedo-model-cache.json"
         if done_marker.exists():
-            self._apply_canonical_config(cache_dir)
-            file_count, total_size_bytes = _tree_stats(cache_dir)
-            return ResolvedModel(
-                model_ref, str(cache_dir), "s3", True, file_count, total_size_bytes
-            )
+            if _has_loadable_model_files(cache_dir):
+                self._apply_canonical_config(cache_dir)
+                file_count, total_size_bytes = _tree_stats(cache_dir)
+                return ResolvedModel(
+                    model_ref, str(cache_dir), "s3", True, file_count, total_size_bytes
+                )
+            print(f"model_cache_invalid source=s3 path={cache_dir} reason=missing_model_files", flush=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
         import boto3
 
@@ -184,11 +188,14 @@ class ModelArtifactResolver:
         )
         done_marker = cache_dir / ".albedo-model-cache.json"
         if done_marker.exists():
-            self._apply_canonical_config(cache_dir)
-            file_count, total_size_bytes = _tree_stats(cache_dir)
-            return ResolvedModel(
-                original_ref, str(cache_dir), "oci", True, file_count, total_size_bytes
-            )
+            if _has_loadable_model_files(cache_dir):
+                self._apply_canonical_config(cache_dir)
+                file_count, total_size_bytes = _tree_stats(cache_dir)
+                return ResolvedModel(
+                    original_ref, str(cache_dir), "oci", True, file_count, total_size_bytes
+                )
+            print(f"model_cache_invalid source=oci path={cache_dir} reason=missing_model_files", flush=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
         temp_dir = cache_dir.with_suffix(".partial")
         # Resume an interrupted download: keep shards already fetched into .partial instead of
@@ -356,6 +363,16 @@ def _layer_filename(layer: dict[str, Any], index: int) -> str:
         return title
     digest = str(layer.get("digest", f"layer-{index}"))
     return digest.replace(":", "-")
+
+
+def _has_loadable_model_files(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if not (path / "config.json").is_file() and not (path / "params.json").is_file():
+        return False
+    if (path / "model.safetensors.index.json").is_file():
+        return True
+    return any(path.glob("*.safetensors"))
 
 
 def _verify_digest(payload: bytes, expected: str, *, label: str) -> None:
