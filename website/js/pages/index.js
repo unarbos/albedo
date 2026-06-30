@@ -145,7 +145,15 @@ function wireFilter() {
   });
 }
 
+function wireDatasetMenu() {
+  const menu = $("dataset-menu");
+  if (!menu) return;
+  document.addEventListener("click", e => { if (!menu.contains(e.target)) menu.open = false; });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") menu.open = false; });
+}
+
 wireFilter();
+wireDatasetMenu();
 $("hero-llms-btn")?.addEventListener("click", copyLlmsTxt);
 tick();
 tickPipeline();

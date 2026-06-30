@@ -145,6 +145,12 @@ ALBEDO_SCORE_BRIDGE_JUDGE_BASE_URL=http://127.0.0.1:8091
 ALBEDO_SCORE_BRIDGE_JUDGE_AUTH_TOKEN=shared-judge-token
 ```
 
+> The eval draws on two datasets in full — **SWE-ZERO (12M)** and **mini-coder (400k)**; at scoring
+> time the eval tasks are split **70/30** across them, per the per-source `weight` in the manifest.
+> The combined `manifest.json` is published at
+> `https://s3.hippius.com/albedo/datasets/manifest.json` (built/uploaded by
+> `scripts/prepare_datasets.py --upload`); repin `…_MANIFEST_HASH` to its sha256 after rebuilding.
+
 GPU host needs at least:
 
 ```bash

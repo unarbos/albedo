@@ -4,7 +4,8 @@
 > Miners fine-tune **Qwen3.6-35B-A3B** models (MoE — 256 experts, 8 active per token;
 > multimodal Qwen3VL architecture) and commit them on-chain; a backend pipeline ingests
 > commits, validates artifacts, runs a stability pre-eval, then duels each challenger
-> against the reigning king on SWE-ZERO coding trajectories judged by an ensemble of LLMs.
+> against the reigning king on coding trajectories from two datasets — SWE-ZERO (12M) and
+> mini-coder (400k) — with scoring tasks split 70/30 across the two, judged by an ensemble of LLMs.
 > A challenger must beat the king by a **6% margin** to win. Winners are crowned into a
 > rolling 5-king chain and earn emissions.
 >
@@ -340,7 +341,7 @@ albedo-eval-dispatcher (loop, every dispatch_poll_seconds)
                         ORDER BY free_gpu_count DESC, last_heartbeat_at DESC  (FOR UPDATE SKIP LOCKED)
   build EvalRequest:
     king + challenger model refs
-    dataset_sample_ids  ← swe_zero_manifest_sample_ids(manifest, block_hash, sample_count, max_turns)
+    dataset_sample_ids  ← multi_source_manifest_sample_ids(manifest, block_hash, sample_count, max_turns)
     dataset_manifest_hash, judge_config_hash
   POST /eval-runs on the GPU host  → remote_run_id
   follow GET /eval-runs/{id}/events until a "verdict" event
@@ -372,9 +373,12 @@ duel is a `COMPLETE_LOSS`. Per-model concurrency is capped by a semaphore
 (`ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL`, default 8) with retry + exponential backoff; a run needs
 `ALBEDO_JUDGE_MIN_VALID_FRACTION` (0.5) of judges to resolve or it's a provider fault.
 
-**Deterministic sampling:** `sampling.py` seeds a `Random(block_hash)`, shuffles a flat
-`(shard, row)` list once, then walks rows × turns producing `shard:row:turn` IDs. The same commit
-block always yields the same eval set — reproducible and un-gameable by the miner.
+**Deterministic sampling:** `sampling.py` (`multi_source_manifest_sample_ids`, algo
+`swe-zero-multi-source-sample-v1`) is **multi-source weighted** — the manifest's per-source `weight`
+allocates the `sample_count` (default 128) across the two sources (~70% SWE-ZERO / ~30% mini-coder),
+then per source it seeds a `Random(block_hash)`, shuffles a flat `(shard, row)` list once, and walks
+rows × turns producing `shard:row:turn` IDs. The same commit block always yields the same eval set —
+reproducible and un-gameable by the miner.
 
 ---
 
@@ -533,7 +537,7 @@ Full reference in [.env.example](../.env.example) (backend + GPU host) and [.env
 | `ALBEDO_EVAL_DATABASE_URL` | DSN for the whole eval stack |
 | `ALBEDO_POSTGRES_*` | docker-compose local Postgres (host port 65432) |
 | `ALBEDO_EVAL_REMOTE_AUTH_TOKEN` | shared bearer for backend↔remote eval API |
-| `ALBEDO_EVAL_DATASET_MANIFEST_HASH` | sha256 pin of the SWE-ZERO shard manifest |
+| `ALBEDO_EVAL_DATASET_MANIFEST_HASH` | sha256 pin of the combined swe-zero+mini-coder shard manifest |
 | `ALBEDO_EVAL_SAMPLE_COUNT` / `_MAX_TURNS_PER_SAMPLE` | duel size (default 128 / 10) |
 
 ### GPU eval host
@@ -629,7 +633,10 @@ uv run ruff check src/ && uv run ruff format src/                 # lint
 
 - **Dashboard:** static site in `website/`; reads `data/dashboard.json` + `data/state.json`, published to
   Hippius S3 by `website/monitor.py` (live, on-change) or `website/push_to_hippius.py` (one-shot)
-- **SWE-ZERO dataset:** https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories (linked in the dashboard header)
+- **Datasets** (both used in full; linked in the dashboard header — scoring tasks split 70/30 across them):
+  - SWE-ZERO (12M): https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories
+  - mini-coder (400k): https://huggingface.co/datasets/ricdomolm/mini-coder-trajs-400k
+  - shard manifest (per-source weights + sha256s): https://s3.hippius.com/albedo/datasets/manifest.json
 - **Mining guide:** [docs/MINING.md](../docs/MINING.md)
 - **Eval runbook:** [docs/eval-service-status.md](../docs/eval-service-status.md)
 - **Reign/weight notes:** [docs/reign-and-weight-pm2.md](../docs/reign-and-weight-pm2.md)
