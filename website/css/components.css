@@ -51,6 +51,37 @@
 }
 .reign-table .rc-bar > i { display: block; height: 100%; background: var(--color-gold); }
 
+.datasets-table .ds-name {
+  font-family: var(--font-mono);
+  color: var(--color-fg);
+  white-space: nowrap;
+}
+.datasets-table .ds-weight {
+  min-width: 96px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-gold);
+  white-space: nowrap;
+}
+.datasets-table .ds-weight > span:first-child { display: inline-block; min-width: 34px; }
+.datasets-table .ds-bar {
+  display: inline-block;
+  width: 48px;
+  height: 3px;
+  margin-left: 8px;
+  border-radius: 2px;
+  background: var(--color-border);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.datasets-table .ds-bar > i { display: block; height: 100%; background: var(--color-gold); }
+.datasets-table .ds-num { color: var(--color-fg-2); white-space: nowrap; }
+.datasets-table .ds-source a {
+  display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom; color: var(--color-fg);
+}
+.datasets-table .ds-source a:hover { color: var(--color-accent); }
+
 .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
 .filter-bar input {
   flex: 1; max-width: 320px;

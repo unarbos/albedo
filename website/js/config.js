@@ -21,6 +21,13 @@ export const BENCHMARK_ENDPOINTS = [
   "https://eu-central-1.hippius.com/albedo/data/benchmarks.json",
 ];
 
+export const MANIFEST_ENDPOINTS = [
+  "https://s3.hippius.com/albedo/datasets/manifest.json",
+  "https://us-east-1.hippius.com/albedo/datasets/manifest.json",
+  "https://eu-central-1.hippius.com/albedo/datasets/manifest.json",
+  "./data/manifest.json",
+];
+
 export const LLMS_URLS = [
   "./llms.txt",
   "https://s3.hippius.com/albedo/llms.txt",

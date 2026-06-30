@@ -45,6 +45,14 @@ export function fmtDateTime(iso) {
   } catch { return "—"; }
 }
 
+export const fmtCount = n => {
+  if (n == null) return "—";
+  const u = ["", "K", "M", "B"];
+  let i = 0, v = Number(n);
+  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+  return `${i ? v.toFixed(1) : v}${u[i]}`;
+};
+
 export const fmtBytes = n => {
   if (n == null) return "—";
   const u = ["B", "KB", "MB", "GB"];

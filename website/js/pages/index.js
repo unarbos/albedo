@@ -1,5 +1,5 @@
 import { POLL_MS } from "../config.js";
-import { fetchDashboard, fetchState, fetchBenchmarks, fetchLlmsText } from "../fetch.js";
+import { fetchDashboard, fetchState, fetchBenchmarks, fetchManifest, fetchLlmsText } from "../fetch.js";
 import { normalize } from "../data.js";
 import { el, mount } from "../dom.js";
 import { fmtRelative } from "../format.js";
@@ -8,6 +8,7 @@ import { renderReign } from "../render/reign.js";
 import { renderBenchmarks } from "../render/benchmarks.js";
 import { renderPipeline } from "../render/pipeline.js";
 import { renderHistory, renderFails } from "../render/history.js";
+import { renderDatasets } from "../render/datasets.js";
 
 const $ = id => document.getElementById(id);
 
@@ -79,6 +80,12 @@ async function tickBenchmarks() {
   renderBenchmarks($("benchmarks-wrap"), $("benchmarks-meta"), data);
 }
 
+async function loadDatasets() {
+  const manifest = await fetchManifest();
+  if (!manifest) return;
+  renderDatasets($("datasets-wrap"), $("datasets-meta"), manifest);
+}
+
 async function tickPipeline() {
   const st = await fetchState();
   if (!st) return;
@@ -145,19 +152,12 @@ function wireFilter() {
   });
 }
 
-function wireDatasetMenu() {
-  const menu = $("dataset-menu");
-  if (!menu) return;
-  document.addEventListener("click", e => { if (!menu.contains(e.target)) menu.open = false; });
-  document.addEventListener("keydown", e => { if (e.key === "Escape") menu.open = false; });
-}
-
 wireFilter();
-wireDatasetMenu();
 $("hero-llms-btn")?.addEventListener("click", copyLlmsTxt);
 tick();
 tickPipeline();
 tickBenchmarks();
+loadDatasets();
 setInterval(tick, POLL_MS);
 setInterval(tickPipeline, POLL_MS);
 setInterval(tickBenchmarks, POLL_MS);
