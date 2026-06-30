@@ -18,17 +18,8 @@ JUDGE_MODELS: tuple[str, ...] = (
 )
 
 JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {
-    "z-ai/glm-5.1": {"order": ["baidu"], "allow_fallbacks": False, "quantizations": ["fp8"]},
-    "qwen/qwen3.5-397b-a17b": {
-        "order": ["deepinfra"],
-        "allow_fallbacks": False,
-        "quantizations": ["fp8"],
-    },
-    "deepseek/deepseek-v3.2": {
-        "order": ["atlas-cloud"],
-        "allow_fallbacks": False,
-        "quantizations": ["fp8"],
-    },
+    model: {"allow_fallbacks": True, "quantizations": ["fp8"]}
+    for model in JUDGE_MODELS
 }
 JUDGE_STRUCTURED_OUTPUT_MODELS = frozenset({"qwen/qwen3.5-397b-a17b", "deepseek/deepseek-v3.2"})
 
