@@ -194,6 +194,7 @@ def test_glm_skips_chutes_when_15m_utilization_is_high():
                 {
                     "chute_id": "08901219-159f-55a7-87cf-9d0d02744668",
                     "utilization_15m": 0.76,
+                    "instance_count": 4,
                 }
             ],
         )
@@ -240,6 +241,64 @@ def test_glm_skips_chutes_when_15m_utilization_is_high():
     assert first.provider == "openrouter-fp8"
     assert second.provider == "openrouter-fp8"
     assert calls == {"utilization": 1, "chutes": 0, "openrouter": 2}
+
+
+def test_glm_skips_chutes_when_instance_count_is_three_or_less():
+    calls = {"utilization": 0, "chutes": 0, "openrouter": 0}
+
+    def utilization_handler(request: httpx.Request) -> httpx.Response:
+        calls["utilization"] += 1
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "chute_id": "08901219-159f-55a7-87cf-9d0d02744668",
+                    "utilization_15m": 0.50,
+                    "instance_count": 3,
+                }
+            ],
+        )
+
+    def chutes_handler(request: httpx.Request) -> httpx.Response:
+        calls["chutes"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "chutes"}}]})
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        calls["openrouter"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "openrouter"}}]})
+
+    settings = JudgeSettings(
+        chutes_api_key="ck",
+        openrouter_api_key="ok",
+        glm_retry_count=0,
+        chutes_utilization_15m_threshold=0.75,
+        chutes_utilization_cache_seconds=60,
+    )
+    client = GLMProviderClient(settings)
+
+    async def run():
+        assert client._chutes_client is not None
+        assert client._openrouter_client is not None
+        assert client._utilization_client is not None
+        await client._chutes_client.aclose()
+        await client._openrouter_client.aclose()
+        await client._utilization_client.aclose()
+        client._chutes_client = httpx.AsyncClient(
+            base_url=settings.chutes_base_url.rstrip("/"), transport=httpx.MockTransport(chutes_handler)
+        )
+        client._openrouter_client = httpx.AsyncClient(
+            base_url="https://openrouter.ai/api/v1", transport=httpx.MockTransport(openrouter_handler)
+        )
+        client._utilization_client = httpx.AsyncClient(transport=httpx.MockTransport(utilization_handler))
+        try:
+            result = await client.complete(messages=[{"role": "user", "content": "x"}])
+        finally:
+            await client.aclose()
+        return result
+
+    result = asyncio.run(run())
+    assert result.provider == "openrouter-fp8"
+    assert calls == {"utilization": 1, "chutes": 0, "openrouter": 1}
 
 
 def test_glm_uses_chutes_when_15m_utilization_is_at_threshold():

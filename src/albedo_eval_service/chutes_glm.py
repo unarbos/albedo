@@ -176,7 +176,7 @@ class GLMProviderClient:
                     self.settings.chutes_utilization_url
                 )
                 response.raise_for_status()
-                utilization = _chute_utilization_15m(
+                utilization, instance_count = _chute_utilization_snapshot(
                     response.json(), chute_id=self.settings.glm52_chute_id
                 )
             except Exception as exc:
@@ -186,10 +186,13 @@ class GLMProviderClient:
                 )
                 return ""
             threshold = self.settings.chutes_utilization_15m_threshold
+            reasons = []
             if utilization is not None and utilization > threshold:
-                self._utilization_disabled_reason = (
-                    f"utilization_15m={utilization:.3f} above threshold={threshold:.3f}"
-                )
+                reasons.append(f"utilization_15m={utilization:.3f} above threshold={threshold:.3f}")
+            if instance_count is not None and instance_count <= 3:
+                reasons.append(f"instance_count={instance_count} <= 3")
+            if reasons:
+                self._utilization_disabled_reason = "; ".join(reasons)
             return self._utilization_disabled_reason
 
     async def _record_chutes_error(self, error: str) -> None:
@@ -268,20 +271,36 @@ class GLMProviderClient:
         return GLMRawResponse(model=model, provider=provider, raw=raw)
 
 
-def _chute_utilization_15m(payload: Any, *, chute_id: str) -> float | None:
+def _chute_utilization_snapshot(payload: Any, *, chute_id: str) -> tuple[float | None, int | None]:
     if not isinstance(payload, list):
-        return None
+        return None, None
     for item in payload:
         if not isinstance(item, dict) or item.get("chute_id") != chute_id:
             continue
-        value = item.get("utilization_15m")
-        if isinstance(value, int | float):
-            return float(value)
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    return None
+        return _float_or_none(item.get("utilization_15m")), _int_or_none(
+            item.get("instance_count")
+            or item.get("active_instance_count")
+            or item.get("total_instance_count")
+        )
+    return None, None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _split_csv(raw: str) -> list[str]:

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from .chutes_glm import GLMProviderClient
@@ -316,7 +317,20 @@ async def _score_samples(
     request: ScoreBatchRequest,
     scoring_mode: str = "fixed_metrics",
 ) -> list[dict[str, Any]]:
+    started_at = time.monotonic()
+    completed = 0
+    progress_lock = asyncio.Lock()
+    logger.info(
+        "score_batch_started eval_run_id={} batch_id={} scoring_mode={} samples={} judges={}",
+        request.eval_run_id,
+        request.batch_id,
+        scoring_mode,
+        len(request.samples),
+        len(request.judge_models),
+    )
+
     async def _score_one(index: int, sample: JudgeSample) -> dict[str, Any]:
+        nonlocal completed
         challenger_first = should_show_challenger_first(
             sample.sample_index, request.total_sample_count
         )
@@ -343,6 +357,20 @@ async def _score_samples(
         ok = [result for result in judge_results if result["parse_ok"]]
         scored = len(ok) == len(request.judge_models)
         sample_score = mean(float(result["judge_mean"]) for result in ok) if scored else None
+        async with progress_lock:
+            completed += 1
+            logger.info(
+                "score_batch_sample_done eval_run_id={} batch_id={} scoring_mode={} completed={}/{} sample_id={} scored={} valid_judges={} elapsed_s={:.1f}",
+                request.eval_run_id,
+                request.batch_id,
+                scoring_mode,
+                completed,
+                len(request.samples),
+                sample.sample_id,
+                scored,
+                len(ok),
+                time.monotonic() - started_at,
+            )
         return {
             "sample_id": sample.sample_id,
             "order": ["challenger", "previous_king"]
@@ -357,9 +385,19 @@ async def _score_samples(
             "scoring_mode": scoring_mode,
         }
 
-    return await asyncio.gather(
+    records = await asyncio.gather(
         *[_score_one(index, sample) for index, sample in enumerate(request.samples)]
     )
+    logger.info(
+        "score_batch_done eval_run_id={} batch_id={} scoring_mode={} scored_samples={}/{} elapsed_s={:.1f}",
+        request.eval_run_id,
+        request.batch_id,
+        scoring_mode,
+        sum(1 for record in records if record.get("scored")),
+        len(records),
+        time.monotonic() - started_at,
+    )
+    return records
 
 
 async def _score_samples_with_categories(
@@ -369,6 +407,19 @@ async def _score_samples_with_categories(
     category_service: GLMCategoryService,
     prep_store: CategoryPrepStore,
 ) -> list[dict[str, Any]]:
+    started_at = time.monotonic()
+    categories_ready = 0
+    completed = 0
+    progress_lock = asyncio.Lock()
+    logger.info(
+        "score_batch_started eval_run_id={} batch_id={} scoring_mode=glm_categories samples={} judges={} category_prep_id={}",
+        request.eval_run_id,
+        request.batch_id,
+        len(request.samples),
+        len(request.judge_models),
+        request.category_prep_id or "",
+    )
+
     async def _categories_for(sample: JudgeSample) -> CategoryPrepResult:
         if request.category_prep_id:
             prepared = await prep_store.get(request.category_prep_id, sample)
@@ -377,9 +428,22 @@ async def _score_samples_with_categories(
         return await category_service.prepare(sample)
 
     async def _score_one(index: int, sample: JudgeSample) -> dict[str, Any]:
+        nonlocal categories_ready, completed
         prepared = await _categories_for(sample)
         if prepared.error:
             raise CategoryScoringUnavailable(prepared.error)
+        async with progress_lock:
+            categories_ready += 1
+            logger.info(
+                "score_batch_category_ready eval_run_id={} batch_id={} ready={}/{} sample_id={} provider={} elapsed_s={:.1f}",
+                request.eval_run_id,
+                request.batch_id,
+                categories_ready,
+                len(request.samples),
+                sample.sample_id,
+                prepared.category_source.get("provider", ""),
+                time.monotonic() - started_at,
+            )
         challenger_first = should_show_challenger_first(
             sample.sample_index, request.total_sample_count
         )
@@ -417,6 +481,19 @@ async def _score_samples_with_categories(
         ok = [result for result in judge_results if result["parse_ok"]]
         scored = len(ok) == len(request.judge_models)
         sample_score = mean(float(result["judge_mean"]) for result in ok) if scored else None
+        async with progress_lock:
+            completed += 1
+            logger.info(
+                "score_batch_sample_done eval_run_id={} batch_id={} scoring_mode=glm_categories completed={}/{} sample_id={} scored={} valid_judges={} elapsed_s={:.1f}",
+                request.eval_run_id,
+                request.batch_id,
+                completed,
+                len(request.samples),
+                sample.sample_id,
+                scored,
+                len(ok),
+                time.monotonic() - started_at,
+            )
         return {
             "sample_id": sample.sample_id,
             "order": ["challenger", "previous_king"]
@@ -434,9 +511,18 @@ async def _score_samples_with_categories(
             "scoring_mode": "glm_categories",
         }
 
-    return await asyncio.gather(
+    records = await asyncio.gather(
         *[_score_one(index, sample) for index, sample in enumerate(request.samples)]
     )
+    logger.info(
+        "score_batch_done eval_run_id={} batch_id={} scoring_mode=glm_categories scored_samples={}/{} elapsed_s={:.1f}",
+        request.eval_run_id,
+        request.batch_id,
+        sum(1 for record in records if record.get("scored")),
+        len(records),
+        time.monotonic() - started_at,
+    )
+    return records
 
 
 def _summary(records: list[dict[str, Any]], *, settings: JudgeSettings) -> dict[str, Any]:
