@@ -169,6 +169,7 @@ class ModelArtifactResolver:
                     client.download_file(bucket, key, str(destination))
         if not found:
             raise FileNotFoundError(f"no model objects found under {model_ref}")
+        _require_loadable_model_files(cache_dir, source="s3")
         done_marker.write_text(
             json.dumps({"source": model_ref}, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -245,6 +246,7 @@ class ModelArtifactResolver:
                         layer_digest,
                         label=name,
                     )
+        _require_loadable_model_files(temp_dir, source="oci")
         done_marker_payload = {
             "source": original_ref,
             "registry": registry,
@@ -373,6 +375,19 @@ def _has_loadable_model_files(path: Path) -> bool:
     if (path / "model.safetensors.index.json").is_file():
         return True
     return any(path.glob("*.safetensors"))
+
+
+def _require_loadable_model_files(path: Path, *, source: str) -> None:
+    if _has_loadable_model_files(path):
+        return
+    print(
+        f"model_cache_invalid source={source} path={path} reason=download_missing_model_files",
+        flush=True,
+    )
+    shutil.rmtree(path, ignore_errors=True)
+    raise FileNotFoundError(
+        f"downloaded {source} model at {path} is missing loadable model files"
+    )
 
 
 def _verify_digest(payload: bytes, expected: str, *, label: str) -> None:

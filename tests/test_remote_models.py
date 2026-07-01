@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from albedo_eval_service.canonical_model_config import canonical_max_model_len
 from albedo_eval_service.remote_config import RemoteSettings
@@ -40,7 +41,9 @@ def test_model_resolver_passes_through_existing_local_path(tmp_path):
 
 def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, monkeypatch):
     layer_payload = b"{\n  \"model_type\": \"qwen3\"\n}\n"
+    weights_payload = b"not-real-safetensors"
     layer_digest = _sha256(layer_payload)
+    weights_digest = _sha256(weights_payload)
     manifest = {
         "schemaVersion": 2,
         "layers": [
@@ -49,6 +52,12 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
                 "digest": layer_digest,
                 "size": len(layer_payload),
                 "annotations": {"org.opencontainers.image.title": "config.json"},
+            },
+            {
+                "mediaType": "application/octet-stream",
+                "digest": weights_digest,
+                "size": len(weights_payload),
+                "annotations": {"org.opencontainers.image.title": "model-00001-of-00001.safetensors"},
             }
         ],
     }
@@ -86,8 +95,10 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
                 )
             if "/manifests/" in url:
                 return httpx.Response(200, content=manifest_payload, request=request)
-            if "/blobs/" in url:
+            if layer_digest in url:
                 return httpx.Response(200, content=layer_payload, request=request)
+            if weights_digest in url:
+                return httpx.Response(200, content=weights_payload, request=request)
             raise AssertionError(url)
 
     monkeypatch.setattr("albedo_eval_service.remote_models.httpx.Client", lambda **_: FakeClient())
@@ -183,3 +194,41 @@ def test_model_resolver_redownloads_marker_only_oci_cache(tmp_path, monkeypatch)
     assert resolved.cache_hit is False
     assert Path(resolved.local_path, "config.json").exists()
     assert Path(resolved.local_path, "model-00001-of-00001.safetensors").exists()
+
+
+def test_model_resolver_rejects_oci_download_without_model_files(tmp_path, monkeypatch):
+    manifest = {"schemaVersion": 2, "layers": []}
+    manifest_payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    manifest_digest = _sha256(manifest_payload)
+    cache_root = tmp_path / "cache"
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def get(self, url, headers=None):
+            request = httpx.Request("GET", url, headers=headers or {})
+            if "/manifests/" in url:
+                return httpx.Response(200, content=manifest_payload, request=request)
+            raise AssertionError(url)
+
+    monkeypatch.setattr("albedo_eval_service.remote_models.httpx.Client", lambda **_: FakeClient())
+    ref = f"registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@{manifest_digest}"
+    resolver = ModelArtifactResolver(
+        RemoteSettings(model_cache_dir=str(cache_root), use_canonical_model_config=False)
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing loadable model files"):
+        resolver.resolve(ref)
+
+    cache_dir = (
+        cache_root
+        / "oci"
+        / "registry.hippius.com"
+        / "sota1028__albedo-qwen3.6-35b-miner_5"
+        / manifest_digest.removeprefix("sha256:")
+    )
+    assert not cache_dir.exists()
