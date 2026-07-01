@@ -43,12 +43,24 @@ class OpenRouterJudgeClient:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    async def score(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
+    async def score(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        response_schema: dict[str, Any] | None = None,
+        schema_name: str = "albedo_pairwise_metric_verdict",
+    ) -> JudgeRawResponse:
         sem = self._semaphores.setdefault(
             model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
         )
         async with sem:
-            return await self._score_with_retries(model=model, messages=messages)
+            return await self._score_with_retries(
+                model=model,
+                messages=messages,
+                response_schema=response_schema,
+                schema_name=schema_name,
+            )
 
     async def complete(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
         # Generic completion without the pairwise scoring schema, for callers with their own rubric.
@@ -59,12 +71,24 @@ class OpenRouterJudgeClient:
             return await self._score_with_retries(model=model, messages=messages, structured=False)
 
     async def _score_with_retries(
-        self, *, model: str, messages: list[dict[str, str]], structured: bool = True
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        structured: bool = True,
+        response_schema: dict[str, Any] | None = None,
+        schema_name: str = "albedo_pairwise_metric_verdict",
     ) -> JudgeRawResponse:
         last_error = ""
         for attempt in range(self.settings.retry_count + 1):
             try:
-                return await self._score_once(model=model, messages=messages, structured=structured)
+                return await self._score_once(
+                    model=model,
+                    messages=messages,
+                    structured=structured,
+                    response_schema=response_schema,
+                    schema_name=schema_name,
+                )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt >= self.settings.retry_count:
@@ -77,7 +101,13 @@ class OpenRouterJudgeClient:
         )
 
     async def _score_once(
-        self, *, model: str, messages: list[dict[str, str]], structured: bool = True
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        structured: bool = True,
+        response_schema: dict[str, Any] | None = None,
+        schema_name: str = "albedo_pairwise_metric_verdict",
     ) -> JudgeRawResponse:
         payload: dict[str, Any] = {
             "model": model,
@@ -94,9 +124,9 @@ class OpenRouterJudgeClient:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "albedo_pairwise_metric_verdict",
+                    "name": schema_name,
                     "strict": True,
-                    "schema": JUDGE_RESPONSE_SCHEMA,
+                    "schema": response_schema or JUDGE_RESPONSE_SCHEMA,
                 },
             }
         response = await self._client.post("/v1/chat/completions", json=payload)

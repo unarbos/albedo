@@ -25,6 +25,28 @@ class JudgeSettings(BaseSettings):
     max_concurrency_per_model: int = 8
     min_valid_fraction: float = 0.5
 
+    chutes_api_key: str = ""
+    chutes_base_url: str = "https://llm.chutes.ai"
+    chutes_disable_after_errors: int = 3
+    chutes_utilization_check_enabled: bool = True
+    chutes_utilization_url: str = "https://api.chutes.ai/chutes/utilization"
+    chutes_utilization_15m_threshold: float = 0.75
+    chutes_utilization_cache_seconds: float = 60.0
+    glm52_model: str = "zai-org/GLM-5.2-TEE"
+    glm52_chute_id: str = "08901219-159f-55a7-87cf-9d0d02744668"
+    openrouter_glm52_model: str = "z-ai/glm-5.2"
+    openrouter_glm52_quantizations: str = "fp8"
+    category_count: int = 5
+    category_prompt_version: str = "glm52-categories-v1"
+    category_prep_ttl_seconds: float = 1800.0
+    glm_request_timeout_seconds: float = 90.0
+    glm_retry_count: int = 2
+    glm_temperature: float = 0.0
+    glm_max_tokens: int = 2048
+    glm_candidate_max_tokens: int = 4096
+    glm_max_concurrency: int = 8
+    slack_error_webhook_url: str = ""
+
 
 @lru_cache
 def get_judge_settings() -> JudgeSettings:

@@ -1,13 +1,14 @@
 import { POLL_MS } from "../config.js";
-import { fetchDashboard, fetchState, fetchLlmsText } from "../fetch.js";
+import { fetchDashboard, fetchState, fetchBenchmarks, fetchManifest, fetchLlmsText } from "../fetch.js";
 import { normalize } from "../data.js";
 import { el, mount } from "../dom.js";
 import { fmtRelative } from "../format.js";
 import { kingTitleName, hubRepoUrl, modelRepo } from "../model.js";
 import { renderReign } from "../render/reign.js";
-import { renderChart } from "../render/chart.js";
+import { renderBenchmarks } from "../render/benchmarks.js";
 import { renderPipeline } from "../render/pipeline.js";
 import { renderHistory, renderFails } from "../render/history.js";
+import { renderDatasets } from "../render/datasets.js";
 
 const $ = id => document.getElementById(id);
 
@@ -54,12 +55,12 @@ function render(d) {
   renderHero(d);
   renderStats(d);
   renderReign($("reign-wrap"), d.reign, netuid);
-  renderChart($("chart-wrap"), d.crownings);
   renderTables(d);
   if (d.updatedAt) $("updated").textContent = "updated " + fmtRelative(d.updatedAt);
 }
 
 let lastSig = null;
+let benchmarkSig = null;
 async function tick() {
   const raw = await fetchDashboard();
   if (!raw) return;
@@ -68,6 +69,21 @@ async function tick() {
   lastSig = sig;
   state = normalize(raw);
   render(state);
+}
+
+async function tickBenchmarks() {
+  const data = await fetchBenchmarks();
+  if (!data) return;
+  const sig = JSON.stringify(data);
+  if (sig === benchmarkSig) return;
+  benchmarkSig = sig;
+  renderBenchmarks($("benchmarks-wrap"), $("benchmarks-meta"), data);
+}
+
+async function loadDatasets() {
+  const manifest = await fetchManifest();
+  if (!manifest) return;
+  renderDatasets($("datasets-wrap"), $("datasets-meta"), manifest);
 }
 
 async function tickPipeline() {
@@ -140,5 +156,8 @@ wireFilter();
 $("hero-llms-btn")?.addEventListener("click", copyLlmsTxt);
 tick();
 tickPipeline();
+tickBenchmarks();
+loadDatasets();
 setInterval(tick, POLL_MS);
 setInterval(tickPipeline, POLL_MS);
+setInterval(tickBenchmarks, POLL_MS);

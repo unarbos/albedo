@@ -85,6 +85,33 @@ class SanityDispatcher:
                 result=result,
             )
             return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                logger.warning(
+                    "[sanity-dispatch] worker busy, releasing claim submission={} digest={:.16}: {}",
+                    claimed.submission_id, claimed.request.digest, exc,
+                )
+                self.repository.release_pre_eval_attempt(
+                    submission_id=claimed.submission_id,
+                    attempt_id=claimed.attempt_id,
+                    fault_message=str(exc),
+                )
+                return True
+            logger.warning(
+                "[sanity-dispatch] worker HTTP error submission={} digest={:.16}: {}",
+                claimed.submission_id, claimed.request.digest, exc,
+            )
+            self.repository.mark_pre_eval_failed(
+                submission_id=claimed.submission_id,
+                attempt_id=claimed.attempt_id,
+                repo=claimed.request.model_uri,
+                digest=claimed.request.digest,
+                fault_class="INFRA_FAULT",
+                fault_code="worker_unreachable",
+                fault_message=str(exc),
+                retryable=True,
+            )
+            return True
         except (httpx.HTTPError, asyncio.TimeoutError) as exc:
             logger.warning("[sanity-dispatch] worker unreachable submission={} digest={:.16}: {}", claimed.submission_id, claimed.request.digest, exc,)
             self.repository.mark_pre_eval_failed(

@@ -101,6 +101,16 @@ def _public_url(uri: str | None, base: str) -> str | None:
     return None  # local-cache://, file:// — not browser-fetchable
 
 
+def _eval_artifact_tail(uri: str | None) -> tuple[str, str] | None:
+    if not uri or "/eval/" not in uri:
+        return None
+    tail = uri.split("/eval/", 1)[1]
+    if "/" not in tail:
+        return None
+    eval_run_id, name = tail.split("/", 1)
+    return (eval_run_id, name) if eval_run_id and name else None
+
+
 # --------------------------------------------------------------------------- dashboard.json
 
 
@@ -108,12 +118,13 @@ def _king_version_map(conn, *, model_filter: str) -> dict[int, int]:
     """Map raw king_versions.version -> display regnal number within the current model family.
 
     The DB version counter is global across eras (4B + 35B); for display we renumber the
-    current family's kings from 1, ordered by raw version (so the 35B genesis -> 1 -> ALBEDO-I).
+    current family from 0, ordered by raw version: the 35B genesis seed -> 0 (shown as GENESIS),
+    the first miner-crowned king -> 1 -> ALBEDO-I. Pre-35B versions aren't in the map (-> null).
     """
     rows = conn.execute(
         """
         SELECT kv.version,
-               ROW_NUMBER() OVER (ORDER BY kv.version ASC) AS regnal
+               ROW_NUMBER() OVER (ORDER BY kv.version ASC) - 1 AS regnal
         FROM king_versions kv
         JOIN model_submissions ms ON ms.id = kv.submission_id
         WHERE ms.model_uri LIKE %s
@@ -171,7 +182,12 @@ def _artifacts_for(conn, submission_ids: list, base: str) -> dict[str, dict[str,
         url = _public_url(row["uri"], base)
         if not url:
             continue
-        out.setdefault(str(row["submission_id"]), {})[row["artifact_type"]] = url
+        keys = [str(row["submission_id"])]
+        parsed = _eval_artifact_tail(row["uri"])
+        if parsed:
+            keys.insert(0, parsed[0])
+        for key in keys:
+            out.setdefault(key, {}).setdefault(row["artifact_type"], url)
     return out
 
 
@@ -229,9 +245,14 @@ def _eval_runs(conn, *, limit: int, base: str, model_filter: str, version_map: d
                 "valid_turns": row["valid_turns"],
                 "chal_vllm_errors": row["chal_vllm_errors"],
                 "king_vllm_errors": row["king_vllm_errors"],
+                "scored_sample_count": verdict.get("scored_sample_count"),
+                "judge_errors": verdict.get("judge_errors"),
+                "required_win_margin": _num(verdict.get("required_win_margin")),
+                "scoring_mode": verdict.get("scoring_mode"),
                 "score_breakdown": {
                     "by_judge": breakdown.get("by_judge", {}),
                     "by_metric": breakdown.get("by_metric", {}),
+                    "by_category": breakdown.get("by_category", {}),
                 },
                 "king": {
                     "king_version": version_map.get(row["king_king_version"]),
@@ -239,7 +260,7 @@ def _eval_runs(conn, *, limit: int, base: str, model_filter: str, version_map: d
                     "uid": row["king_uid"],
                     "hotkey": row["king_hotkey"],
                 },
-                "artifacts": artifacts.get(str(row["submission_id"]), {}),
+                "artifacts": artifacts.get(str(row["eval_run_id"]), artifacts.get(str(row["submission_id"]), {})),
             }
         )
     return runs

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -58,14 +59,32 @@ class ScoreBridgeHub:
                             future.set_exception(ScoreBridgeUnavailable("score bridge disconnected"))
                     self._pending.clear()
 
-    def request(self, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
-        with self._lock:
-            loop = self._loop
-            websocket = self._websocket
-        if loop is None or websocket is None:
-            raise ScoreBridgeUnavailable("no score bridge client connected")
+    def request(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+        endpoint: str = "/score-batch",
+    ) -> dict[str, Any]:
+        # Wait up to 120s for the bridge to (re)connect - handles transient disconnects during vLLM cleanup.
+        _deadline = time.monotonic() + 120.0
+        while True:
+            with self._lock:
+                loop = self._loop
+                websocket = self._websocket
+            if loop is not None and websocket is not None:
+                break
+            remaining = _deadline - time.monotonic()
+            if remaining <= 0:
+                raise ScoreBridgeUnavailable("no score bridge client connected")
+            time.sleep(min(2.0, remaining))
         future = asyncio.run_coroutine_threadsafe(
-            self._request_on_loop(websocket, payload, timeout_seconds=timeout_seconds),
+            self._request_on_loop(
+                websocket,
+                payload,
+                timeout_seconds=timeout_seconds,
+                endpoint=endpoint,
+            ),
             loop,
         )
         return future.result(timeout=timeout_seconds + 5.0)
@@ -76,6 +95,7 @@ class ScoreBridgeHub:
         payload: dict[str, Any],
         *,
         timeout_seconds: float,
+        endpoint: str,
     ) -> dict[str, Any]:
         request_id = str(uuid4())
         loop = asyncio.get_running_loop()
@@ -85,7 +105,14 @@ class ScoreBridgeHub:
                 raise ScoreBridgeUnavailable("score bridge client changed")
             self._pending[request_id] = response_future
         try:
-            await websocket.send_json({"type": "score_request", "request_id": request_id, "payload": payload})
+            await websocket.send_json(
+                {
+                    "type": "score_request",
+                    "request_id": request_id,
+                    "endpoint": endpoint,
+                    "payload": payload,
+                }
+            )
             return await asyncio.wait_for(response_future, timeout=timeout_seconds)
         finally:
             with self._lock:
