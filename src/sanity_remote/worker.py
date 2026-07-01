@@ -341,7 +341,7 @@ class VllmEngine:
                 choice = r.json()["choices"][0]
                 raw = choice["text"] or ""
                 finish = choice.get("finish_reason", "unknown")
-                answer = _strip_thinking(raw)
+                answer = _strip_thinking(raw) or raw
                 logger.info(
                     "[sanity-remote] prompt finish={} thinking={} answer_words={}",
                     finish,

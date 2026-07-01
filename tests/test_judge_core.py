@@ -17,27 +17,18 @@ from albedo_eval_service.judge_core import (
 )
 
 
-def test_judge_panel_is_pinned_to_required_provider_and_precision():
+def test_judge_panel_allows_any_fp8_provider():
     assert JUDGE_MODELS == (
         "z-ai/glm-5.1",
         "qwen/qwen3.5-397b-a17b",
         "deepseek/deepseek-v3.2",
     )
-    assert JUDGE_PROVIDER_PINS["z-ai/glm-5.1"] == {
-        "order": ["baidu"],
-        "allow_fallbacks": False,
-        "quantizations": ["fp8"],
-    }
-    assert JUDGE_PROVIDER_PINS["qwen/qwen3.5-397b-a17b"] == {
-        "order": ["deepinfra"],
-        "allow_fallbacks": False,
-        "quantizations": ["fp8"],
-    }
-    assert JUDGE_PROVIDER_PINS["deepseek/deepseek-v3.2"] == {
-        "order": ["atlas-cloud"],
-        "allow_fallbacks": False,
-        "quantizations": ["fp8"],
-    }
+    for model in JUDGE_MODELS:
+        assert JUDGE_PROVIDER_PINS[model] == {
+            "allow_fallbacks": True,
+            "quantizations": ["fp8"],
+        }
+        assert "order" not in JUDGE_PROVIDER_PINS[model]
     assert JUDGE_STRUCTURED_OUTPUT_MODELS == {
         "qwen/qwen3.5-397b-a17b",
         "deepseek/deepseek-v3.2",

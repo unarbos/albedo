@@ -8,14 +8,16 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from loguru import logger
 
 from .config import Settings, get_settings
 from .dataset_manifest import load_manifest_file
 from .faults import broken_stream_fault, classify_failure_verdict
 from .models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
+from .notifications import EvalErrorNotification, notify_eval_error
 from .remote_client import RemoteEvalClient
 from .repository import ActiveEval, ClaimedEval, EvalRepository
-from .sampling import swe_zero_manifest_sample_ids
+from .sampling import multi_source_manifest_sample_ids
 
 
 def build_eval_request(
@@ -66,11 +68,36 @@ def _build_sample_ids(settings: Settings, block_hash: str) -> list[str]:
         settings.dataset_manifest_path,
         expected_sha256=settings.dataset_manifest_hash,
     )
-    return swe_zero_manifest_sample_ids(
+    return multi_source_manifest_sample_ids(
         manifest,
         block_hash=block_hash,
         sample_count=settings.sample_count,
         max_turns_per_sample=settings.max_turns_per_sample,
+    )
+
+
+def _notify_dispatch_failure(
+    *,
+    submission_id: UUID,
+    eval_run_id: UUID,
+    fault_class: str,
+    fault_code: str,
+    fault_message: str,
+    retryable: bool,
+    remote_run_id: str | None = None,
+) -> None:
+    notify_eval_error(
+        EvalErrorNotification(
+            component="eval-dispatcher",
+            severity="error",
+            message=fault_message,
+            eval_run_id=str(eval_run_id),
+            submission_id=str(submission_id),
+            fault_class=fault_class,
+            fault_code=fault_code,
+            retryable=retryable,
+            details={"remote_run_id": remote_run_id or ""},
+        )
     )
 
 
@@ -96,6 +123,7 @@ class EvalDispatcher:
         if not claimed:
             return False
 
+        remote_run_id = str(claimed.eval_run_id)
         client = RemoteEvalClient(
             base_url=claimed.remote_host.base_url,
             auth_token=self.settings.remote_auth_token,
@@ -130,6 +158,15 @@ class EvalDispatcher:
                 fault_code=fault.fault_code,
                 fault_message=fault.fault_message,
                 retryable=fault.retryable,
+            )
+            _notify_dispatch_failure(
+                submission_id=claimed.submission_id,
+                eval_run_id=claimed.eval_run_id,
+                fault_class=fault.fault_class,
+                fault_code=fault.fault_code,
+                fault_message=fault.fault_message,
+                retryable=fault.retryable,
+                remote_run_id=remote_run_id,
             )
             return True
         finally:
@@ -192,6 +229,15 @@ class EvalDispatcher:
                 fault_message=fault.fault_message,
                 retryable=fault.retryable,
             )
+            _notify_dispatch_failure(
+                submission_id=submission_id,
+                eval_run_id=eval_run_id,
+                fault_class=fault.fault_class,
+                fault_code=fault.fault_code,
+                fault_message=fault.fault_message,
+                retryable=fault.retryable,
+                remote_run_id=str(verdict.get("eval_run_id") or eval_run_id),
+            )
 
     async def _follow_until_verdict(
         self,
@@ -202,10 +248,21 @@ class EvalDispatcher:
         remote_run_id: str,
     ) -> dict[str, Any]:
         seen_event_count = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         while True:
-            events: list[dict[str, Any]] = []
-            async for event in client.iter_events(remote_run_id):
-                events.append(event)
+            try:
+                events: list[dict[str, Any]] = []
+                async for event in client.iter_events(remote_run_id):
+                    events.append(event)
+                consecutive_errors = 0
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                logger.warning(f"[eval-dispatch] transient poll error ({consecutive_errors}/{max_consecutive_errors}), retrying: {exc}")
+                await asyncio.sleep(min(10 * consecutive_errors, 60))
+                continue
 
             for event in events[seen_event_count:]:
                 self.repository.record_remote_event(
@@ -218,7 +275,17 @@ class EvalDispatcher:
                     return event
             seen_event_count = max(seen_event_count, len(events))
 
-            remote_state = await client.get_eval(remote_run_id)
+            try:
+                remote_state = await client.get_eval(remote_run_id)
+                consecutive_errors = 0
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
+                logger.warning(f"[eval-dispatch] transient state error ({consecutive_errors}/{max_consecutive_errors}), retrying: {exc}")
+                await asyncio.sleep(min(10 * consecutive_errors, 60))
+                continue
+
             if remote_state.get("type") == "verdict" or remote_state.get("state") in {"succeeded", "failed"}:
                 if len(events) == seen_event_count and remote_state.get("type") == "verdict":
                     self.repository.record_remote_event(
@@ -227,12 +294,19 @@ class EvalDispatcher:
                         event=remote_state,
                     )
                 return remote_state
+            # renew the lease even when no new events arrive (generation takes 30+ min with no events)
+            self.repository.heartbeat_attempt(attempt_id=attempt_id, lease_seconds=self.settings.lease_seconds)
             await asyncio.sleep(self.settings.remote_event_poll_seconds)
 
     async def run_forever(self) -> None:
+        # Keeps the loop alive across unexpected errors (DB glitch, transient exception).
         while True:
-            did_work = await self.dispatch_once()
-            if not did_work:
+            try:
+                did_work = await self.dispatch_once()
+                if not did_work:
+                    await asyncio.sleep(self.settings.dispatch_poll_seconds)
+            except Exception as exc:  # noqa: BLE001 - keep loop alive across unexpected errors
+                logger.exception(f"[eval-dispatch] unhandled error, retrying in {self.settings.dispatch_poll_seconds}s: {exc}")
                 await asyncio.sleep(self.settings.dispatch_poll_seconds)
 
 

@@ -30,6 +30,11 @@ function crownings(runs) {
       king_version: r.king_version,
       chal_mean: r.score_challenger,
       king_mean: r.score_king,
+      win_margin: r.win_margin,
+      model_uri: r.model_uri,
+      hotkey: r.hotkey,
+      uid: r.uid,
+      king: r.king || null,
       eval_run_id: r.eval_run_id,
       finished_at: r.finished_at,
     }))

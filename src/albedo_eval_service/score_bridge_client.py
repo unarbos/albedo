@@ -17,7 +17,7 @@ class ScoreBridgeClientSettings(BaseSettings):
     remote_auth_token: str = ""
     judge_base_url: str = "http://127.0.0.1:8091"
     judge_auth_token: str = ""
-    request_timeout_seconds: float = 300.0
+    request_timeout_seconds: float = 1800.0
     reconnect_min_seconds: float = 1.0
     reconnect_max_seconds: float = 30.0
     ping_interval_seconds: float = 20.0
@@ -71,12 +71,15 @@ async def _run_once(settings: ScoreBridgeClientSettings, *, headers: dict[str, s
 async def _handle_score_request(websocket: Any, judge_client: httpx.AsyncClient, message: dict[str, Any]) -> None:
     request_id = str(message.get("request_id") or "")
     payload = message.get("payload")
+    endpoint = str(message.get("endpoint") or "/score-batch")
     if not request_id:
         return
     try:
         if not isinstance(payload, dict):
             raise ValueError("score_request payload must be an object")
-        response = await judge_client.post("/score-batch", json=payload)
+        if endpoint not in {"/score-batch", "/category-prep"}:
+            raise ValueError(f"unsupported score bridge endpoint: {endpoint}")
+        response = await judge_client.post(endpoint, json=payload)
         response.raise_for_status()
         body = response.json()
         await websocket.send(json.dumps({"type": "score_response", "request_id": request_id, "body": body}))

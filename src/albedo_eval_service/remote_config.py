@@ -34,7 +34,7 @@ class RemoteSettings(BaseSettings):
     challenger_model: str | None = None
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
-    max_new_tokens: int = 8192
+    max_new_tokens: int = 32768
     temperature: float = 0.0
     top_p: float = 1.0
     max_model_len: int | None = None
@@ -52,7 +52,7 @@ class RemoteSettings(BaseSettings):
     scoring_backend: str = "http"
     scoring_base_url: str | None = None
     scoring_auth_token: str = ""
-    scoring_timeout_seconds: float = 300.0
+    scoring_timeout_seconds: float = 1800.0
     scoring_min_valid_fraction: float = 0.5
 
     upload_artifacts: bool = True

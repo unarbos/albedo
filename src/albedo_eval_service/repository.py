@@ -13,6 +13,17 @@ from .artifacts import artifact_records_from_verdict
 from .models import EvalRequest, RemoteHost, SubmissionStatus
 
 
+_SCORED_OR_BEYOND = (
+    "EVAL_RUNNING",
+    "EVAL_WIN",
+    "SET_REIGN_RUNNING",
+    "REIGN_SET",
+    "WEIGHT_SET_RUNNING",
+    "COMPLETE_LOSS",
+    "COMPLETE_CORONATED",
+)
+
+
 @dataclass(frozen=True)
 class ClaimedEval:
     submission_id: UUID
@@ -86,20 +97,27 @@ class EvalRepository:
                 if pending_reign:
                     return None
 
-                submission = conn.execute(
-                    """
-                    SELECT ms.*, cc.block_hash
-                    FROM model_submissions ms
-                    JOIN chain_commits cc ON cc.id = ms.chain_commit_id
-                    WHERE ms.state = 'EVAL_QUEUED'
-                      AND cc.block_hash IS NOT NULL
-                    ORDER BY ms.priority ASC, ms.created_at ASC
-                    FOR UPDATE OF ms SKIP LOCKED
-                    LIMIT 1
-                    """
-                ).fetchone()
-                if not submission:
-                    return None
+                while True:
+                    submission = conn.execute(
+                        """
+                        SELECT ms.*, cc.block_hash
+                        FROM model_submissions ms
+                        JOIN chain_commits cc ON cc.id = ms.chain_commit_id
+                        WHERE ms.state = 'EVAL_QUEUED'
+                          AND cc.block_hash IS NOT NULL
+                        ORDER BY ms.priority ASC, ms.created_at ASC
+                        FOR UPDATE OF ms SKIP LOCKED
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if not submission:
+                        return None
+                    if self._hotkey_already_scored_inside_tx(conn, submission["hotkey"]):
+                        self._reject_hotkey_already_validated_inside_tx(
+                            conn, submission["id"], submission["hotkey"]
+                        )
+                        continue
+                    break
 
                 host = conn.execute(
                     """
@@ -813,6 +831,45 @@ class EvalRepository:
             WHERE id = %s
             """,
             (fault_class, fault_code, fault_message, submission_id),
+        )
+
+    @staticmethod
+    def _hotkey_already_scored_inside_tx(conn: psycopg.Connection, hotkey: str) -> bool:
+        """Has another submission for this hotkey already reached eval (or beyond)?"""
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM model_submissions
+            WHERE hotkey = %s
+              AND state = ANY(%s::text[])
+            LIMIT 1
+            """,
+            (hotkey, list(_SCORED_OR_BEYOND)),
+        ).fetchone()
+        return row is not None
+
+    def _reject_hotkey_already_validated_inside_tx(
+        self, conn: psycopg.Connection, submission_id: UUID, hotkey: str
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE model_submissions
+            SET state = 'TERMINAL_INVALID', fault_class = 'MINER_FAULT',
+                fault_code = 'hotkey_already_validated',
+                fault_message = 'hotkey already has a validated model submission',
+                updated_at = now(), finished_at = now()
+            WHERE id = %s
+            """,
+            (submission_id,),
+        )
+        self.record_event_inside_tx(
+            conn,
+            submission_id=submission_id,
+            stage_attempt_id=None,
+            event_type="eval_skipped_hotkey_already_validated",
+            severity="WARN",
+            message="hotkey already has a validated model submission",
+            data={"hotkey": hotkey},
         )
 
 

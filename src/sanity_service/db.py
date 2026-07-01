@@ -277,6 +277,28 @@ class PreEvalRepository:
                 data={"fault_class": fault_class, "fault_code": fault_code, "retryable": retryable},
             )
 
+    def release_pre_eval_attempt(self, *, submission_id: UUID, attempt_id: UUID, fault_message: str) -> None:
+        # Releases a worker-busy (409) claim back to HIPPIUS_VALIDATED without consuming a retry.
+        with self._connect() as conn, conn.transaction():
+            conn.execute(
+                """
+                UPDATE stage_attempts
+                SET state = 'FAILED_RETRYABLE', finished_at = now(),
+                    fault_class = 'INFRA_FAULT', fault_code = 'worker_busy',
+                    fault_message = %s
+                WHERE id = %s
+                """,
+                (fault_message, attempt_id),
+            )
+            conn.execute(
+                """
+                UPDATE model_submissions
+                SET state = 'HIPPIUS_VALIDATED', updated_at = now()
+                WHERE id = %s AND state = 'PRE_EVAL_RUNNING'
+                """,
+                (submission_id,),
+            )
+
     def sweep_abandoned_pre_eval(self, *, worker_id: str) -> int:
         # Reclaims expired RUNNING pre-eval attempts (dead dispatcher/host) back to the queue.
         # When retry_count already reached the cap the submission moves to TERMINAL_INVALID instead
