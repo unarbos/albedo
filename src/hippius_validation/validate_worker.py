@@ -217,6 +217,21 @@ async def run() -> None:
             log.info("claim — block={} hotkey={} {}", attempt["block_number"],
                      attempt["hotkey"][:10], attempt["model_uri"])
 
+            # A hotkey whose model failed the sanity gate for injection or low vocabulary is
+            # blocked for good; any later commitment is rejected here without re-validating.
+            sanity_reason = await db.hotkey_sanity_block_reason(pool, attempt["hotkey"])
+            if sanity_reason is not None:
+                await db.mark_failed(
+                    pool,
+                    attempt["id"],
+                    fault_class="MINER_FAULT",
+                    fault_code="hotkey_sanity_blocked",
+                    fault_message=f"hotkey blocked from further submissions — prior sanity failure: {sanity_reason}",
+                    result_summary={"hotkey": attempt["hotkey"], "sanity_reason": sanity_reason},
+                )
+                log.info("skip — hotkey sanity-blocked ({}): {}", sanity_reason, attempt["hotkey"][:10])
+                continue
+
             # One passed Hippius validation per hotkey. A later commit is a miner-side duplicate.
             if await db.hotkey_validated(pool, attempt["hotkey"]):
                 await db.mark_failed(

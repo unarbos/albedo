@@ -389,6 +389,23 @@ async def hotkey_validated(pool: asyncpg.Pool, hotkey: str) -> bool:
         )
 
 
+async def hotkey_sanity_block_reason(pool: asyncpg.Pool, hotkey: str) -> str | None:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            SELECT sr.reason
+            FROM sanity_results sr
+            JOIN model_submissions ms ON ms.model_uri = sr.repo
+            WHERE ms.hotkey = $1
+              AND sr.passed = false
+              AND (sr.reason ILIKE '%injection%' OR sr.reason ILIKE '%low vocab%')
+            ORDER BY sr.checked_at DESC
+            LIMIT 1
+            """,
+            hotkey,
+        )
+
+
 async def _attempt_submission(conn: asyncpg.Connection, attempt_id) -> asyncpg.Record:
     row = await conn.fetchrow(
         """
