@@ -148,7 +148,7 @@ function renderMethodology(model, run) {
 }
 
 function taskArtifactTasks(run) {
-  return (run?.task_results || []).filter(task => task.artifact_uri);
+  return (run?.task_results || []).filter(task => /^https?:\/\//.test(String(task.artifact_uri || "")));
 }
 
 function renderTrajectoryViewer(run) {
@@ -187,16 +187,26 @@ function renderTrajectoryMeta(payload, task) {
   const links = [];
   if (task?.artifact_uri) links.push(el("a", { href: task.artifact_uri, target: "_blank", rel: "noopener" }, "trajectory json"));
   const reward = payload?.reward_breakdown || payload?.reward_info?.reward_breakdown;
+  const agentCost = payload?.agent_cost || messageCost(payload, "assistant");
+  const userCost = payload?.user_cost || messageCost(payload, "user");
   return el("div", { class: "kv-grid trajectory-kv" },
     kv("task", payload?.task_id || task?.task_name || "—"),
     kv("score", payload?.score == null ? "—" : fmt(payload.score, 3)),
     kv("state", payload?.state || task?.state || "—"),
     kv("termination", payload?.termination_reason || task?.metrics?.termination_reason || "—"),
     kv("duration", payload?.duration == null ? "—" : `${fmt(payload.duration, 2)}s`),
-    kv("agent cost", payload?.agent_cost == null ? "—" : fmt(payload.agent_cost, 4)),
-    kv("user cost", payload?.user_cost == null ? "—" : fmt(payload.user_cost, 4)),
+    kv("agent cost", agentCost == null ? "—" : fmt(agentCost, 4)),
+    kv("user cost", userCost == null ? "—" : fmt(userCost, 4)),
     kv("reward", reward ? JSON.stringify(reward) : "—"),
     el("div", { class: "kv" }, el("span", { class: "k" }, "artifacts"), el("span", { class: "v" }, links.length ? links : "—")));
+}
+
+function messageCost(payload, role) {
+  const total = (payload?.messages || []).reduce((sum, message) => {
+    if (message?.role !== role) return sum;
+    return sum + Number(message?.cost || 0) + Number(message?.raw_data?.usage?.cost || 0);
+  }, 0);
+  return total || null;
 }
 
 function wireTrajectory(run) {
