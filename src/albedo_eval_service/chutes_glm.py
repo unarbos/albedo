@@ -189,8 +189,8 @@ class GLMProviderClient:
             reasons = []
             if utilization is not None and utilization > threshold:
                 reasons.append(f"utilization_15m={utilization:.3f} above threshold={threshold:.3f}")
-            if instance_count is not None and instance_count <= 3:
-                reasons.append(f"instance_count={instance_count} <= 3")
+            if instance_count is not None and instance_count <= 100:
+                reasons.append(f"instance_count={instance_count} <= 100")
             if reasons:
                 self._utilization_disabled_reason = "; ".join(reasons)
             return self._utilization_disabled_reason

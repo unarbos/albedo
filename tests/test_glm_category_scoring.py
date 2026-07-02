@@ -194,7 +194,7 @@ def test_glm_skips_chutes_when_15m_utilization_is_high():
                 {
                     "chute_id": "08901219-159f-55a7-87cf-9d0d02744668",
                     "utilization_15m": 0.76,
-                    "instance_count": 4,
+                    "instance_count": 100,
                 }
             ],
         )

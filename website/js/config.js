@@ -1,16 +1,16 @@
 export const POLL_MS = 4000;
 
 export const DATA_ENDPOINTS = [
+  "./data/dashboard.json",
   "https://s3.hippius.com/albedo/data/dashboard.json",
   "https://us-east-1.hippius.com/albedo/data/dashboard.json",
   "https://eu-central-1.hippius.com/albedo/data/dashboard.json",
-  "./data/dashboard.json",
 ];
 export const STATE_ENDPOINTS = [
+  "./data/state.json",
   "https://s3.hippius.com/albedo/data/state.json",
   "https://us-east-1.hippius.com/albedo/data/state.json",
   "https://eu-central-1.hippius.com/albedo/data/state.json",
-  "./data/state.json",
 ];
 
 

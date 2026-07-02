@@ -1,14 +1,15 @@
 import { el, mount } from "../dom.js";
-import { fmt, fmtRelative, shortDigest } from "../format.js";
-import { kingTitleName, modelRepo } from "../model.js";
+import { fmt, fmtRelative } from "../format.js";
+import { modelRepo } from "../model.js";
 
 const BENCHMARK_LABELS = {
-  terminal_bench_2: "Terminal-Bench 2.0",
-  swe_bench_pro_100: "SWE-bench Pro",
   tau2_airline: "Tau2 Airline",
+  tau2_retail: "Tau2 Retail",
+  tau2_telecom: "Tau2 Telecom",
+  tau2_banking_knowledge: "Tau2 Banking",
 };
 
-const BENCHMARK_ORDER = ["terminal_bench_2", "swe_bench_pro_100", "tau2_airline"];
+const BENCHMARK_ORDER = ["tau2_airline", "tau2_retail", "tau2_telecom", "tau2_banking_knowledge"];
 
 const PAGE_SIZES = [5, 10, 25, 50];
 
@@ -20,20 +21,19 @@ function benchmarkLabel(suite) {
 }
 
 function modelName(model) {
-  return modelRepo(model?.model_uri) || model?.model_uri || "—";
+  return model?.model_repo || modelRepo(model?.model_uri) || model?.model_uri || "—";
 }
 
-function benchmarkKingTitle(model) {
-  const n = Number(model?.king_version);
-  return kingTitleName(Number.isFinite(n) ? n - 40 : null);
+function modelLabel(model) {
+  return model?.label || "—";
+}
+
+function hfRepoUrl(model) {
+  return model?.model_repo ? `https://huggingface.co/${model.model_repo}` : null;
 }
 
 function completedRuns(model) {
   return (model?.runs || []).filter(run => run.score != null || Number(run.task_count || 0) > 0 || run.finished_at);
-}
-
-function benchmarkCount(model) {
-  return new Set(completedRuns(model).map(run => run.suite).filter(Boolean)).size;
 }
 
 function latestRun(model) {
@@ -52,8 +52,9 @@ function latestRunTime(model) {
 
 function sortModels(models) {
   return [...(models || [])].sort((a, b) => {
-    const kingDelta = Number(b.king_version || 0) - Number(a.king_version || 0);
-    if (kingDelta) return kingDelta;
+    if (isGenesis(a) !== isGenesis(b)) return isGenesis(a) ? 1 : -1;
+    const orderDelta = Number(a.model_order ?? 999999) - Number(b.model_order ?? 999999);
+    if (orderDelta) return orderDelta;
     const timeDelta = new Date(latestRunTime(b)).getTime() - new Date(latestRunTime(a)).getTime();
     return Number.isFinite(timeDelta) ? timeDelta : 0;
   });
@@ -61,6 +62,10 @@ function sortModels(models) {
 
 function latestFeaturedModel(models) {
   return sortModels(models).find(model => completedRuns(model).length) || sortModels(models)[0] || null;
+}
+
+function highestKingModel(models) {
+  return sortModels(models).find(model => !isGenesis(model)) || null;
 }
 
 function latestRunsByBenchmark(model) {
@@ -82,8 +87,8 @@ function runStateClass(run) {
 }
 
 function isGenesis(model) {
-  const uri = `${model?.model_uri || ""} ${model?.artifact_uri || ""}`.toLowerCase();
-  return uri.includes("genesis") || String(model?.artifact_sha256 || "") === "efd5b8d0a1c1f472be56ff919419cdd0561bdecd9013d5c2a96dd0e23e89c165";
+  const identity = `${model?.label || ""} ${model?.model_repo || ""}`.toLowerCase();
+  return identity.includes("genesis") || identity.includes("qwen/qwen3.6-35b-a3b");
 }
 
 function genesisScores(models) {
@@ -117,13 +122,6 @@ function scoreCell(run, delta = null) {
     deltaCell(delta));
 }
 
-function taskSummary(run) {
-  if (!run) return "—";
-  const passed = run.passed_count ?? "—";
-  const total = run.task_count ?? "—";
-  return `${passed}/${total}`;
-}
-
 function detailHref(model, runId = null) {
   const qs = new URLSearchParams();
   if (model?.id) qs.set("model_id", model.id);
@@ -140,46 +138,48 @@ function renderFeatured(model, baseline) {
     return el("div", { class: item ? "bench-summary-score" : "bench-summary-score pending" },
       el("span", { class: "k" }, benchmarkLabel(suite)),
       item ? scoreCell(item, scoreDelta(model, item, baseline)) : el("span", { class: "bench-score pending" }, "pending"),
-      el("span", { class: "meta" }, item ? taskSummary(item) : "—"));
+      el("span", { class: "meta" }, item?.state || "queued"));
   });
   return el("div", { class: "bench-feature" },
     el("div", { class: "bench-feature-main" },
-      el("div", { class: "bench-feature-eyebrow" }, "latest benchmark"),
-      el("div", { class: "bench-feature-title" }, `${benchmarkKingTitle(model)} · ${modelName(model)}`),
+      el("div", { class: "bench-feature-eyebrow" }, "benchmark panel"),
+      el("div", { class: "bench-feature-title" }, `${modelLabel(model)} · ${modelName(model)}`),
       el("div", { class: "bench-feature-meta" },
-        el("span", {}, shortDigest(model.model_hash)),
+        el("span", {}, model.model_repo || "—"),
         el("span", {}, run ? benchmarkLabel(run.suite) : "pending"),
         el("span", {}, latestRunTime(model) ? fmtRelative(latestRunTime(model)) : "pending")),
       el("a", { class: "bench-feature-details", href: detailHref(model, run?.id || null) }, "details")),
     el("div", { class: "bench-summary-grid" }, scoreItems));
 }
 
-function tableScoreCell(model, run, baseline) {
+function tableScoreCell(model, run, baseline, boxed = false) {
+  const cls = boxed ? "bench-table-score" : "bench-table-score plain";
   if (!run) {
-    return el("span", { class: "bench-table-score pending" },
-      el("span", { class: "bench-score pending" }, "pending"),
-      el("span", { class: "bench-score-task" }, "—"));
+    return el("span", { class: `${cls} pending` },
+      el("span", { class: "bench-card-name" }, "pending"),
+      el("span", { class: "bench-score pending" }, "—"));
   }
-  return el("a", { class: "bench-table-score", href: detailHref(model, run.id) },
+  return el("a", { class: `${cls} ${runStateClass(run)}`, href: detailHref(model, run.id) },
+    el("span", { class: "bench-card-name" }, run.state || "done"),
     scoreCell(run, scoreDelta(model, run, baseline)),
-    el("span", { class: "bench-score-task" }, taskSummary(run)));
+    el("span", { class: "bench-card-meta" }, run.finished_at ? fmtRelative(run.finished_at) : "running"));
 }
 
-function renderTableRows(models, baseline) {
+function renderTableRows(models, baseline, highlightedModel) {
   return models.map(model => {
-    const latest = latestRun(model);
     const runs = new Map(latestRunsByBenchmark(model).map(run => [run.suite, run]));
-    return el("tr", {},
-      el("td", { class: "bench-king-col" }, benchmarkKingTitle(model)),
-      el("td", { class: "model" }, el("span", { class: "model-cell", title: model.model_uri }, modelName(model))),
-      BENCHMARK_ORDER.map(suite => el("td", { class: "bench-score-col" }, tableScoreCell(model, runs.get(suite), baseline))),
-      el("td", { class: "when" }, latestRunTime(model) ? fmtRelative(latestRunTime(model)) : "—"),
-      el("td", { class: "r" }, el("a", { class: "bench-details-btn", href: detailHref(model, latest?.id || null) }, "details")));
+    const boxed = highlightedModel?.id === model.id;
+    const repoUrl = hfRepoUrl(model);
+    return el("tr", { class: boxed ? "bench-feature-row" : "" },
+      el("td", { class: "bench-label-col" }, repoUrl
+        ? el("a", { class: "bench-label-link", href: repoUrl, target: "_blank", rel: "noopener" }, modelLabel(model))
+        : modelLabel(model)),
+      BENCHMARK_ORDER.map(suite => el("td", { class: "bench-score-col" }, tableScoreCell(model, runs.get(suite), baseline, boxed))));
   });
 }
 
 export function renderBenchmarks(container, metaNode, data) {
-  const models = data?.models || [];
+  const models = (data?.models || []).filter(model => completedRuns(model).length);
   if (!models.length) {
     mount(container, el("div", { class: "empty" }, "no benchmark data yet."));
     if (metaNode) metaNode.textContent = "no data";
@@ -187,6 +187,7 @@ export function renderBenchmarks(container, metaNode, data) {
   }
   const baseline = genesisScores(models);
   const sortedModels = sortModels(models);
+  const highlightedModel = highestKingModel(sortedModels);
   const pages = Math.max(1, Math.ceil(sortedModels.length / pageSize));
   page = Math.min(page, pages);
   const start = (page - 1) * pageSize;
@@ -202,16 +203,13 @@ export function renderBenchmarks(container, metaNode, data) {
 
   mount(container,
     el("div", { class: "bench-table-head" },
-      el("div", { class: "label" }, "benchmarked models"),
+      el("div", { class: "label" }, "benchmark panel history"),
       pageControls),
     el("div", { class: "data-table-wrap bench-table-wrap" },
       el("table", { class: "data-table" },
         el("thead", {}, el("tr", {},
-          el("th", { class: "bench-king-col" }, "king"),
-          el("th", {}, "model"),
-          BENCHMARK_ORDER.map(suite => el("th", { class: "bench-score-col" }, benchmarkLabel(suite))),
-          el("th", {}, "latest"),
-          el("th", { class: "r" }, ""))),
-        el("tbody", {}, shown.length ? renderTableRows(shown, baseline) : el("tr", {}, el("td", { colspan: "7" }, "no other models yet."))))));
+          el("th", { class: "bench-label-col" }, "label"),
+          BENCHMARK_ORDER.map(suite => el("th", { class: "bench-score-col" }, benchmarkLabel(suite))))),
+        el("tbody", {}, shown.length ? renderTableRows(shown, baseline, highlightedModel) : el("tr", {}, el("td", { colspan: "5" }, "no models yet."))))));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }
