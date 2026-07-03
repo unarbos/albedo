@@ -25,6 +25,7 @@ CONTENT_TYPES = {
 }
 SKIP_NAMES = {"push_to_hippius.py", "generate-mock.mjs"}
 SKIP_SUFFIXES = {".py", ".md", ".mjs", ".bak", ".pyc"}
+SKIP_DIRS = {"data"}
 
 NO_CACHE = "no-cache, must-revalidate"
 ASSET_CACHE = "public, max-age=86400"
@@ -95,9 +96,12 @@ def iter_website_files():
     for path in sorted(WEBSITE_DIR.rglob("*")):
         if not path.is_file():
             continue
+        rel = path.relative_to(WEBSITE_DIR)
+        if rel.parts and rel.parts[0] in SKIP_DIRS:
+            continue
         if path.name in SKIP_NAMES or path.suffix.lower() in SKIP_SUFFIXES:
             continue
-        yield path.relative_to(WEBSITE_DIR).as_posix(), path
+        yield rel.as_posix(), path
 
 
 def main() -> int:

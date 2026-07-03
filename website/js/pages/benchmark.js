@@ -8,8 +8,10 @@ const BENCHMARK_LABELS = {
   tau2_retail: "Tau2 Retail",
   tau2_telecom: "Tau2 Telecom",
   tau2_banking_knowledge: "Tau2 Banking",
+  swe_rebench_2026_03: "SWE-rebench",
 };
 const TAU2_BENCH_VERSION = "τ²-bench 1.0.0";
+const SWE_REBENCH_VERSION = "SWE-rebench 2026-03";
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -114,10 +116,22 @@ function benchVersion(run) {
   if (version) return version;
   const ref = run?.environment?.benchmark_repo_ref || run?.harness_config?.repo_ref;
   if (ref) return `${TAU2_BENCH_VERSION} @ ${shortDigest(ref)}`;
+  if (run?.suite === "swe_rebench_2026_03") return SWE_REBENCH_VERSION;
   return String(run?.suite || "").startsWith("tau2_") ? TAU2_BENCH_VERSION : "—";
 }
 
 function methodologyNotes(model, run) {
+  if (run?.suite === "swe_rebench_2026_03") {
+    const env = run?.environment || {};
+    const metrics = run?.metrics || {};
+    return [
+      `Evaluated using ${modelName(model)} on ${env.dataset || "nebius/SWE-rebench-leaderboard"}.`,
+      `Data file: ${env.data_files || "data/2026_03-00000-of-00001.parquet"}.`,
+      `Agent harness: ${metrics.agent_harness || "mini-swe-agent"}.`,
+      `Instances: ${run?.task_count || metrics.expected_prediction_count || "—"}.`,
+      "Metric: Pass@1.",
+    ].join(" ");
+  }
   const cfg = run?.harness_config || {};
   const env = run?.environment || {};
   const parts = [
@@ -138,10 +152,12 @@ function suiteDomain(suite) {
 }
 
 function renderMethodology(model, run) {
+  const actorKey = run?.suite === "swe_rebench_2026_03" ? "Agent Harness" : "User Simulator";
+  const actorValue = run?.suite === "swe_rebench_2026_03" ? (run?.metrics?.agent_harness || "mini-swe-agent") : cleanUserSimulator(run);
   return el("div", { class: "detail-section" },
     el("h2", {}, "methodology"),
     el("div", { class: "kv-grid" },
-      kv("User Simulator", cleanUserSimulator(run)),
+      kv(actorKey, actorValue),
       kv("Evaluation Date", fmtDateTime(run?.finished_at || run?.started_at)),
       kv("Bench Version", benchVersion(run)),
       kv("Notes", methodologyNotes(model, run))));

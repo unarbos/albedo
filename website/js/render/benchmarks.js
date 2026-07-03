@@ -7,9 +7,10 @@ const BENCHMARK_LABELS = {
   tau2_retail: "Tau2 Retail",
   tau2_telecom: "Tau2 Telecom",
   tau2_banking_knowledge: "Tau2 Banking",
+  swe_rebench_2026_03: "SWE-rebench",
 };
 
-const BENCHMARK_ORDER = ["tau2_airline", "tau2_retail", "tau2_telecom", "tau2_banking_knowledge"];
+const BENCHMARK_ORDER = ["tau2_airline", "tau2_retail", "tau2_telecom", "tau2_banking_knowledge", "swe_rebench_2026_03"];
 
 const PAGE_SIZES = [5, 10, 25, 50];
 const ACTIVE_STATES = new Set(["QUEUED", "CLAIMED", "LOADING_MODEL", "RUNNING", "SCORING"]);
@@ -261,6 +262,6 @@ export function renderBenchmarks(container, metaNode, data) {
         el("thead", {}, el("tr", {},
           el("th", { class: "bench-label-col" }, "label"),
           BENCHMARK_ORDER.map(suite => el("th", { class: "bench-score-col" }, benchmarkLabel(suite))))),
-        el("tbody", {}, shown.length ? renderTableRows(shown, baseline, highlightedModel, activeProgress) : el("tr", {}, el("td", { colspan: "5" }, "no models yet."))))));
+        el("tbody", {}, shown.length ? renderTableRows(shown, baseline, highlightedModel, activeProgress) : el("tr", {}, el("td", { colspan: String(BENCHMARK_ORDER.length + 1) }, "no models yet."))))));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }
