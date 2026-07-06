@@ -15,7 +15,14 @@ from typing import Any
 from loguru import logger
 
 from config_validation.chain import CommitRecord
-from config_validation.checks import CheckOutcome, architecture, duplicate, files, revision
+from config_validation.checks import (
+    CheckOutcome,
+    architecture,
+    duplicate,
+    files,
+    repo_pattern,
+    revision,
+)
 from config_validation.config import SEED_DIGEST, SEED_REPO
 from config_validation.fingerprint.store import FingerprintStore, NullFingerprintStore
 from config_validation.hippius import download_config, download_full, list_files
@@ -61,7 +68,13 @@ def validate_commit(
 
     ref = ModelRef(repo=record.repo, digest=record.digest)
 
-    # Check 1 — revision parity (cheapest gate; everything else needs the repo).
+    # Check 0 — repo naming pattern (pure regex, no network; reject off-pattern repos before any download).
+    pat = repo_pattern.check(ref)
+    result.checks.append(pat)
+    if not pat.ok:
+        return result
+
+    # Check 1 — revision parity (cheapest network gate; everything else needs the repo).
     rev = revision.check(ref)
     result.checks.append(rev)
     if not rev.ok:
