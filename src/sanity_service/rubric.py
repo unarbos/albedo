@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import re
 
-from sanity_service.rubricisity import PROBE_SYSTEM
-from sanity_service.rubricisity import VIABILITY_SYSTEM
+from loguru import logger
+
+from sanity_service.rubricisity import PROBE_SYSTEM, VIABILITY_SYSTEM
 
 # ── Injection auditor ─────────────────────────────────────────────────────────
 # Source of truth for the probe system prompt is rubricisity.PROBE_SYSTEM; it expects the user
@@ -50,35 +50,74 @@ def build_viability_user(prompt: str, reply: str) -> str:
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
-_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def _extract_obj(raw: str) -> dict | None:
-    # Returns the JSON object from a judge reply (whole string, else first {...}); None if absent.
+def _extract_obj(raw: str, key: str | None = None) -> dict | None:
+    # Returns the judge's JSON verdict; when key is given, prefers the object that CONTAINS it
+    # (so a trailing non-verdict object cannot shadow a real verdict).
     text = (raw or "").strip()
-    for candidate in (text, (_OBJ_RE.search(text).group() if _OBJ_RE.search(text) else "")):
-        if not candidate:
+    if not text:
+        return None
+    try:
+        whole = json.loads(text)
+        if isinstance(whole, dict):
+            return whole
+    except Exception:  # noqa: BLE001 - not pure JSON; scan for an embedded object below
+        pass
+    decoder = json.JSONDecoder()
+    found: dict | None = None
+    keyed: dict | None = None
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
             continue
         try:
-            obj = json.loads(candidate)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:  # noqa: BLE001 - any malformed candidate just falls through to None
+            obj, end = decoder.raw_decode(text[i:])  # handles braces inside JSON strings
+        except ValueError:
+            i += 1
             continue
+        if isinstance(obj, dict):
+            found = obj
+            if key is not None and key in obj:
+                keyed = obj
+        i += max(end, 1)
+    result = keyed if keyed is not None else found
+    if result is None:
+        logger.debug(f"[sanity/rubric] no JSON object in judge reply: {text[:120]!r}")
+    return result
+
+
+def _as_bool(value: object) -> bool | None:
+    # Coerces a judge flag to True/False; None when it is not a recognizable boolean (so the vote ignores it).
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in ("true", "1", "yes", "y"):
+            return True
+        if token in ("false", "0", "no", "n"):
+            return False
     return None
 
 
 def parse_injection(raw: str) -> tuple[bool | None, str]:
-    # Returns (injection_flag, evidence); flag is None when the reply is unparseable.
-    obj = _extract_obj(raw)
+    # Returns (injection_flag, evidence); flag is None when unparseable or not a clean boolean.
+    obj = _extract_obj(raw, "injection")
     if obj is None or "injection" not in obj:
         return None, ""
-    return bool(obj.get("injection")), str(obj.get("evidence", ""))[:300]
+    flag = _as_bool(obj.get("injection"))
+    if flag is None:
+        return None, ""
+    return flag, str(obj.get("evidence", ""))[:300]
 
 
 def parse_viability(raw: str) -> tuple[bool | None, str]:
-    # Returns (viable_flag, reason); flag is None when the reply is unparseable.
-    obj = _extract_obj(raw)
+    # Returns (viable_flag, reason); flag is None when unparseable or not a clean boolean.
+    obj = _extract_obj(raw, "viable")
     if obj is None or "viable" not in obj:
         return None, ""
-    return bool(obj.get("viable")), str(obj.get("reason", ""))[:300]
+    flag = _as_bool(obj.get("viable"))
+    if flag is None:
+        return None, ""
+    return flag, str(obj.get("reason", ""))[:300]
