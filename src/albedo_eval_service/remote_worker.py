@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, TypeVar
 
+from loguru import logger
+
 from .canonical_model_config import canonical_generation_config, canonical_max_model_len
 from .dataset_manifest import load_manifest_file
 from .judge_core import CHALLENGER_WIN_MARGIN, challenger_beats_king
@@ -24,10 +26,7 @@ from .sampling import multi_source_manifest_sample_ids
 GeneratorFactory = Callable[[str, list[str], str], Generator]
 T = TypeVar("T")
 _CANONICAL_TOKENIZER_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "assets"
-    / "tokenizers"
-    / "Qwen3.6-35B-A3B"
+    Path(__file__).resolve().parents[2] / "assets" / "tokenizers" / "Qwen3.6-35B-A3B"
 )
 
 
@@ -71,6 +70,10 @@ class RemoteEvalWorker:
         try:
             self._execute(run)
         except Exception as exc:
+            logger.exception(
+                f"[remote-worker] eval failed remote_run={run.remote_run_id} "
+                f"eval_run={run.request.eval_run_id} submission={run.request.submission_id}: {exc}"
+            )
             run.fail(
                 fault_code="remote_worker_failed", fault_message=f"{type(exc).__name__}: {exc}"
             )
@@ -177,6 +180,10 @@ class RemoteEvalWorker:
         try:
             category_prep_id = self._scorer.start_category_prep(request=request, samples=samples)
         except Exception as exc:
+            logger.warning(
+                f"[remote-worker] category prep failed eval_run={request.eval_run_id} "
+                f"submission={request.submission_id}, falling back to synchronous/fixed scoring: {exc}"
+            )
             run.append_event(
                 {
                     "type": "category_prep_failed",
@@ -365,9 +372,7 @@ class RemoteEvalWorker:
                     "allowed_scores": request.scoring.allowed_scores,
                     "scored_sample_count": scored_so_far,
                     "judge_errors": judge_errors,
-                    "scoring_modes": sorted(
-                        {str(record.get("scoring_mode") or "") for record in batch}
-                    ),
+                    "scoring_modes": sorted({str(record.get("scoring_mode") or "") for record in batch}),
                     "category_generation_errors": sum(
                         1 for record in batch if record.get("category_generation_error")
                     ),
@@ -414,6 +419,10 @@ class RemoteEvalWorker:
                 category_prep_id=category_prep_id,
             )
         except Exception as exc:
+            logger.exception(
+                f"[remote-worker] judge scoring failed eval_run={request.eval_run_id} "
+                f"submission={request.submission_id} valid_pairs={valid_pair_count}: {exc}"
+            )
             return {
                 "records": [],
                 "summary": {
@@ -612,11 +621,13 @@ def _cleanup_stale_vllm_resources() -> None:
     # remove the stale /dev/shm IPC files they leave behind - accumulation causes EAGAIN.
     subprocess.run(["pkill", "-9", "-f", "vllm.v1.engine.core"], check=False)
     subprocess.run(["pkill", "-9", "-f", "vllm.v1.executor.multiproc"], check=False)
+    # Also kill any spawn_main processes left hanging from a prior NCCL-crash stuck subprocess.
+    subprocess.run(["pkill", "-9", "-f", "multiprocessing.spawn.spawn_main"], check=False)
     for path in glob.glob("/dev/shm/psm_*") + glob.glob("/dev/shm/sem.mp-*"):
         try:
             os.unlink(path)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug(f"[remote-worker] best-effort /dev/shm cleanup failed path={path}: {exc}")
 
 
 def _parse_gpu_ids(raw: str) -> list[str]:

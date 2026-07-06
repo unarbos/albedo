@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
+from loguru import logger
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -472,9 +473,15 @@ class EvalRepository:
                     (max_retry_count,),
                 ).fetchall()
                 for row in capped_rows:
+                    logger.error(
+                        f"[eval-repo] terminal retry-cap submission={row['id']} "
+                        f"attempts={row['retry_count']} last_fault_class={row['fault_class']} "
+                        f"last_fault_code={row['fault_code']}: {row['fault_message']}"
+                    )
                     message = (
                         f"Eval retry cap reached: retry_count={row['retry_count']} "
-                        f"max_retry_count={max_retry_count}"
+                        f"max_retry_count={max_retry_count}; "
+                        f"last_fault={row['fault_code']}: {row['fault_message']}"
                     )
                     conn.execute(
                         """
@@ -645,6 +652,10 @@ class EvalRepository:
         attempt_state = "FAILED_RETRYABLE" if retryable else "FAILED_TERMINAL"
         submission_state = "EVAL_RETRYABLE" if retryable else "TERMINAL_INVALID"
         eval_state = "FAILED_RETRYABLE" if retryable else "FAILED_TERMINAL"
+        logger.warning(
+            f"[eval-repo] eval failed submission={submission_id} eval_run={eval_run_id} "
+            f"fault_class={fault_class} fault_code={fault_code} retryable={retryable}: {fault_message}"
+        )
         with self._connect() as conn:
             with conn.transaction():
                 conn.execute(

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
+from loguru import logger
+
 from .remote_config import RemoteSettings
 
 
@@ -88,15 +90,22 @@ class S3ArtifactUploader:
             object_key = f"{prefix}/{path.name}" if prefix else path.name
             content_type = content_type_for(path)
             checksum = sha256_file(path)
-            client.upload_file(
-                str(path),
-                bucket,
-                object_key,
-                ExtraArgs={
-                    "ContentType": content_type,
-                    "Metadata": {"sha256": checksum, "eval_run_id": str(eval_run_id), "artifact_name": name},
-                },
-            )
+            try:
+                client.upload_file(
+                    str(path),
+                    bucket,
+                    object_key,
+                    ExtraArgs={
+                        "ContentType": content_type,
+                        "Metadata": {"sha256": checksum, "eval_run_id": str(eval_run_id), "artifact_name": name},
+                    },
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"[remote-artifacts] S3 upload failed eval_run={eval_run_id} "
+                    f"artifact={name} key={object_key} path={path}: {exc}"
+                )
+                raise
             uploads[name] = ArtifactUpload(
                 name=name,
                 uri=f"s3://{bucket}/{object_key}",

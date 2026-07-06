@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from loguru import logger
+
 ALLOWED_DTYPES = frozenset({"F16", "BF16"})
 
 
@@ -37,5 +39,6 @@ def check(model_dir: str) -> tuple[bool, str]:
         try:
             shard_dtypes[shard.name] = _shard_dtypes(shard)
         except Exception as exc:  # noqa: BLE001 — unreadable shard is the miner's fault
+            logger.warning(f"[hippius-val] could not read safetensors header of {shard.name}: {exc}")
             return False, f"could not read safetensors header of {shard.name}: {exc}"
     return check_dtypes(shard_dtypes)

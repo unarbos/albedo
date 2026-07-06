@@ -66,7 +66,8 @@ def _get_json(key: str) -> dict:
         obj = _client().get_object(Bucket=config.S3_BUCKET, Key=key)
         data = json.loads(obj["Body"].read())
         return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 — missing file -> start empty
+    except Exception as exc:  # noqa: BLE001 — missing file -> start empty
+        log.debug(f"S3 get_json({key}) failed, starting empty: {exc}")
         return {}
 
 

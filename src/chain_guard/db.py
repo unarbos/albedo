@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncpg
+from loguru import logger as log
 
 
 async def is_used(conn: asyncpg.Connection, hotkey: str) -> bool:
@@ -17,6 +18,7 @@ async def record_legacy(pool: asyncpg.Pool, rows: list[tuple[str, int, str]], ig
     legacy = [(hk, block, raw) for hk, block, raw in rows if block <= ignore_to_block]
     if not legacy:
         return 0
+    log.debug(f"[chain-guard] record_legacy starting: candidates={len(legacy)} ignore_to_block={ignore_to_block}")
     inserted = 0
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -33,4 +35,5 @@ async def record_legacy(pool: asyncpg.Pool, rows: list[tuple[str, int, str]], ig
                 )
                 if status.endswith("1"):
                     inserted += 1
+    log.debug(f"[chain-guard] record_legacy done: inserted={inserted} of candidates={len(legacy)}")
     return inserted

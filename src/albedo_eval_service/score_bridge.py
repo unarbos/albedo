@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import WebSocket
+from loguru import logger
 from starlette.websockets import WebSocketDisconnect
 
 
@@ -41,8 +42,8 @@ class ScoreBridgeHub:
         if old is not None and old is not websocket:
             try:
                 await old.close(code=1012)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - best-effort close of replaced bridge
+                logger.debug(f"[score-bridge] best-effort close of replaced websocket failed: {exc}")
         try:
             while True:
                 message = await websocket.receive_json()

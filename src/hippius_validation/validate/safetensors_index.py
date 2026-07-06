@@ -11,6 +11,8 @@ import fnmatch
 import json
 from pathlib import Path
 
+from loguru import logger
+
 INDEX_NAME = "model.safetensors.index.json"
 _SHARD_GLOB = "model-*-of-*.safetensors"
 
@@ -41,6 +43,7 @@ def check(model_dir: str, files: list[str]) -> tuple[bool, str]:
         if not isinstance(weight_map, dict) or not weight_map:
             raise ValueError("empty or non-object weight_map")
     except Exception as exc:  # noqa: BLE001 — the index is the miner's artifact
+        logger.warning(f"[hippius-val] malformed {INDEX_NAME}: {exc}")
         return False, f"malformed {INDEX_NAME}: {exc}"
 
     referenced = set(weight_map.values())
@@ -60,6 +63,7 @@ def check(model_dir: str, files: list[str]) -> tuple[bool, str]:
         try:
             header_keys = _shard_tensor_keys(mdir / shard)
         except Exception as exc:  # noqa: BLE001 — unreadable shard is the miner's fault
+            logger.warning(f"[hippius-val] could not read safetensors header of {shard}: {exc}")
             return False, f"could not read safetensors header of {shard}: {exc}"
 
         dead = sorted(header_keys - index_keys)

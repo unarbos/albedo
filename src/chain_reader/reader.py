@@ -20,9 +20,12 @@ async def run() -> None:
     # IGNORE_COMMITS_TO_BLOCK, so those hotkeys are blocked from eval. Idempotent across restarts.
     if config.IGNORE_COMMITS_TO_BLOCK > 0:
         log.info("chain_guard backfill — starting (ignore_commits_to_block={})", config.IGNORE_COMMITS_TO_BLOCK)
-        raw = await asyncio.to_thread(guard_scan.scan_all_raw, subtensor, config.NETUID)
-        seeded = await guard_db.record_legacy(pool, raw, config.IGNORE_COMMITS_TO_BLOCK)
-        log.info("chain_guard backfill — finished: scanned={} seeded_blocked_hotkeys={}", len(raw), seeded)
+        try:
+            raw = await asyncio.to_thread(guard_scan.scan_all_raw, subtensor, config.NETUID)
+            seeded = await guard_db.record_legacy(pool, raw, config.IGNORE_COMMITS_TO_BLOCK)
+            log.info("chain_guard backfill — finished: scanned={} seeded_blocked_hotkeys={}", len(raw), seeded)
+        except Exception as exc:  # noqa: BLE001 — a backfill failure must not silently leave hotkeys unblocked
+            log.exception(f"[chain-reader] startup backfill failed, hotkeys may be unblocked: {exc}")
     else:
         log.info("chain_guard backfill — skipped (IGNORE_COMMITS_TO_BLOCK unset/0; no hotkeys blocked)")
 

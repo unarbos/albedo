@@ -166,7 +166,8 @@ class VllmEngine:
                 s.settimeout(0.5)
                 if s.connect_ex(("127.0.0.1", self._s.vllm_port)) != 0:
                     return  # port is free, nothing to kill
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - port probe is best-effort
+            logger.debug(f"[sanity-remote] port squatter socket check failed: {exc}")
             return
         try:
             result = subprocess.run(
@@ -179,10 +180,10 @@ class VllmEngine:
                 try:
                     os.kill(int(pid_str), signal.SIGKILL)
                     logger.info("[sanity-remote] killed orphan vLLM pid={} on port {}", pid_str, self._s.vllm_port,)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as exc:  # noqa: BLE001 - best-effort kill of orphan pid
+                    logger.debug(f"[sanity-remote] failed to kill orphan pid={pid_str}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - best-effort lsof + pid parse
+            logger.debug(f"[sanity-remote] lsof/pid parse for port squatter failed: {exc}")
 
     def forget(self) -> None:
         # Forces a reload next time; keeps _loaded_dir so a stale model stays reclaimable.
@@ -292,7 +293,8 @@ class VllmEngine:
                 return (
                     await c.get(f"http://localhost:{self._s.vllm_port}/health")
                 ).status_code == 200
-        except Exception:  # noqa: BLE001 - any probe failure means not healthy
+        except Exception as exc:  # noqa: BLE001 - any probe failure means not healthy
+            logger.debug(f"[sanity-remote] health probe failed: {exc}")
             return False
 
     async def _wait_healthy(self, timeout: float) -> None:
@@ -304,8 +306,8 @@ class VllmEngine:
                 try:
                     if (await c.get(url)).status_code == 200:
                         return
-                except Exception:  # noqa: BLE001 - keep polling until the deadline
-                    pass
+                except Exception as exc:  # noqa: BLE001 - keep polling until the deadline
+                    logger.debug(f"[sanity-remote] health poll retry: {exc}")
                 await asyncio.sleep(2.0)
         raise RuntimeError(f"vLLM did not become healthy within {timeout}s")
 
@@ -368,8 +370,8 @@ class VllmEngine:
         logger.info("[sanity-remote] killing vLLM pid={}", self._proc.pid)
         try:
             os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-        except Exception:  # noqa: BLE001 - process may already be gone
-            pass
+        except Exception as exc:  # noqa: BLE001 - process may already be gone
+            logger.debug(f"[sanity-remote] killpg failed (process may be gone): {exc}")
         try:
             self._proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -377,10 +379,10 @@ class VllmEngine:
             try:
                 self._proc.kill()
                 self._proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001 - best-effort kill
-                pass
-        except Exception:  # noqa: BLE001 - best-effort reap
-            pass
+            except Exception as exc:  # noqa: BLE001 - best-effort kill
+                logger.debug(f"[sanity-remote] retry kill failed: {exc}")
+        except Exception as exc:  # noqa: BLE001 - best-effort reap
+            logger.debug(f"[sanity-remote] reap failed: {exc}")
         self._proc = None
 
 
@@ -485,4 +487,4 @@ async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None)
         try:
             await engine.teardown()
         except Exception:  # noqa: BLE001
-            logger.warning("[sanity-remote] vLLM teardown after run failed (best-effort)")
+            logger.exception("[sanity-remote] vLLM teardown after run failed (best-effort)")

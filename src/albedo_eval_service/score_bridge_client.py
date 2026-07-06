@@ -6,6 +6,7 @@ import random
 from typing import Any
 
 import httpx
+from loguru import logger
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from uvicorn.importer import import_from_string
 
@@ -62,7 +63,11 @@ async def _run_once(settings: ScoreBridgeClientSettings, *, headers: dict[str, s
         ) as websocket:
             print(f"score bridge connected: {settings.remote_ws_url}", flush=True)
             async for raw_message in websocket:
-                message = json.loads(raw_message)
+                try:
+                    message = json.loads(raw_message)
+                except (ValueError, TypeError) as exc:
+                    logger.warning(f"[score-bridge-client] dropping malformed frame: {exc}")
+                    continue
                 if message.get("type") != "score_request":
                     continue
                 asyncio.create_task(_handle_score_request(websocket, judge_client, message))
@@ -84,6 +89,9 @@ async def _handle_score_request(websocket: Any, judge_client: httpx.AsyncClient,
         body = response.json()
         await websocket.send(json.dumps({"type": "score_response", "request_id": request_id, "body": body}))
     except Exception as exc:
+        logger.exception(
+            f"[score-bridge-client] score request failed request_id={request_id} endpoint={endpoint}: {exc}"
+        )
         await websocket.send(
             json.dumps({"type": "score_response", "request_id": request_id, "error": f"{type(exc).__name__}: {exc}"})
         )

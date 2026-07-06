@@ -353,6 +353,11 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
                     fault_code="glm_category_scoring_invalid",
                     scoring_mode="fixed_metrics_fallback",
                 )
+                logger.warning(
+                    f"[judge-api] GLM-category scoring produced too few valid scores, "
+                    f"falling back to fixed metrics eval_run={request.eval_run_id} "
+                    f"batch={request.batch_id}"
+                )
             except Exception as exc:
                 _notify(
                     settings,
@@ -362,6 +367,10 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
                     fault_code="glm_category_scoring_failed",
                     scoring_mode="fixed_metrics_fallback",
                     details={"error": f"{type(exc).__name__}: {exc}"},
+                )
+                logger.exception(
+                    f"[judge-api] GLM-category scoring failed, falling back to fixed metrics "
+                    f"eval_run={request.eval_run_id} batch={request.batch_id}: {exc}"
                 )
             records = await _score_samples(
                 client=client, request=request, scoring_mode="fixed_metrics_fallback"

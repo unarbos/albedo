@@ -6,6 +6,8 @@ import queue as queue_module
 from dataclasses import dataclass
 from typing import Protocol
 
+from loguru import logger
+
 from .remote_dataset import EvalSample
 
 _QWEN3_IM_END_TOKEN_ID = 248046  # <|im_end|> for Qwen3.6-35B-A3B (was 151645 for Qwen3-4B genesis)
@@ -159,4 +161,5 @@ def _vllm_worker(
             results.append({"sample_id": sample_id, "text": text, "error": None})
         queue.put({"results": results})
     except Exception as exc:
+        logger.exception(f"[remote-gen] vLLM worker failed model={model} gpu_ids={gpu_ids}: {exc}")
         queue.put({"error": f"{type(exc).__name__}: {exc}"})

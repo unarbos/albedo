@@ -190,6 +190,19 @@ class SanityDispatcher:
                 consensus=self.settings.consensus,
                 skip_viability=self.settings.skip_viability,
             )
+        except Exception as exc:  # noqa: BLE001 - a judge/OpenRouter failure must fail cleanly, not escape
+            logger.exception(f"[sanity-dispatch] judge gate failed submission={submission_id}: {exc}")
+            self.repository.mark_pre_eval_failed(
+                submission_id=submission_id,
+                attempt_id=attempt_id,
+                repo=repo,
+                digest=digest,
+                fault_class="INFRA_FAULT",
+                fault_code="judges_failed",
+                fault_message=str(exc),
+                retryable=True,
+            )
+            return
         finally:
             await client.aclose()
 

@@ -43,6 +43,7 @@ def put_detection(hotkey: str, block: int, detail: dict) -> str | None:
         log.debug("S3 disabled (ALBEDO_S3_* unset); skipping detection upload for {}", hotkey)
         return None
     key = f"chain_guard/{hotkey}/{block}/detection.json"
+    log.debug(f"[chain-guard] uploading detection hotkey={hotkey} block={block} key={key}")
     try:
         _client().put_object(
             Bucket=S3_BUCKET, Key=key,

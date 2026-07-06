@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from config_validation.chain import CommitRecord
 from config_validation.checks import CheckOutcome, architecture, duplicate, files, revision
 from config_validation.config import SEED_DIGEST, SEED_REPO
@@ -70,6 +72,7 @@ def validate_commit(
         repo_files = list_files(ref)
         result.checks.append(files.check(repo_files))
     except Exception as exc:  # noqa: BLE001
+        logger.exception(f"[config-val] could not list repo files repo={record.repo} digest={record.digest}: {exc}")
         result.checks.append(CheckOutcome(files.NAME, False, f"could not list repo files: {exc}"))
 
     # Check 3 — architecture vs genesis seed.
@@ -78,6 +81,7 @@ def validate_commit(
         seed = seed_cfg if seed_cfg is not None else load_seed_config()
         result.checks.append(architecture.check(cand_cfg, seed))
     except Exception as exc:  # noqa: BLE001
+        logger.exception(f"[config-val] could not load config.json repo={record.repo} digest={record.digest}: {exc}")
         result.checks.append(CheckOutcome(architecture.NAME, False,
                                           f"could not load config.json: {exc}"))
 
@@ -91,6 +95,7 @@ def validate_commit(
                 store.add(ref.immutable_ref, dup.details["fingerprint"],
                           hotkey=record.hotkey, repo=record.repo, digest=record.digest)
         except Exception as exc:  # noqa: BLE001
+            logger.exception(f"[config-val] could not fingerprint model repo={record.repo} digest={record.digest}: {exc}")
             result.checks.append(CheckOutcome(duplicate.NAME, False,
                                               f"could not fingerprint model: {exc}"))
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+from loguru import logger
+
 from .config import get_settings
 from .repository import EvalRepository
 
@@ -32,6 +34,9 @@ def main() -> None:
     queued = repository.queue_pre_eval_passed(worker_id=settings.worker_id, limit=args.limit)
     requeued = repository.requeue_retryable_evals(
         worker_id=settings.worker_id, limit=args.limit, max_retry_count=max_retry_count
+    )
+    logger.info(
+        f"[eval-requeue] queued_from_pre_eval={queued} requeued_eval_submissions={requeued}"
     )
     print(f"queued_from_pre_eval={queued} requeued_eval_submissions={requeued}")
 

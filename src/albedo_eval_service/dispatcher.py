@@ -188,7 +188,11 @@ class EvalDispatcher:
                     attempt_id=active.attempt_id,
                     remote_run_id=active.remote_run_id,
                 )
-            except (httpx.HTTPError, asyncio.TimeoutError):
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                logger.warning(
+                    f"[eval-dispatch] reconcile skipped submission={active.submission_id} "
+                    f"eval_run={active.eval_run_id} remote_run={active.remote_run_id}: {exc}"
+                )
                 continue
             finally:
                 await client.aclose()

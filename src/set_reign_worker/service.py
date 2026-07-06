@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
+from loguru import logger as log
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from psycopg.rows import dict_row
@@ -148,6 +149,10 @@ class SetReignRepository:
                     (submission["id"],),
                 ).fetchone()
                 if not eval_run:
+                    log.warning(
+                        f"[set-reign] bailing (retryable): no winning eval_run for "
+                        f"submission={submission['id']} hotkey={submission['hotkey']}"
+                    )
                     _mark_retryable(
                         conn,
                         submission_id=submission["id"],
@@ -158,6 +163,12 @@ class SetReignRepository:
                     return True
 
                 if eval_run["challenger_model_hash"] != submission["model_hash"]:
+                    log.warning(
+                        f"[set-reign] bailing (retryable): challenger model hash mismatch for "
+                        f"submission={submission['id']} eval_run={eval_run['id']} "
+                        f"eval_hash={eval_run['challenger_model_hash']} "
+                        f"submission_hash={submission['model_hash']}"
+                    )
                     _mark_retryable(
                         conn,
                         submission_id=submission["id"],
@@ -178,6 +189,10 @@ class SetReignRepository:
                     """
                 ).fetchone()
                 if not active_reign:
+                    log.warning(
+                        f"[set-reign] bailing (retryable): no ACTIVE reign for winner "
+                        f"submission={submission['id']} hotkey={submission['hotkey']}"
+                    )
                     _mark_retryable(
                         conn,
                         submission_id=submission["id"],
@@ -215,6 +230,10 @@ class SetReignRepository:
                     (member for member in active_members if member.previous_slot == 1), None
                 )
                 if not lead:
+                    log.warning(
+                        f"[set-reign] bailing (retryable): active reign {active_reign['id']} "
+                        f"has no slot 1 lead king for submission={submission['id']}"
+                    )
                     _mark_retryable(
                         conn,
                         submission_id=submission["id"],
@@ -228,6 +247,11 @@ class SetReignRepository:
                     eval_run["king_submission_id"] != lead.submission_id
                     or eval_run["king_model_hash"] != lead.model_hash
                 ):
+                    log.warning(
+                        f"[set-reign] bailing (retryable): stale winning eval for "
+                        f"submission={submission['id']} eval_run={eval_run['id']}; did not beat "
+                        f"current lead king (lead_submission={lead.submission_id})"
+                    )
                     _mark_retryable(
                         conn,
                         submission_id=submission["id"],
@@ -249,6 +273,10 @@ class SetReignRepository:
                     (submission["id"],),
                 ).fetchone()
                 if not artifact:
+                    log.warning(
+                        f"[set-reign] bailing (retryable): no MODEL_MANIFEST artifact for "
+                        f"submission={submission['id']} hotkey={submission['hotkey']}"
+                    )
                     _mark_retryable(
                         conn,
                         submission_id=submission["id"],
@@ -639,7 +667,13 @@ async def run_forever(
     poll_seconds: float,
 ) -> None:
     while True:
-        did_work = repository.promote_next_winner(worker_id=worker_id, lease_seconds=lease_seconds)
+        try:
+            did_work = repository.promote_next_winner(
+                worker_id=worker_id, lease_seconds=lease_seconds
+            )
+        except Exception as exc:
+            log.exception(f"[set-reign] run_forever iteration failed, continuing: {exc}")
+            did_work = False
         if not did_work:
             await asyncio.sleep(poll_seconds)
 

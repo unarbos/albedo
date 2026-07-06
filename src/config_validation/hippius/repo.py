@@ -112,6 +112,7 @@ def revision_resolves(ref: ModelRef) -> tuple[bool, str]:
     try:
         files = list_files(ref)
     except Exception as exc:  # noqa: BLE001 — surface any hub error as a check failure
+        log.error(f"revision {ref.digest} did not resolve on Hippius repo={ref.repo}: {exc}")
         return False, f"revision {ref.digest} did not resolve on Hippius: {exc}"
     if not files:
         return False, f"revision {ref.digest} resolved but the repo is empty"
