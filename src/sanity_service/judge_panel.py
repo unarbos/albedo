@@ -16,14 +16,15 @@ def make_client(settings: JudgeSettings | None = None) -> OpenRouterJudgeClient:
     return OpenRouterJudgeClient(settings or get_judge_settings())
 
 
-async def query_panel(client: OpenRouterJudgeClient, system: str, user: str, models: tuple[str, ...] = JUDGE_MODELS,) -> list[JudgeRawResponse]:
+async def query_panel(client: OpenRouterJudgeClient, system: str, user: str, models: tuple[str, ...] = JUDGE_MODELS, temperature: float | None = None,) -> list[JudgeRawResponse]:
     # Sends the prompt to all judges concurrently; one response per model, errors captured.
+    # temperature overrides the judge default per call (used by the injection re-check for variance).
     logger.info("[sanity/panel] querying {} judges: {}", len(models), list(models))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     async def _one(model: str) -> JudgeRawResponse:
         try:
-            result = await client.complete(model=model, messages=messages)
+            result = await client.complete(model=model, messages=messages, temperature=temperature)
             logger.info("[sanity/panel] {} ok chars={}", model, len(result.raw or ""))
             return result
         except Exception as exc:  # noqa: BLE001 - a dead judge must not abort the panel

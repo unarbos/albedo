@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from .judge_config import JudgeSettings
 from .judge_core import JUDGE_PROVIDER_PINS, JUDGE_RESPONSE_SCHEMA, JUDGE_STRUCTURED_OUTPUT_MODELS
@@ -62,13 +63,14 @@ class OpenRouterJudgeClient:
                 schema_name=schema_name,
             )
 
-    async def complete(self, *, model: str, messages: list[dict[str, str]]) -> JudgeRawResponse:
+    async def complete(self, *, model: str, messages: list[dict[str, str]], temperature: float | None = None) -> JudgeRawResponse:
         # Generic completion without the pairwise scoring schema, for callers with their own rubric.
+        # temperature overrides the configured default per call (e.g. a higher-variance injection re-check).
         sem = self._semaphores.setdefault(
             model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
         )
         async with sem:
-            return await self._score_with_retries(model=model, messages=messages, structured=False)
+            return await self._score_with_retries(model=model, messages=messages, structured=False, temperature=temperature)
 
     async def _score_with_retries(
         self,
@@ -78,6 +80,7 @@ class OpenRouterJudgeClient:
         structured: bool = True,
         response_schema: dict[str, Any] | None = None,
         schema_name: str = "albedo_pairwise_metric_verdict",
+        temperature: float | None = None,
     ) -> JudgeRawResponse:
         last_error = ""
         for attempt in range(self.settings.retry_count + 1):
@@ -88,6 +91,7 @@ class OpenRouterJudgeClient:
                     structured=structured,
                     response_schema=response_schema,
                     schema_name=schema_name,
+                    temperature=temperature,
                 )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -96,6 +100,10 @@ class OpenRouterJudgeClient:
                 await asyncio.sleep(
                     _retry_sleep_seconds(exc, attempt, self.settings.retry_backoff_seconds)
                 )
+        logger.warning(
+            f"[judge-openrouter] retries exhausted model={model} "
+            f"attempts={self.settings.retry_count + 1}, returning error: {last_error}"
+        )
         return JudgeRawResponse(
             model=model, provider=_provider_name(model), raw="", error=last_error
         )
@@ -108,11 +116,12 @@ class OpenRouterJudgeClient:
         structured: bool = True,
         response_schema: dict[str, Any] | None = None,
         schema_name: str = "albedo_pairwise_metric_verdict",
+        temperature: float | None = None,
     ) -> JudgeRawResponse:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": self.settings.temperature,
+            "temperature": self.settings.temperature if temperature is None else temperature,
             "max_tokens": self.settings.max_tokens,
             "reasoning": {"enabled": False, "exclude": True},
             "provider": {

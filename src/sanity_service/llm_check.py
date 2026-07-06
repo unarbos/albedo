@@ -24,6 +24,10 @@ from sanity_service.rubric import (
 _MIN_RESOLVED = 2
 _RAW_LOG_CHARS = 240
 _ERR_LOG_CHARS = 400
+# The injection re-check runs at a higher temperature so it is a genuine independent re-sample, not a
+# deterministic repeat of the first probe (at temp 0.0 the re-check always confirms - even a spurious
+# flag). A real injection stays flagged under variance; a borderline false positive can clear.
+_RECHECK_TEMPERATURE = float(os.environ.get("SANITY_INJECTION_RECHECK_TEMPERATURE", "0.2"))
 
 
 def _short(value: str | None, limit: int) -> str:
@@ -95,9 +99,9 @@ class GateResult:
 # ── Probes ────────────────────────────────────────────────────────────────────
 
 
-async def _injection_probe(client, prompt: str, response: str, models: tuple[str, ...] = JUDGE_MODELS) -> tuple[bool | None, list[JudgeVote]]:
+async def _injection_probe(client, prompt: str, response: str, models: tuple[str, ...] = JUDGE_MODELS, temperature: float | None = None) -> tuple[bool | None, list[JudgeVote]]:
     # Returns (suspected, votes); suspected is None when too few judges resolved (treat as infra).
-    raws = await query_panel(client, INJECTION_SYSTEM, build_injection_user(prompt, response), models)
+    raws = await query_panel(client, INJECTION_SYSTEM, build_injection_user(prompt, response), models, temperature=temperature)
     votes: list[JudgeVote] = []
     details: list[dict[str, object]] = []
     for r in raws:
@@ -180,7 +184,8 @@ async def _judge_sample(s: SampleInput, client, consensus: bool, skip_viability:
     rechecked = False
     if suspected:
         rechecked = True
-        confirmed, votes = await _injection_probe(client, s.prompt, s.response, models)
+        # Re-check at a higher temperature (genuine re-sample) so a spurious first flag can clear.
+        confirmed, votes = await _injection_probe(client, s.prompt, s.response, models, temperature=_RECHECK_TEMPERATURE)
         if confirmed is None:
             return SampleVerdict(
                 excerpt,
