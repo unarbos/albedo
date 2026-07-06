@@ -6,11 +6,10 @@ const BENCHMARK_LABELS = {
   tau2_airline: "Tau2 Airline",
   tau2_retail: "Tau2 Retail",
   tau2_telecom: "Tau2 Telecom",
-  tau2_banking_knowledge: "Tau2 Banking",
   swe_rebench_2026_03: "SWE-rebench",
 };
 
-const BENCHMARK_ORDER = ["tau2_airline", "tau2_retail", "tau2_telecom", "tau2_banking_knowledge", "swe_rebench_2026_03"];
+const BENCHMARK_ORDER = ["tau2_airline", "tau2_retail", "tau2_telecom"];
 
 const PAGE_SIZES = [5, 10, 25, 50];
 const ACTIVE_STATES = new Set(["QUEUED", "CLAIMED", "LOADING_MODEL", "RUNNING", "SCORING"]);
