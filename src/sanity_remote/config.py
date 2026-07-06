@@ -23,10 +23,14 @@ class SanityRemoteSettings(BaseSettings):
     gpu_util: float = 0.95
     vllm_port: int = 9101
     vllm_dtype: str = "bfloat16"
-    vllm_startup_s: float = 600.0
+    # 1200s so the first-ever flashinfer GDN kernel JIT compile (~8 min on a fresh box) finishes
+    # within the health-wait instead of timing out and killing vLLM mid-compile.
+    vllm_startup_s: float = 1200.0
     vllm_python: str = sys.executable  # override if vLLM lives in a separate venv
     vllm_quantization: str = ""
-    vllm_enforce_eager: bool = False
+    # Default on: the Qwen3.x MoE hybrids use gated-delta-net (Mamba-style) cache blocks, and
+    # CUDA-graph capture fails when max_num_seqs exceeds available Mamba blocks. Eager avoids it.
+    vllm_enforce_eager: bool = True
     # Passed as --moe-backend <value>; "triton" avoids FlashInfer JIT on CUDA 13 / sm_120f hosts.
     vllm_moe_backend: str = ""
     tensor_parallel_size: int = 2  # GPU_IDS must list exactly this many indices
@@ -40,7 +44,8 @@ class SanityRemoteSettings(BaseSettings):
     gen_top_p: float = 0.8
     gen_top_k: int = 20
     gen_min_p: float = 0.0
-    gen_read_timeout_s: float = 300.0
+    # 900s so a generation request that triggers the first-time GDN kernel compile doesn't time out.
+    gen_read_timeout_s: float = 900.0
 
     # Control-plane smoke mode (no GPU) for API/idempotency tests; echoes prompts as responses.
     mock_auto_result: bool = False
