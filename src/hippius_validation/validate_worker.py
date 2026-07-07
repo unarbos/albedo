@@ -15,12 +15,18 @@ from pathlib import Path
 from loguru import logger as log
 
 from config_validation.fingerprint import compute_fingerprint
-
 from hippius_validation import config, db
-from hippius_validation.hippius import download_full, list_files, make_ref, safetensors_dtypes
+from hippius_validation.hippius import (
+    download_config,
+    download_full,
+    list_files,
+    make_ref,
+    safetensors_dtypes,
+)
 from hippius_validation.opensearch import find_duplicate, health, index_fingerprint
 from hippius_validation.uploads import put_fault, update_fingerprint_corpus
 from hippius_validation.validate import check_architecture, check_dtypes, check_index, check_repo
+from hippius_validation.validate.chat_template import check as check_chat_template
 
 _WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -84,7 +90,18 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     if not ok:
         return _miner("weight_dtype", msg, {})
 
-    # 2 — download
+    # 2 — small tokenizer/config download
+    try:
+        config_dir = download_config(ref)
+    except Exception as exc:  # noqa: BLE001
+        if _is_not_found(exc):
+            return _miner("repo_not_found", f"repo/revision not found on Hippius: {exc}", {})
+        return _infra("download_config_failed", f"model config download failed: {exc}")
+    ok, msg = check_chat_template(config_dir, files)
+    if not ok:
+        return _miner("chat_template_hash", msg, {})
+
+    # 3 — full download
     try:
         model_dir = download_full(ref)
     except Exception as exc:  # noqa: BLE001
@@ -97,12 +114,12 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         return _miner("incomplete_repo",
                       "downloaded repo is missing config.json or *.safetensors", {})
 
-    # 2.5 — safetensors match model.safetensors.index.json (no unused shards/tensors)
+    # 3.5 — safetensors match model.safetensors.index.json (no unused shards/tensors)
     ok, msg = check_index(model_dir, files)
     if not ok:
         return _miner("safetensors_index", msg, {})
 
-    # 3 — universal, spec-driven architecture
+    # 4 — universal, spec-driven architecture
     try:
         ok, msg = check_architecture(model_dir)
     except FileNotFoundError as exc:
@@ -112,7 +129,7 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     if not ok:
         return _miner("architecture", msg, {})
 
-    # 4 — fingerprint + dedup
+    # 5 — fingerprint + dedup
     try:
         fp = compute_fingerprint(model_dir)
     except Exception as exc:  # noqa: BLE001

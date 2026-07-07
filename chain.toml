@@ -40,13 +40,13 @@ required = [
   "config.json",
   "tokenizer_config.json",
   "tokenizer.json",
+  "chat_template.jinja",
 ]
 require_safetensors = true
 allowed = [
   "generation_config.json",
   "special_tokens_map.json",
   "added_tokens.json",
-  "chat_template.jinja",
   "merges.txt",
   "vocab.json",
   "model.safetensors.index.json",  # present only on sharded checkpoints

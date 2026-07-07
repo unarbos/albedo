@@ -74,12 +74,14 @@ SIM_THRESHOLD: float = float(os.environ.get("ALBEDO_SIM_THRESHOLD", "0.95"))
 KNN_CANDIDATES: int = int(os.environ.get("ALBEDO_KNN_CANDIDATES", "20"))
 
 # --- Strict file allowlist (file-manifest check) ---
-REQUIRED_FILES: tuple[str, ...] = ("config.json", "tokenizer_config.json", "tokenizer.json", "preprocessor_config.json", "video_preprocessor_config.json")
+REQUIRED_FILES: tuple[str, ...] = (
+    "config.json", "tokenizer_config.json", "tokenizer.json", "chat_template.jinja",
+    "preprocessor_config.json", "video_preprocessor_config.json",
+)
 REQUIRE_SAFETENSORS: bool = True
 ALLOWED_FILES: tuple[str, ...] = (
     "generation_config.json", "special_tokens_map.json", "added_tokens.json",
-    # chat_template.jinja may be present, but the system uses its OWN canonical template
-    "chat_template.jinja", "merges.txt", "vocab.json",
+    "merges.txt", "vocab.json",
     "model.safetensors.index.json",
     ".gitattributes", "LICENSE", "README.md", "configuration.json",
 )

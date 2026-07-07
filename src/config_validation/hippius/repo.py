@@ -14,7 +14,7 @@ from config_validation.models import ModelRef
 log = logging.getLogger(__name__)
 
 _HUB_TOKEN_ENV = "HIPPIUS_HUB_TOKEN"
-_CONFIG_ONLY_PATTERNS = ["*.json"]
+_CONFIG_ONLY_PATTERNS = ["*.json", "chat_template.jinja"]
 _HEARTBEAT_INTERVAL_S = 10.0
 
 
@@ -30,7 +30,11 @@ def _download_heartbeat(label: str):
 
     def _beat() -> None:
         while not stop.wait(_HEARTBEAT_INTERVAL_S):
-            log.info("hippius: still downloading %s (%.0fs elapsed)", label, time.monotonic() - start)
+            log.info(
+                "hippius: still downloading %s (%.0fs elapsed)",
+                label,
+                time.monotonic() - start,
+            )
 
     thread = threading.Thread(target=_beat, name="hippius-dl-heartbeat", daemon=True)
     thread.start()
@@ -71,9 +75,6 @@ def cache_dir(ref: ModelRef) -> Path:
 def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:
     dest = _cache_dir(ref)
     dest.mkdir(parents=True, exist_ok=True)
-    if (dest / "config.json").exists() and config_only:
-        log.debug("hippius: config cache hit at %s", dest)
-        return str(dest)
     log.info("hippius: downloading %s (config_only=%s) → %s", ref.immutable_ref, config_only, dest)
     with _download_heartbeat(ref.immutable_ref):
         _hub().snapshot_download(
