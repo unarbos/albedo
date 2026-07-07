@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +26,10 @@ def sample_prompts(*, seed: str, n: int = 3, max_turns: int = 10, manifest_path:
         from albedo_eval_service.sampling import multi_source_manifest_sample_ids
 
         manifest = load_manifest_file(manifest_path, expected_sha256=manifest_hash)
-        sample_ids = multi_source_manifest_sample_ids(manifest, block_hash=str(seed), sample_count=n, max_turns_per_sample=max_turns)
+        # The eval sampler emits a fixed 128-id bucket set; the pre-eval only needs n of them
+        # (turn depth is baked into the buckets, so max_turns is no longer threaded through).
+        ids = multi_source_manifest_sample_ids(manifest, block_hash=str(seed))
+        sample_ids = random.Random(str(seed)).sample(ids, min(n, len(ids)))
         loaded = load_swe_zero_samples(dataset_root=dataset_root, sample_ids=sample_ids)
         return [SanitySample(s.prompt, s.messages) for s in loaded]
     return _fallback_prompts(n)

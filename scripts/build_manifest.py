@@ -42,6 +42,22 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _row_meta(path: Path) -> list[dict]:
+    metas: list[dict] = []
+    parquet_file = pq.ParquetFile(path)
+    for batch in parquet_file.iter_batches(batch_size=1024, columns=["instance_id", "messages"]):
+        iids = batch.column("instance_id").to_pylist()
+        conversations = batch.column("messages").to_pylist()
+        for iid, messages in zip(iids, conversations):
+            asst = sum(
+                1
+                for turn in (messages or [])
+                if isinstance(turn, dict) and str(turn.get("role", "")).lower() == "assistant"
+            )
+            metas.append({"iid": str(iid), "asst": asst})
+    return metas
+
+
 def _build_source(name: str, weight: float, root: Path, *, max_workers: int = 8) -> dict:
     if name not in SOURCES:
         raise SystemExit(f"{name}: unknown source (not in prepare_datasets.SOURCES)")
@@ -57,8 +73,8 @@ def _build_source(name: str, weight: float, root: Path, *, max_workers: int = 8)
         shard_path = f"{name}/data/{path.name}"
         if not _SHARD_RE.match(shard_path):
             raise SystemExit(f"{name}: shard name {shard_path!r} is not a valid (<source>/)data/train-*.parquet")
-        rows = pq.ParquetFile(path).metadata.num_rows
-        return {"path": shard_path, "rows": rows, "sha256": _sha256(path)}
+        rows_meta = _row_meta(path)
+        return {"path": shard_path, "rows": len(rows_meta), "sha256": _sha256(path), "rows_meta": rows_meta}
 
     # Hashing reads every shard's bytes; overlap that I/O across shards.
     with ThreadPoolExecutor(max_workers=max_workers) as pool:

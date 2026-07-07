@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from statistics import mean
 from typing import Any
 from uuid import uuid4
 
@@ -12,23 +11,40 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .chutes_glm import GLMProviderClient
 from .judge_config import JudgeSettings, get_judge_settings
 from .judge_core import (
     JUDGE_MODELS,
-    aggregate_scoring_records,
-    build_candidate_response_messages,
-    build_category_generation_messages,
-    build_category_pairwise_messages,
-    build_pairwise_messages,
-    category_response_schema,
-    parse_category_verdict,
-    parse_metric_verdict,
-    should_show_challenger_first,
-    validate_category_payload,
+    aggregate_scores,
+    answer_schema,
+    build_judge_messages,
+    build_question_messages,
+    judge_yes_rate,
+    parse_answers,
+    parse_questions,
+    question_schema,
+    response_score,
 )
 from .judge_openrouter import OpenRouterJudgeClient
 from .notifications import EvalErrorNotification, notify_eval_error
+
+
+class QuestionPrepSample(BaseModel):
+    sample_id: str
+    prompt: str
+    sample_index: int = 0  # retained for payload compatibility; scoring ignores order
+
+
+class QuestionPrepRequest(BaseModel):
+    eval_run_id: str
+    batch_id: str = "category-prep"
+    samples: list[QuestionPrepSample]
+    total_sample_count: int
+
+
+class QuestionPrepResponse(BaseModel):
+    eval_run_id: str
+    category_prep_id: str  # opaque id (name kept for control-plane compatibility)
+    accepted_sample_count: int
 
 
 class JudgeSample(BaseModel):
@@ -36,26 +52,7 @@ class JudgeSample(BaseModel):
     prompt: str
     previous_king_output: str
     challenger_output: str
-    sample_index: int
-
-
-class CategoryPrepSample(BaseModel):
-    sample_id: str
-    prompt: str
-    sample_index: int
-
-
-class CategoryPrepRequest(BaseModel):
-    eval_run_id: str
-    batch_id: str = "category-prep"
-    samples: list[CategoryPrepSample]
-    total_sample_count: int
-
-
-class CategoryPrepResponse(BaseModel):
-    eval_run_id: str
-    category_prep_id: str
-    accepted_sample_count: int
+    sample_index: int = 0
 
 
 class ScoreBatchRequest(BaseModel):
@@ -75,189 +72,116 @@ class ScoreBatchResponse(BaseModel):
 
 
 @dataclass(frozen=True)
-class CategoryPrepResult:
-    categories: list[dict[str, str]]
-    category_hash: str
-    category_source: dict[str, object]
+class QuestionPrepResult:
+    questions: list[dict[str, str]]
+    source: dict[str, object]
     error: str | None = None
 
 
 @dataclass(frozen=True)
-class CategoryPrepLookup:
-    result: CategoryPrepResult | None
+class QuestionPrepLookup:
+    result: QuestionPrepResult | None
     reason: str
 
 
-class CategoryScoringUnavailable(RuntimeError):
+class QuestionScoringUnavailable(RuntimeError):
     pass
 
 
-class GLMCategoryService:
-    def __init__(self, settings: JudgeSettings, glm_client: GLMProviderClient):
-        self.settings = settings
-        self.glm_client = glm_client
+def _evaluator_provider(settings: JudgeSettings) -> dict[str, Any]:
+    """Evaluator provider block: always fp8, optional `order` + allow_fallbacks for cross-provider failover."""
+    block: dict[str, Any] = {"allow_fallbacks": True, "quantizations": ["fp8"]}
+    order = [p.strip() for p in settings.evaluator_providers.split(",") if p.strip()]
+    if order:
+        block["order"] = order
+    return block
 
-    async def prepare(self, sample: CategoryPrepSample | JudgeSample) -> CategoryPrepResult:
-        candidate = await self.glm_client.complete(
-            messages=build_candidate_response_messages(context_prompt=sample.prompt),
-            max_tokens=self.settings.glm_candidate_max_tokens,
-            temperature=self.settings.glm_temperature,
+
+class QuestionService:
+    """Generates the yes/no question set for one sample (task only), via OpenRouter glm-5.2."""
+
+    def __init__(self, settings: JudgeSettings, client: OpenRouterJudgeClient):
+        self.settings = settings
+        self.client = client
+
+    async def prepare(self, sample: QuestionPrepSample | JudgeSample) -> QuestionPrepResult:
+        n = self.settings.num_questions
+        response = await self.client.complete(
+            model=self.settings.evaluator_model,
+            messages=build_question_messages(task=sample.prompt, n=n),
+            temperature=self.settings.temperature,
+            max_tokens=self.settings.question_max_tokens,
+            provider=_evaluator_provider(self.settings),
+            response_schema=question_schema(n),
+            accept=lambda raw: parse_questions(raw, n)[1],
         )
-        if candidate.error:
-            raise CategoryScoringUnavailable(candidate.error)
-        category = await self.glm_client.complete(
-            messages=build_category_generation_messages(
-                context_prompt=sample.prompt,
-                glm_response=candidate.raw,
-                category_count=self.settings.category_count,
-            ),
-            max_tokens=self.settings.glm_max_tokens,
-            temperature=self.settings.glm_temperature,
-        )
-        if category.error:
-            raise CategoryScoringUnavailable(category.error)
-        try:
-            categories, digest = validate_category_payload(
-                category.raw, expected_count=self.settings.category_count
+        if response.error:
+            raise QuestionScoringUnavailable(response.error)
+        questions, ok = parse_questions(response.raw, n)
+        if not ok:
+            raise QuestionScoringUnavailable(
+                f"evaluator returned {len(questions)}/{n} well-formed questions"
             )
-        except ValueError:
-            repair = await self.glm_client.complete(
-                messages=_repair_category_messages(
-                    prompt=sample.prompt,
-                    glm_response=candidate.raw,
-                    bad_payload=category.raw,
-                    category_count=self.settings.category_count,
-                ),
-                max_tokens=self.settings.glm_max_tokens,
-                temperature=0.0,
-            )
-            if repair.error:
-                raise CategoryScoringUnavailable(repair.error)
-            categories, digest = validate_category_payload(
-                repair.raw, expected_count=self.settings.category_count
-            )
-            category = repair
-        return CategoryPrepResult(
-            categories=categories,
-            category_hash=digest,
-            category_source={
-                "provider": category.provider,
-                "model": category.model,
-                "primary_provider": "chutes",
-                "fallback_provider": "openrouter-fp8",
-                "chute_id": self.settings.glm52_chute_id,
-                "prompt_version": self.settings.category_prompt_version,
+        return QuestionPrepResult(
+            questions=questions,
+            source={
+                "provider": response.provider,
+                "model": self.settings.evaluator_model,
+                "n_questions": len(questions),
             },
         )
 
 
-class CategoryPrepStore:
-    def __init__(self, settings: JudgeSettings, service: GLMCategoryService):
+class QuestionPrepStore:
+    """Async per-sample question generation started at eval start (overlaps generation); scoring awaits it."""
+
+    def __init__(self, settings: JudgeSettings, service: QuestionService):
         self.settings = settings
         self.service = service
-        self._preps: dict[str, dict[str, asyncio.Task[CategoryPrepResult]]] = {}
+        self._preps: dict[str, dict[str, asyncio.Task[QuestionPrepResult]]] = {}
         self._created_at: dict[str, float] = {}
-        self._total: dict[str, int] = {}
-        self._finished: dict[str, int] = {}
-        self._failed: dict[str, int] = {}
 
-    def start(self, request: CategoryPrepRequest) -> str:
+    def start(self, request: QuestionPrepRequest) -> str:
         self._sweep_expired()
         prep_id = f"{request.eval_run_id}:{uuid4()}"
         self._created_at[prep_id] = time.monotonic()
-        self._total[prep_id] = len(request.samples)
-        self._finished[prep_id] = 0
-        self._failed[prep_id] = 0
         self._preps[prep_id] = {
             sample.sample_id: asyncio.create_task(self._prepare_sample(prep_id, request, sample))
             for sample in request.samples
         }
         return prep_id
 
-    async def get(self, prep_id: str, sample: JudgeSample) -> CategoryPrepResult | None:
-        return (await self.get_with_reason(prep_id, sample)).result
-
-    async def get_with_reason(self, prep_id: str, sample: JudgeSample) -> CategoryPrepLookup:
+    async def get_with_reason(self, prep_id: str, sample: JudgeSample) -> QuestionPrepLookup:
         self._sweep_expired()
         tasks = self._preps.get(prep_id)
         if not tasks:
-            return CategoryPrepLookup(None, "unknown_or_expired_category_prep_id")
+            return QuestionPrepLookup(None, "unknown_or_expired_prep_id")
         task = tasks.get(sample.sample_id)
         if task is None:
-            return CategoryPrepLookup(None, "sample_not_in_category_prep")
-        return CategoryPrepLookup(await task, "prepared")
+            return QuestionPrepLookup(None, "sample_not_in_prep")
+        return QuestionPrepLookup(await task, "prepared")
 
     async def _prepare_sample(
-        self, prep_id: str, request: CategoryPrepRequest, sample: CategoryPrepSample
-    ) -> CategoryPrepResult:
+        self, prep_id: str, request: QuestionPrepRequest, sample: QuestionPrepSample
+    ) -> QuestionPrepResult:
         try:
-            result = await self.service.prepare(sample)
+            return await self.service.prepare(sample)
         except Exception as exc:
-            finished, failed = self._mark_finished(prep_id, failed=True)
             logger.warning(
-                "category_prep_sample_failed eval_run_id={} category_prep_id={} "
-                "finished={}/{} failed={} sample_id={} error={} elapsed_s={:.1f}",
-                request.eval_run_id,
-                prep_id,
-                finished,
-                self._total.get(prep_id, len(request.samples)),
-                failed,
-                sample.sample_id,
-                f"{type(exc).__name__}: {exc}",
-                time.monotonic() - self._created_at.get(prep_id, time.monotonic()),
+                "question_prep_sample_failed eval_run_id={} prep_id={} sample_id={} error={}",
+                request.eval_run_id, prep_id, sample.sample_id, f"{type(exc).__name__}: {exc}",
             )
-            self._log_all_done_if_complete(prep_id, request)
             raise
-        finished, failed = self._mark_finished(prep_id, failed=False)
-        logger.info(
-            "category_prep_sample_done eval_run_id={} category_prep_id={} "
-            "finished={}/{} failed={} sample_id={} provider={} elapsed_s={:.1f}",
-            request.eval_run_id,
-            prep_id,
-            finished,
-            self._total.get(prep_id, len(request.samples)),
-            failed,
-            sample.sample_id,
-            result.category_source.get("provider", ""),
-            time.monotonic() - self._created_at.get(prep_id, time.monotonic()),
-        )
-        self._log_all_done_if_complete(prep_id, request)
-        return result
-
-    def _mark_finished(self, prep_id: str, *, failed: bool) -> tuple[int, int]:
-        self._finished[prep_id] = self._finished.get(prep_id, 0) + 1
-        if failed:
-            self._failed[prep_id] = self._failed.get(prep_id, 0) + 1
-        return self._finished[prep_id], self._failed.get(prep_id, 0)
-
-    def _log_all_done_if_complete(self, prep_id: str, request: CategoryPrepRequest) -> None:
-        total = self._total.get(prep_id, len(request.samples))
-        finished = self._finished.get(prep_id, 0)
-        if finished != total:
-            return
-        logger.info(
-            "category_prep_all_done eval_run_id={} category_prep_id={} "
-            "samples={} failed={} elapsed_s={:.1f}",
-            request.eval_run_id,
-            prep_id,
-            total,
-            self._failed.get(prep_id, 0),
-            time.monotonic() - self._created_at.get(prep_id, time.monotonic()),
-        )
 
     def _sweep_expired(self) -> None:
-        ttl = self.settings.category_prep_ttl_seconds
+        ttl = self.settings.question_prep_ttl_seconds
         now = time.monotonic()
-        expired = [prep_id for prep_id, created in self._created_at.items() if now - created > ttl]
-        for prep_id in expired:
+        for prep_id in [pid for pid, created in self._created_at.items() if now - created > ttl]:
             for task in self._preps.get(prep_id, {}).values():
                 if not task.done():
                     task.cancel()
             self._preps.pop(prep_id, None)
             self._created_at.pop(prep_id, None)
-            self._total.pop(prep_id, None)
-            self._finished.pop(prep_id, None)
-            self._failed.pop(prep_id, None)
 
 
 def create_app(settings: JudgeSettings | None = None) -> FastAPI:
@@ -266,32 +190,31 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
 
     @app.on_event("startup")
     async def startup() -> None:
-        glm_client = GLMProviderClient(settings)
-        app.state.glm_client = glm_client
-        app.state.category_service = GLMCategoryService(settings, glm_client)
-        app.state.category_prep_store = CategoryPrepStore(settings, app.state.category_service)
+        client = OpenRouterJudgeClient(settings)
+        app.state.eval_client = client
+        app.state.question_service = QuestionService(settings, client)
+        app.state.question_prep_store = QuestionPrepStore(settings, app.state.question_service)
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
-        glm_client = getattr(app.state, "glm_client", None)
-        if glm_client is not None:
-            await glm_client.aclose()
+        client = getattr(app.state, "eval_client", None)
+        if client is not None:
+            await client.aclose()
 
     def require_auth(authorization: str | None = Header(default=None)) -> None:
         if not settings.api_auth_token:
             return
-        expected = f"Bearer {settings.api_auth_token}"
-        if authorization != expected:
+        if authorization != f"Bearer {settings.api_auth_token}":
             raise HTTPException(status_code=401, detail="unauthorized")
 
-    def prep_store() -> CategoryPrepStore:
-        store = getattr(app.state, "category_prep_store", None)
+    def prep_store() -> QuestionPrepStore:
+        store = getattr(app.state, "question_prep_store", None)
         if store is None:
-            glm_client = GLMProviderClient(settings)
-            app.state.glm_client = glm_client
-            app.state.category_service = GLMCategoryService(settings, glm_client)
-            app.state.category_prep_store = CategoryPrepStore(settings, app.state.category_service)
-        return app.state.category_prep_store
+            client = OpenRouterJudgeClient(settings)
+            app.state.eval_client = client
+            app.state.question_service = QuestionService(settings, client)
+            app.state.question_prep_store = QuestionPrepStore(settings, app.state.question_service)
+        return app.state.question_prep_store
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -302,19 +225,16 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         return {
             "status": "ready",
             "judge_models": list(JUDGE_MODELS),
-            "strict_json": True,
-            "counterbalanced": True,
-            "category_prep": True,
-            "glm_primary_provider": "chutes",
-            "glm_fallback_provider": "openrouter-fp8",
+            "evaluator_model": settings.evaluator_model,
+            "num_questions": settings.num_questions,
         }
 
-    @app.post("/category-prep", response_model=CategoryPrepResponse)
+    @app.post("/category-prep", response_model=QuestionPrepResponse)
     async def category_prep(
-        request: CategoryPrepRequest, _: None = Depends(require_auth)
-    ) -> CategoryPrepResponse:
+        request: QuestionPrepRequest, _: None = Depends(require_auth)
+    ) -> QuestionPrepResponse:
         prep_id = prep_store().start(request)
-        return CategoryPrepResponse(
+        return QuestionPrepResponse(
             eval_run_id=request.eval_run_id,
             category_prep_id=prep_id,
             accepted_sample_count=len(request.samples),
@@ -326,64 +246,28 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
     ) -> ScoreBatchResponse:
         unknown = [model for model in request.judge_models if model not in JUDGE_MODELS]
         if unknown:
-            raise HTTPException(
-                status_code=400, detail=f"unsupported judge model(s): {', '.join(unknown)}"
-            )
-        async with OpenRouterJudgeClient(settings) as client:
-            try:
-                records = await _score_samples_with_categories(
-                    client=client,
-                    request=request,
-                    category_service=prep_store().service,
-                    prep_store=prep_store(),
-                )
-                summary = _summary(records, settings=settings)
-                if summary.get("state") == "succeeded":
-                    return ScoreBatchResponse(
-                        eval_run_id=request.eval_run_id,
-                        batch_id=request.batch_id,
-                        scoring_records=records,
-                        summary=summary,
-                    )
-                _notify(
-                    settings,
-                    request,
-                    severity="WARNING",
-                    message="GLM-category scoring produced too few valid scores; using fixed-metric fallback",
-                    fault_code="glm_category_scoring_invalid",
-                    scoring_mode="fixed_metrics_fallback",
-                )
-                logger.warning(
-                    f"[judge-api] GLM-category scoring produced too few valid scores, "
-                    f"falling back to fixed metrics eval_run={request.eval_run_id} "
-                    f"batch={request.batch_id}"
-                )
-            except Exception as exc:
-                _notify(
-                    settings,
-                    request,
-                    severity="WARNING",
-                    message="GLM-category scoring failed; using fixed-metric fallback",
-                    fault_code="glm_category_scoring_failed",
-                    scoring_mode="fixed_metrics_fallback",
-                    details={"error": f"{type(exc).__name__}: {exc}"},
-                )
-                logger.exception(
-                    f"[judge-api] GLM-category scoring failed, falling back to fixed metrics "
-                    f"eval_run={request.eval_run_id} batch={request.batch_id}: {exc}"
-                )
+            raise HTTPException(status_code=400, detail=f"unsupported judge model(s): {', '.join(unknown)}")
+        client: OpenRouterJudgeClient = app.state.eval_client
+        try:
             records = await _score_samples(
-                client=client, request=request, scoring_mode="fixed_metrics_fallback"
+                client=client, request=request, settings=settings, prep_store=prep_store()
             )
-        summary = _summary(records, settings=settings)
+        except Exception as exc:
+            _notify(
+                settings, request, severity="ERROR",
+                message="Scoring failed", fault_code="scoring_failed",
+                details={"error": f"{type(exc).__name__}: {exc}"},
+            )
+            logger.exception(
+                f"[judge-api] scoring failed eval_run={request.eval_run_id} batch={request.batch_id}: {exc}"
+            )
+            raise HTTPException(status_code=502, detail=f"scoring failed: {exc}")
+        summary = aggregate_scores(records, min_valid_fraction=settings.min_valid_fraction)
         if summary.get("state") != "succeeded":
             _notify(
-                settings,
-                request,
-                severity="ERROR",
-                message="Fixed-metric fallback scoring failed",
-                fault_code=str(summary.get("fault_code") or "fixed_metric_fallback_failed"),
-                scoring_mode="fixed_metrics_fallback",
+                settings, request, severity="WARNING",
+                message="Scoring produced too few valid samples",
+                fault_code=str(summary.get("fault_code") or "scoring_invalid"),
                 retryable=bool(summary.get("retryable")),
             )
         return ScoreBatchResponse(
@@ -396,269 +280,156 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
     return app
 
 
+async def _questions_for(
+    request: ScoreBatchRequest, sample: JudgeSample, prep_store: QuestionPrepStore
+) -> QuestionPrepResult:
+    if request.category_prep_id:
+        lookup = await prep_store.get_with_reason(request.category_prep_id, sample)
+        if lookup.result is not None:
+            return lookup.result
+        reason = lookup.reason
+    else:
+        reason = "missing_prep_id"
+    logger.warning(
+        "score_batch_question_sync_generation eval_run_id={} batch_id={} sample_id={} reason={}",
+        request.eval_run_id, request.batch_id, sample.sample_id, reason,
+    )
+    return await prep_store.service.prepare(sample)
+
+
+async def _judge_side(
+    *,
+    client: OpenRouterJudgeClient,
+    settings: JudgeSettings,
+    side: str,
+    response_text: str,
+    questions: list[dict[str, str]],
+    judge_models: list[str],
+) -> tuple[dict[str, dict[str, str | None]], list[dict[str, Any]]]:
+    """Score one response (king or challenger) with all judges. Returns (per_judge_answers, records)."""
+    question_ids = [q["id"] for q in questions]
+    schema = answer_schema(question_ids)
+    messages = build_judge_messages(response=response_text, questions=questions)
+    raws = await asyncio.gather(
+        *[
+            client.score(
+                model=model,
+                messages=messages,
+                response_schema=schema,
+                schema_name="albedo_answers",
+                max_tokens=settings.answer_max_tokens,
+                accept=lambda raw: parse_answers(raw, question_ids)[2],
+            )
+            for model in judge_models
+        ]
+    )
+    per_judge_answers: dict[str, dict[str, str | None]] = {}
+    records: list[dict[str, Any]] = []
+    for raw, model in zip(raws, judge_models):
+        answers, explanations, parse_ok = parse_answers(raw.raw, question_ids)
+        per_judge_answers[model] = answers
+        records.append(
+            {
+                "side": side,
+                "judge_model": model,
+                "provider": raw.provider,
+                "answers": answers,
+                "explanations": explanations,
+                "yes_rate": judge_yes_rate(answers),
+                "parse_ok": parse_ok and not raw.error,
+                "error": raw.error,
+            }
+        )
+    return per_judge_answers, records
+
+
 async def _score_samples(
     *,
     client: OpenRouterJudgeClient,
     request: ScoreBatchRequest,
-    scoring_mode: str = "fixed_metrics",
+    settings: JudgeSettings,
+    prep_store: QuestionPrepStore,
 ) -> list[dict[str, Any]]:
     started_at = time.monotonic()
     completed = 0
     progress_lock = asyncio.Lock()
     logger.info(
-        "score_batch_started eval_run_id={} batch_id={} scoring_mode={} samples={} judges={}",
-        request.eval_run_id,
-        request.batch_id,
-        scoring_mode,
-        len(request.samples),
-        len(request.judge_models),
+        "score_batch_started eval_run_id={} batch_id={} samples={} judges={} prep_id={}",
+        request.eval_run_id, request.batch_id, len(request.samples),
+        len(request.judge_models), request.category_prep_id or "",
     )
 
-    async def _score_one(index: int, sample: JudgeSample) -> dict[str, Any]:
+    async def _score_one(sample: JudgeSample) -> dict[str, Any]:
         nonlocal completed
-        challenger_first = should_show_challenger_first(
-            sample.sample_index, request.total_sample_count
-        )
-        challenger_position = 1 if challenger_first else 2
-        messages = build_pairwise_messages(
-            context_prompt=sample.prompt,
-            previous_king_output=sample.previous_king_output,
-            challenger_output=sample.challenger_output,
-            challenger_first=challenger_first,
-        )
-        raws = await asyncio.gather(
-            *[client.score(model=model, messages=messages) for model in request.judge_models],
-        )
-        judge_results = []
-        for raw in raws:
-            verdict = parse_metric_verdict(
-                raw.raw,
-                model=raw.model,
-                provider=raw.provider,
-                challenger_position=challenger_position,
-                error=raw.error,
+        try:
+            return await _score_one_inner(sample)
+        except Exception as exc:  # one bad sample must not abort the whole batch
+            async with progress_lock:
+                completed += 1
+            logger.warning(
+                "score_batch_sample_failed eval_run_id={} batch_id={} completed={}/{} sample_id={} error={}",
+                request.eval_run_id, request.batch_id, completed, len(request.samples),
+                sample.sample_id, f"{type(exc).__name__}: {exc}",
             )
-            judge_results.append(_judge_result(verdict))
-        ok = [result for result in judge_results if result["parse_ok"]]
-        scored = len(ok) == len(request.judge_models)
-        sample_score = mean(float(result["judge_mean"]) for result in ok) if scored else None
-        async with progress_lock:
-            completed += 1
-            logger.info(
-                "score_batch_sample_done eval_run_id={} batch_id={} scoring_mode={} completed={}/{} sample_id={} scored={} valid_judges={} elapsed_s={:.1f}",
-                request.eval_run_id,
-                request.batch_id,
-                scoring_mode,
-                completed,
-                len(request.samples),
-                sample.sample_id,
-                scored,
-                len(ok),
-                time.monotonic() - started_at,
-            )
-        return {
-            "sample_id": sample.sample_id,
-            "order": ["challenger", "previous_king"]
-            if challenger_first
-            else ["previous_king", "challenger"],
-            "judge_results": judge_results,
-            "judge_scores": [
-                result["judge_mean"] for result in judge_results if result["parse_ok"]
-            ],
-            "sample_score": sample_score,
-            "scored": scored,
-            "scoring_mode": scoring_mode,
-        }
+            return {
+                "sample_id": sample.sample_id,
+                "questions": [],
+                "king_score": None,
+                "challenger_score": None,
+                "judge_results": [],
+                "scored": False,
+                "scoring_mode": "binary",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
-    records = await asyncio.gather(
-        *[_score_one(index, sample) for index, sample in enumerate(request.samples)]
-    )
-    logger.info(
-        "score_batch_done eval_run_id={} batch_id={} scoring_mode={} scored_samples={}/{} elapsed_s={:.1f}",
-        request.eval_run_id,
-        request.batch_id,
-        scoring_mode,
-        sum(1 for record in records if record.get("scored")),
-        len(records),
-        time.monotonic() - started_at,
-    )
-    return records
-
-
-async def _score_samples_with_categories(
-    *,
-    client: OpenRouterJudgeClient,
-    request: ScoreBatchRequest,
-    category_service: GLMCategoryService,
-    prep_store: CategoryPrepStore,
-) -> list[dict[str, Any]]:
-    started_at = time.monotonic()
-    categories_ready = 0
-    completed = 0
-    progress_lock = asyncio.Lock()
-    logger.info(
-        "score_batch_started eval_run_id={} batch_id={} scoring_mode=glm_categories samples={} judges={} category_prep_id={}",
-        request.eval_run_id,
-        request.batch_id,
-        len(request.samples),
-        len(request.judge_models),
-        request.category_prep_id or "",
-    )
-
-    async def _categories_for(sample: JudgeSample) -> CategoryPrepResult:
-        if request.category_prep_id:
-            lookup = await prep_store.get_with_reason(request.category_prep_id, sample)
-            if lookup.result is not None:
-                return lookup.result
-            reason = lookup.reason
-        else:
-            reason = "missing_category_prep_id"
-        logger.warning(
-            "score_batch_category_sync_generation eval_run_id={} batch_id={} "
-            "sample_id={} category_prep_id={} reason={}",
-            request.eval_run_id,
-            request.batch_id,
-            sample.sample_id,
-            request.category_prep_id or "",
-            reason,
-        )
-        return await category_service.prepare(sample)
-
-    async def _score_one(index: int, sample: JudgeSample) -> dict[str, Any]:
-        nonlocal categories_ready, completed
-        prepared = await _categories_for(sample)
+    async def _score_one_inner(sample: JudgeSample) -> dict[str, Any]:
+        nonlocal completed
+        prepared = await _questions_for(request, sample, prep_store)
         if prepared.error:
-            raise CategoryScoringUnavailable(prepared.error)
-        async with progress_lock:
-            categories_ready += 1
-            logger.info(
-                "score_batch_category_ready eval_run_id={} batch_id={} ready={}/{} sample_id={} provider={} elapsed_s={:.1f}",
-                request.eval_run_id,
-                request.batch_id,
-                categories_ready,
-                len(request.samples),
-                sample.sample_id,
-                prepared.category_source.get("provider", ""),
-                time.monotonic() - started_at,
-            )
-        challenger_first = should_show_challenger_first(
-            sample.sample_index, request.total_sample_count
+            raise QuestionScoringUnavailable(prepared.error)
+        questions = prepared.questions
+        (king_answers, king_recs), (chal_answers, chal_recs) = await asyncio.gather(
+            _judge_side(
+                client=client, settings=settings, side="previous_king",
+                response_text=sample.previous_king_output, questions=questions,
+                judge_models=request.judge_models,
+            ),
+            _judge_side(
+                client=client, settings=settings, side="challenger",
+                response_text=sample.challenger_output, questions=questions,
+                judge_models=request.judge_models,
+            ),
         )
-        challenger_position = 1 if challenger_first else 2
-        messages = build_category_pairwise_messages(
-            context_prompt=sample.prompt,
-            previous_king_output=sample.previous_king_output,
-            challenger_output=sample.challenger_output,
-            challenger_first=challenger_first,
-            categories=prepared.categories,
-        )
-        response_schema = category_response_schema(prepared.categories)
-        raws = await asyncio.gather(
-            *[
-                client.score(
-                    model=model,
-                    messages=messages,
-                    response_schema=response_schema,
-                    schema_name="albedo_pairwise_category_verdict",
-                )
-                for model in request.judge_models
-            ],
-        )
-        judge_results = []
-        for raw in raws:
-            verdict = parse_category_verdict(
-                raw.raw,
-                categories=prepared.categories,
-                model=raw.model,
-                provider=raw.provider,
-                challenger_position=challenger_position,
-                error=raw.error,
-            )
-            judge_results.append(_judge_result(verdict))
-        ok = [result for result in judge_results if result["parse_ok"]]
-        scored = len(ok) == len(request.judge_models)
-        sample_score = mean(float(result["judge_mean"]) for result in ok) if scored else None
+        king_score = response_score(king_answers)
+        chal_score = response_score(chal_answers)
+        king_ok = all(r["parse_ok"] for r in king_recs) and king_score is not None
+        chal_ok = all(r["parse_ok"] for r in chal_recs) and chal_score is not None
+        scored = king_ok and chal_ok
         async with progress_lock:
             completed += 1
             logger.info(
-                "score_batch_sample_done eval_run_id={} batch_id={} scoring_mode=glm_categories completed={}/{} sample_id={} scored={} valid_judges={} elapsed_s={:.1f}",
-                request.eval_run_id,
-                request.batch_id,
-                completed,
-                len(request.samples),
-                sample.sample_id,
-                scored,
-                len(ok),
-                time.monotonic() - started_at,
+                "score_batch_sample_done eval_run_id={} batch_id={} completed={}/{} sample_id={} "
+                "scored={} king={} chal={} elapsed_s={:.1f}",
+                request.eval_run_id, request.batch_id, completed, len(request.samples),
+                sample.sample_id, scored, king_score, chal_score, time.monotonic() - started_at,
             )
         return {
             "sample_id": sample.sample_id,
-            "order": ["challenger", "previous_king"]
-            if challenger_first
-            else ["previous_king", "challenger"],
-            "categories": prepared.categories,
-            "category_source": prepared.category_source,
-            "category_hash": prepared.category_hash,
-            "judge_results": judge_results,
-            "judge_scores": [
-                result["judge_mean"] for result in judge_results if result["parse_ok"]
-            ],
-            "sample_score": sample_score,
+            "questions": questions,
+            "king_score": king_score,
+            "challenger_score": chal_score,
+            "judge_results": king_recs + chal_recs,
             "scored": scored,
-            "scoring_mode": "glm_categories",
+            "scoring_mode": "binary",
         }
 
-    records = await asyncio.gather(
-        *[_score_one(index, sample) for index, sample in enumerate(request.samples)]
-    )
+    records = await asyncio.gather(*[_score_one(sample) for sample in request.samples])
     logger.info(
-        "score_batch_done eval_run_id={} batch_id={} scoring_mode=glm_categories scored_samples={}/{} elapsed_s={:.1f}",
-        request.eval_run_id,
-        request.batch_id,
-        sum(1 for record in records if record.get("scored")),
-        len(records),
-        time.monotonic() - started_at,
+        "score_batch_done eval_run_id={} batch_id={} scored={}/{} elapsed_s={:.1f}",
+        request.eval_run_id, request.batch_id,
+        sum(1 for r in records if r.get("scored")), len(records), time.monotonic() - started_at,
     )
-    return records
-
-
-def _summary(records: list[dict[str, Any]], *, settings: JudgeSettings) -> dict[str, Any]:
-    summary = aggregate_scoring_records(records, min_valid_fraction=settings.min_valid_fraction)
-    summary["judge_errors"] = sum(
-        1 for record in records for result in record["judge_results"] if not result["parse_ok"]
-    )
-    summary["scored_sample_count"] = sum(1 for record in records if record.get("scored"))
-    if records:
-        summary.setdefault("scoring_mode", records[0].get("scoring_mode"))
-    return summary
-
-
-def _judge_result(verdict) -> dict[str, Any]:
-    return {
-        "judge_model": verdict.model,
-        "provider": verdict.provider,
-        "metric_scores": verdict.metric_scores,
-        "judge_mean": verdict.judge_mean,
-        "parse_ok": verdict.parse_ok,
-        "raw_verdict": verdict.raw,
-        "error": verdict.error,
-    }
-
-
-def _repair_category_messages(
-    *, prompt: str, glm_response: str, bad_payload: str, category_count: int
-) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": "Repair malformed category JSON. Return strict JSON only."},
-        {
-            "role": "user",
-            "content": (
-                f"The category payload below is invalid. Return exactly {category_count} categories "
-                "with ids cat_01 through cat_05 and fields name, description, scoring_guidance.\n\n"
-                f"CONVERSATION:\n{prompt}\n\nGLM RESPONSE:\n{glm_response}\n\nBAD PAYLOAD:\n{bad_payload}"
-            ),
-        },
-    ]
+    return list(records)
 
 
 def _notify(
@@ -668,7 +439,6 @@ def _notify(
     severity: str,
     message: str,
     fault_code: str,
-    scoring_mode: str,
     retryable: bool | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
@@ -681,7 +451,7 @@ def _notify(
             batch_id=request.batch_id,
             fault_class="PROVIDER_FAULT",
             fault_code=fault_code,
-            scoring_mode=scoring_mode,
+            scoring_mode="binary",
             retryable=retryable,
             details=details,
         ),

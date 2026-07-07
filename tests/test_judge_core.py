@@ -6,13 +6,12 @@ from albedo_eval_service.judge_core import (
     CHALLENGER_WIN_MARGIN,
     JUDGE_MODELS,
     JUDGE_PROVIDER_PINS,
-    JUDGE_STRUCTURED_OUTPUT_MODELS,
-    METRIC_KEYS,
-    aggregate_scoring_records,
-    build_pairwise_messages,
+    aggregate_scores,
     challenger_beats_king,
-    parse_metric_verdict,
-    should_show_challenger_first,
+    judge_yes_rate,
+    parse_answers,
+    parse_questions,
+    response_score,
     strip_reply_injection,
 )
 
@@ -24,46 +23,51 @@ def test_judge_panel_allows_any_fp8_provider():
         "deepseek/deepseek-v3.2",
     )
     for model in JUDGE_MODELS:
-        assert JUDGE_PROVIDER_PINS[model] == {
-            "allow_fallbacks": True,
-            "quantizations": ["fp8"],
-        }
+        assert JUDGE_PROVIDER_PINS[model] == {"allow_fallbacks": True, "quantizations": ["fp8"]}
         assert "order" not in JUDGE_PROVIDER_PINS[model]
-    assert JUDGE_STRUCTURED_OUTPUT_MODELS == {
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek/deepseek-v3.2",
-    }
 
 
-def test_counterbalance_is_fixed_by_sample_index():
-    assert should_show_challenger_first(0, 128) is False
-    assert should_show_challenger_first(63, 128) is False
-    assert should_show_challenger_first(64, 128) is True
-    assert should_show_challenger_first(127, 128) is True
-
-    first = build_pairwise_messages(
-        context_prompt="task",
-        previous_king_output="king answer",
-        challenger_output="challenger answer",
-        challenger_first=False,
-    )[1]["content"]
-    second = build_pairwise_messages(
-        context_prompt="task",
-        previous_king_output="king answer",
-        challenger_output="challenger answer",
-        challenger_first=True,
-    )[1]["content"]
-    assert first.index("king answer") < first.index("challenger answer")
-    assert second.index("challenger answer") < second.index("king answer")
+def test_parse_questions_assigns_ids_and_category():
+    raw = json.dumps({"questions": [{"text": f"q{i}?", "example_bad": "bad"} for i in range(3)]})
+    questions, ok = parse_questions(raw, 3)
+    assert ok is True
+    assert [q["id"] for q in questions] == ["q_01", "q_02", "q_03"]
+    assert all(q["category"] == "overall" for q in questions)
+    # fewer than requested -> not ok
+    _, ok2 = parse_questions(json.dumps({"questions": [{"text": "one", "example_bad": "b"}]}), 3)
+    assert ok2 is False
 
 
-def test_parse_metric_verdict_maps_to_challenger_score_for_either_order():
-    raw = json.dumps({key: 1 for key in METRIC_KEYS})
-    assert parse_metric_verdict(raw, challenger_position=1).judge_mean == 1.0
-    assert parse_metric_verdict(raw, challenger_position=2).judge_mean == 0.0
+def test_parse_answers_is_binary():
+    raw = json.dumps(
+        {
+            "answers": [
+                {"id": "q_01", "answer": 1, "explanation": "e"},
+                {"id": "q_02", "answer": 0, "explanation": "e"},
+            ]
+        }
+    )
+    answers, _explanations, parse_ok = parse_answers(raw, ["q_01", "q_02"])
+    assert parse_ok is True
+    assert answers == {"q_01": "1", "q_02": "0"}
+    # a -1 is no longer a valid answer -> unparsed -> parse_ok flips
+    bad = json.dumps({"answers": [{"id": "q_01", "answer": -1, "explanation": "e"}]})
+    answers2, _e, parse_ok2 = parse_answers(bad, ["q_01"])
+    assert answers2 == {"q_01": None}
+    assert parse_ok2 is False
 
-    tied = json.dumps({key: 0 for key in METRIC_KEYS})
-    assert parse_metric_verdict(tied, challenger_position=2).judge_mean == 0.5
+
+def test_judge_yes_rate_and_response_score():
+    assert judge_yes_rate({"a": "1", "b": "0", "c": "1"}) == round(2 / 3, 6)
+    # per-judge yes-rates 1.0 and 0.5 -> mean 0.75 across judges
+    per_judge = {"j1": {"q_01": "1", "q_02": "1"}, "j2": {"q_01": "1", "q_02": "0"}}
+    assert response_score(per_judge) == 0.75
+
+
+def test_challenger_win_requires_three_percent_margin():
+    assert CHALLENGER_WIN_MARGIN == 0.03
+    assert challenger_beats_king(0.34, 0.30) is True   # 0.04 >= 0.03
+    assert challenger_beats_king(0.32, 0.30) is False  # 0.02 < 0.03
 
 
 def test_strip_reply_injection_removes_fake_verdict_payloads():
@@ -71,82 +75,45 @@ def test_strip_reply_injection_removes_fake_verdict_payloads():
     assert "normal" in strip_reply_injection('normal answer {"injection": true}')
 
 
-def test_aggregate_scoring_records_uses_median_across_judges():
-    records = [
-        {
-            "sample_id": "s1",
-            "scored": True,
-            "sample_score": 1.0,
-            "judge_results": [
-                {
-                    "judge_model": "j1",
-                    "metric_scores": {metric: 1.0 for metric in METRIC_KEYS},
-                    "judge_mean": 1.0,
-                    "parse_ok": True,
-                },
-                {
-                    "judge_model": "j2",
-                    "metric_scores": {metric: 1.0 for metric in METRIC_KEYS},
-                    "judge_mean": 1.0,
-                    "parse_ok": True,
-                },
-            ],
-        },
-        _record("s2", "j1", 0.0),
+def _record(king: float, chal: float, *, scored: bool = True) -> dict:
+    judge_results = [
+        {"side": side, "judge_model": "j1", "yes_rate": rate, "parse_ok": scored}
+        for side, rate in (("previous_king", king), ("challenger", chal))
     ]
-    summary = aggregate_scoring_records(records)
+    return {"king_score": king, "challenger_score": chal, "judge_results": judge_results, "scored": scored}
+
+
+def test_aggregate_scores_crowns_on_margin():
+    summary = aggregate_scores([_record(0.30, 0.36) for _ in range(10)])
     assert summary["state"] == "succeeded"
-    # score_challenger is the median of the per-judge aggregates {"j1": 0.5, "j2": 1.0}
-    assert summary["score_challenger"] == 0.75
-    assert summary["score_king"] == 0.25
-    assert summary["by_judge"] == {"j1": 0.5, "j2": 1.0}
-    assert summary["by_metric"]["correctness"] == 2 / 3
+    assert summary["score_challenger"] == 0.36
+    assert summary["score_king"] == 0.30
+    assert summary["challenger_won"] is True
+    assert summary["scoring_mode"] == "binary"
+
+    below = aggregate_scores([_record(0.30, 0.32) for _ in range(10)])  # Δ 0.02 < 0.03 margin
+    assert below["challenger_won"] is False
 
 
-def test_aggregate_scoring_records_median_picks_middle_judge():
-    records = [
-        {
-            "sample_id": "s1",
-            "scored": True,
-            "sample_score": 0.0,
-            "judge_results": [
-                {
-                    "judge_model": judge_model,
-                    "metric_scores": {metric: value for metric in METRIC_KEYS},
-                    "judge_mean": value,
-                    "parse_ok": True,
-                }
-                for judge_model, value in (("j1", 0.4), ("j2", 0.6), ("j3", 0.9))
-            ],
-        }
+def test_aggregate_scores_fails_when_too_few_valid():
+    # 6/10 samples unscored (judge parse failures) -> valid fraction 0.4 < 0.5 -> invalid eval.
+    records = [_record(0.3, 0.4) for _ in range(4)] + [
+        _record(0.3, 0.4, scored=False) for _ in range(6)
     ]
-    summary = aggregate_scoring_records(records)
-    # median of [0.4, 0.6, 0.9] is 0.6, not the mean 0.633...
-    assert summary["score_challenger"] == 0.6
-    assert summary["score_king"] == 0.4
+    summary = aggregate_scores(records, min_valid_fraction=0.5)
+    assert summary["state"] == "failed"
+    assert summary["fault_code"] == "scoring_invalid"
 
 
-def test_challenger_win_requires_six_percent_margin():
-    assert CHALLENGER_WIN_MARGIN == 0.06
-    assert challenger_beats_king(0.53, 0.47) is True
-    assert challenger_beats_king(0.52, 0.48) is False
+def test_parse_questions_accepts_slightly_short_and_truncates_extra():
+    q49 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(49)]})
+    out, ok = parse_questions(q49, 50)
+    assert ok is True and len(out) == 49 and out[-1]["id"] == "q_49"   # 49/50 >= 80% floor -> accepted
 
-    summary = aggregate_scoring_records([_record("s1", "j1", 0.505)])
-    assert summary["challenger_won"] is False
-    assert summary["required_win_margin"] == 0.06
+    q51 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(51)]})
+    out2, ok2 = parse_questions(q51, 50)
+    assert ok2 is True and len(out2) == 50                             # extra truncated to n
 
-
-def _record(sample_id: str, judge_model: str, score: float) -> dict[str, object]:
-    return {
-        "sample_id": sample_id,
-        "scored": True,
-        "sample_score": score,
-        "judge_results": [
-            {
-                "judge_model": judge_model,
-                "metric_scores": {metric: score for metric in METRIC_KEYS},
-                "judge_mean": score,
-                "parse_ok": True,
-            }
-        ],
-    }
+    q39 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(39)]})
+    _, ok3 = parse_questions(q39, 50)
+    assert ok3 is False                                                # < 80% floor -> not ok (retry/fail)

@@ -5,9 +5,10 @@
 > multimodal Qwen3VL architecture) and commit them on-chain; a backend pipeline ingests
 > commits, validates artifacts, runs a stability pre-eval, then duels each challenger
 > against the reigning king on coding trajectories from two datasets — SWE-ZERO (12M) and
-> mini-coder (400k) — with scoring tasks split 70/30 across the two, judged by an ensemble of LLMs
-> against scoring categories that GLM 5.2 generates per sample.
-> A challenger must beat the king by a **6% margin** to win. Winners are crowned into a
+> mini-coder (400k) — sampled 70/30 across the two. An evaluator (GLM 5.2) writes yes/no checklist
+> questions about a good next step for each task; an ensemble of LLM judges answers them 1/0 for the
+> king and challenger responses independently, and the mean yes-rate is each side's score.
+> A challenger must beat the king by a **3% margin** to win. Winners are crowned into a
 > rolling 5-king chain and earn emissions.
 >
 > This codebase is the **production backend + miner CLI** — a set of independent,
@@ -89,18 +90,17 @@ albedo/
 │   ├── albedo_eval_service/        THE DUEL: backend coordinator + remote GPU eval + judge + score bridge
 │   │   ├── dispatcher.py               claim EVAL_QUEUED (advisory lock) → pick EVAL host → stream verdict
 │   │   ├── api.py                      backend status API :8080 (/health /ready /submissions/{id})
-│   │   ├── judge_api.py                judge/scoring API :8091 (/category-prep GLM 5.2 categories + /score-batch) — calls OpenRouter
-│   │   ├── judge_core.py               per-sample GLM-category pairwise rubric (+ fixed 5-metric fallback), counterbalanced order, zero-sum aggregation
-│   │   ├── judge_openrouter.py         OpenRouter client: per-model semaphore, retry+backoff, json_schema
-│   │   ├── chutes_glm.py               GLM 5.2 provider for per-sample category generation (Chutes-primary + OpenRouter-FP8 fallback; error/utilization bypass)
-│   │   ├── judge_config.py             JudgeSettings (ALBEDO_JUDGE_*): judge + Chutes/GLM 5.2 + category settings
+│   │   ├── judge_api.py                judge/scoring API :8091 (/category-prep evaluator questions + /score-batch) — calls OpenRouter
+│   │   ├── judge_core.py               yes/no question prompts + schemas/parsers, per-response scoring, margin aggregation
+│   │   ├── judge_openrouter.py         OpenRouter client: per-model semaphore, retry+backoff, forced json_schema (fp8)
+│   │   ├── judge_config.py             JudgeSettings (ALBEDO_JUDGE_*): evaluator + judge models, num_questions, margin
 │   │   ├── score_bridge_client.py      backend side of WS bridge → forwards score requests to judge_api
 │   │   ├── remote_api.py               GPU-host control plane :8090 (/eval-runs, WS /score-bridge)
 │   │   ├── remote_worker.py            run eval: load samples → vLLM king+chal → score over bridge → verdict
 │   │   ├── remote_generation.py        one vLLM subprocess per model, CUDA_VISIBLE_DEVICES per side
 │   │   ├── remote_scoring.py           build score batches, request judging back over the WS bridge
 │   │   ├── remote_artifacts.py         upload JSONL transcripts + verdict.json to S3
-│   │   ├── sampling.py                 deterministic SWE-ZERO sample IDs seeded by commit block_hash
+│   │   ├── sampling.py                 deterministic bucketed sampling: unique instance_ids, one rollout each, 70/30, prefix buckets
 │   │   ├── dataset_manifest.py         load + sha256-verify the dataset shard manifest
 │   │   ├── canonical_model_config.py   pin the genesis model / generation / processor configs over the challenger's before eval (anti-tamper)
 │   │   ├── faults.py                   fault taxonomy (MINER/INFRA/REMOTE_EVAL/PROVIDER/UNKNOWN)
@@ -353,11 +353,11 @@ albedo-eval-dispatcher (loop, every dispatch_poll_seconds)
 albedo-remote-eval-api  (GPU host)
   POST /eval-runs → spawn RemoteEvalWorker (background)
     state: accepted → generating → scoring → succeeded|failed
-    category-prep (early): POST /category-prep over the bridge → GLM 5.2 drafts per-sample scoring categories (cat_01..cat_05, async)
+    question-prep (early): POST /category-prep over the bridge → GLM 5.2 writes per-sample yes/no next-step questions (async)
     GPU split: king = ALBEDO_REMOTE_PREVIOUS_KING_GPU_IDS (0,1,2,3)
                challenger = ALBEDO_REMOTE_CHALLENGER_GPU_IDS (4,5,6,7)  (no overlap, 4 each)
     one vLLM subprocess per side (tensor_parallel_size = #gpus), generate king+chal in parallel
-    score: build batches → request judging (against the per-sample categories) back over the WebSocket /score-bridge
+    score: build batches → request judging (king & challenger vs the per-sample questions) back over the WebSocket /score-bridge
     emit "verdict" event (scores, win_margin, challenger_won, vllm/judge error counts, artifact URIs)
     upload JSONL transcripts + verdict.json to S3
 
@@ -367,38 +367,29 @@ score bridge (backend-initiated WebSocket, GPU→backend)
   replies {type:"score_response", request_id, body}
 ```
 
-**Scoring categories (per sample)** (`/category-prep`, GLM 5.2): before judging, GLM 5.2 generates
-the rubric for **each sample** — it drafts a candidate answer, then derives **exactly 5 independent
-categories** (`cat_01..cat_05`, each with `name`/`description`/`scoring_guidance`) from the task + that
-answer (validated, repaired-on-malformed, and hashed). GLM 5.2 runs **Chutes-primary**
-(`zai-org/GLM-5.2-TEE`) with an **OpenRouter-FP8 fallback** (`z-ai/glm-5.2`); Chutes is auto-bypassed
-after `ALBEDO_JUDGE_CHUTES_DISABLE_AFTER_ERRORS` (3) consecutive errors or when its 15-minute
-utilization > `0.75` / instance count ≤ 3.
+**Question prep (per sample)** (`/category-prep`, evaluator = OpenRouter `z-ai/glm-5.2`, fp8): before
+judging, the evaluator reads the task (the conversation prefix) and writes `num_questions` (50)
+self-contained yes/no questions about what a **good next step** would be — probing correctness,
+grounding, progress, protocol, and efficiency of that single turn, not whole-task completion (yes =
+good). Questions are generated once per task and reused to score both models; fired async at eval start.
 
-**Judge ensemble** (`albedo-judge-api`, calls OpenRouter): 3 judge models
-(`glm-5.1, qwen3.5-397b-a17b, deepseek-v3.2`) score each turn **pairwise on those per-sample
-categories** (1 = MODEL 1 better, 2 = MODEL 2 better, 0 = equal, per category). Order is
-**counterbalanced** (half the samples shown king-first, half challenger-first) to cancel position
-bias; per-category verdicts aggregate zero-sum into challenger vs king (`score_king = 1 −
-score_challenger`) and take the **median across judges**. The challenger wins (`EVAL_WIN`) only if it
-beats the king by the **6% margin** (`challenger_won = (score_challenger − score_king) ≥
-CHALLENGER_WIN_MARGIN`, `0.06`); otherwise the duel is a `COMPLETE_LOSS`. Per-model concurrency is
-capped by a semaphore (`ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL`, default 8) with retry + exponential
-backoff; a run needs `ALBEDO_JUDGE_MIN_VALID_FRACTION` (0.5) of judges to resolve or it's a provider
-fault.
+**Judge ensemble** (`albedo-judge-api`, OpenRouter): 3 judge models
+(`glm-5.1, qwen3.5-397b-a17b, deepseek-v3.2`) each answer every question **1/0** (forced `json_schema`,
+fp8), seeing only the questions + one response — never the trajectory or the other model. King and
+challenger are scored **independently** against the same questions: per judge, the mean of its 1/0
+answers; then the mean across judges → an absolute score in `[0,1]` per side (`score_king` and
+`score_challenger` are independent — they do NOT sum to 1). The challenger wins (`EVAL_WIN`) only if
+`score_challenger − score_king ≥ CHALLENGER_WIN_MARGIN` (`0.03`, margin-only); otherwise
+`COMPLETE_LOSS`. Per-model concurrency is capped by a semaphore
+(`ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL`, default 128) with retry + backoff; an eval needs
+`min_valid_fraction` (0.8) of samples scored on both sides or it's a provider fault.
 
-**Fallback & provenance:** if category generation fails or yields too few valid scores, the batch
-falls back to the **fixed 5-metric rubric** (`correctness, grounding, progress, protocol,
-efficiency`). Each scoring record records `scoring_mode` (`glm_categories` | `fixed_metrics_fallback`
-| `mixed`) plus the generated `categories`, `category_source` (provider/model/prompt_version), and
-`category_hash`.
-
-**Deterministic sampling:** `sampling.py` (`multi_source_manifest_sample_ids`, algo
-`swe-zero-multi-source-sample-v1`) is **multi-source weighted** — the manifest's per-source `weight`
-allocates the `sample_count` (default 128) across the two sources (~70% SWE-ZERO / ~30% mini-coder),
-then per source it seeds a `Random(block_hash)`, shuffles a flat `(shard, row)` list once, and walks
-rows × turns producing `shard:row:turn` IDs. The same commit block always yields the same eval set —
-reproducible and un-gameable by the miner.
+**Deterministic sampling:** `sampling.py` (`multi_source_manifest_sample_ids`) draws `sample_count`
+(128) **unique `instance_id`s** across the two sources (70/30 by manifest `weight`), one **random
+rollout** per instance, and assigns each a prefix length from `BUCKETS` (odd #turns, deepest-first
+with feasibility) — seeded by the commit `block_hash`, so the same block always yields the same eval
+set. The prefix ends on a user turn and the model generates the next assistant turn; IDs are
+`shard:row:turn` where `turn = (prefix_len − 1) // 2`.
 
 ---
 

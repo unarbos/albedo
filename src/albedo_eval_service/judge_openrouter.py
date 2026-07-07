@@ -5,13 +5,13 @@ import email.utils
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from loguru import logger
 
 from .judge_config import JudgeSettings
-from .judge_core import JUDGE_PROVIDER_PINS, JUDGE_RESPONSE_SCHEMA, JUDGE_STRUCTURED_OUTPUT_MODELS
+from .judge_core import JUDGE_MODELS, JUDGE_PROVIDER_PINS
 
 
 @dataclass(frozen=True)
@@ -27,11 +27,14 @@ class OpenRouterJudgeClient:
         if not settings.openrouter_api_key:
             raise ValueError("ALBEDO_JUDGE_OPENROUTER_API_KEY is required")
         self.settings = settings
+        # Size the connection pool to the per-model concurrency across all models + the evaluator,
+        # so raising max_concurrency_per_model actually parallelizes instead of queueing on sockets.
+        pool = max(64, (len(JUDGE_MODELS) + 1) * settings.max_concurrency_per_model)
         self._client = httpx.AsyncClient(
             base_url=settings.openrouter_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
             timeout=httpx.Timeout(settings.request_timeout_seconds),
-            limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
+            limits=httpx.Limits(max_connections=pool, max_keepalive_connections=pool),
         )
         self._semaphores: dict[str, asyncio.Semaphore] = {}
 
@@ -50,37 +53,73 @@ class OpenRouterJudgeClient:
         model: str,
         messages: list[dict[str, str]],
         response_schema: dict[str, Any] | None = None,
-        schema_name: str = "albedo_pairwise_metric_verdict",
+        schema_name: str = "albedo_answers",
+        max_tokens: int | None = None,
+        provider: dict[str, Any] | None = None,
+        accept: Callable[[str], bool] | None = None,
+    ) -> JudgeRawResponse:
+        return await self._call(
+            model=model, messages=messages, response_schema=response_schema,
+            schema_name=schema_name, max_tokens=max_tokens, provider=provider, accept=accept,
+        )
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        provider: dict[str, Any] | None = None,
+        response_schema: dict[str, Any] | None = None,
+        accept: Callable[[str], bool] | None = None,
+    ) -> JudgeRawResponse:
+        # Generic completion (e.g. the question evaluator): `response_schema` forces JSON, `provider`
+        # overrides the per-model pins.
+        return await self._call(
+            model=model, messages=messages, response_schema=response_schema,
+            temperature=temperature, max_tokens=max_tokens, provider=provider, accept=accept,
+        )
+
+    async def _call(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        response_schema: dict[str, Any] | None = None,
+        schema_name: str = "albedo_answers",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        provider: dict[str, Any] | None = None,
+        accept: Callable[[str], bool] | None = None,
     ) -> JudgeRawResponse:
         sem = self._semaphores.setdefault(
             model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
         )
         async with sem:
-            return await self._score_with_retries(
-                model=model,
-                messages=messages,
-                response_schema=response_schema,
-                schema_name=schema_name,
-            )
-
-    async def complete(self, *, model: str, messages: list[dict[str, str]], temperature: float | None = None) -> JudgeRawResponse:
-        # Generic completion without the pairwise scoring schema, for callers with their own rubric.
-        # temperature overrides the configured default per call (e.g. a higher-variance injection re-check).
-        sem = self._semaphores.setdefault(
-            model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
-        )
-        async with sem:
-            return await self._score_with_retries(model=model, messages=messages, structured=False, temperature=temperature)
+            # Retry a 200-that-doesn't-parse (accept=False) up to parse_retries times; each retry is a
+            # fresh call that may re-route to a different provider via allow_fallbacks.
+            last: JudgeRawResponse | None = None
+            for _ in range(max(1, self.settings.parse_retries)):
+                last = await self._score_with_retries(
+                    model=model, messages=messages, response_schema=response_schema,
+                    schema_name=schema_name, temperature=temperature, max_tokens=max_tokens,
+                    provider=provider,
+                )
+                if last.error is None and (accept is None or accept(last.raw)):
+                    return last
+            return last
 
     async def _score_with_retries(
         self,
         *,
         model: str,
         messages: list[dict[str, str]],
-        structured: bool = True,
         response_schema: dict[str, Any] | None = None,
-        schema_name: str = "albedo_pairwise_metric_verdict",
+        schema_name: str = "albedo_answers",
         temperature: float | None = None,
+        max_tokens: int | None = None,
+        provider: dict[str, Any] | None = None,
     ) -> JudgeRawResponse:
         last_error = ""
         for attempt in range(self.settings.retry_count + 1):
@@ -88,10 +127,11 @@ class OpenRouterJudgeClient:
                 return await self._score_once(
                     model=model,
                     messages=messages,
-                    structured=structured,
                     response_schema=response_schema,
                     schema_name=schema_name,
                     temperature=temperature,
+                    max_tokens=max_tokens,
+                    provider=provider,
                 )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -113,30 +153,26 @@ class OpenRouterJudgeClient:
         *,
         model: str,
         messages: list[dict[str, str]],
-        structured: bool = True,
         response_schema: dict[str, Any] | None = None,
-        schema_name: str = "albedo_pairwise_metric_verdict",
+        schema_name: str = "albedo_answers",
         temperature: float | None = None,
+        max_tokens: int | None = None,
+        provider: dict[str, Any] | None = None,
     ) -> JudgeRawResponse:
+        provider_block = provider if provider is not None else JUDGE_PROVIDER_PINS.get(model, {})
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": self.settings.temperature if temperature is None else temperature,
-            "max_tokens": self.settings.max_tokens,
+            "max_tokens": self.settings.max_tokens if max_tokens is None else max_tokens,
             "reasoning": {"enabled": False, "exclude": True},
-            "provider": {
-                **JUDGE_PROVIDER_PINS[model],
-                "require_parameters": True,
-            },
+            "provider": {**provider_block, "require_parameters": True},
         }
-        if structured and model in JUDGE_STRUCTURED_OUTPUT_MODELS:
+        # Force JSON whenever a schema is given; require_parameters routes only to providers that honor it.
+        if response_schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "strict": True,
-                    "schema": response_schema or JUDGE_RESPONSE_SCHEMA,
-                },
+                "json_schema": {"name": schema_name, "strict": True, "schema": response_schema},
             }
         response = await self._client.post("/v1/chat/completions", json=payload)
         response.raise_for_status()
