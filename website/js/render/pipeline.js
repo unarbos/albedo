@@ -17,7 +17,7 @@ const byQueueOrder = (a, b) => {
   if (stage) return stage;
   const status = STATUS_RANK[a.status] - STATUS_RANK[b.status];
   if (status) return status;
-  return updatedMs(b) - updatedMs(a);
+  return updatedMs(a) - updatedMs(b);
 };
 
 function collectRows(stages) {
