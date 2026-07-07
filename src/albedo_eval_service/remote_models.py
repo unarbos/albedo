@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import re
@@ -221,6 +222,7 @@ class ModelArtifactResolver:
             token = None
             if response.request.headers.get("Authorization", "").startswith("Bearer "):
                 token = response.request.headers["Authorization"].removeprefix("Bearer ")
+            pending: list[tuple[str, str]] = []
             for index, layer in enumerate(manifest.get("layers", [])):
                 layer_digest = layer.get("digest")
                 if not isinstance(layer_digest, str) or not _DIGEST_RE.match(layer_digest):
@@ -231,21 +233,48 @@ class ModelArtifactResolver:
                 if destination.exists():
                     print(f"model_download_skip ref={name} (already cached)", flush=True)
                     continue
+                pending.append((layer_digest, name))
+
+            token_lock = threading.Lock()
+
+            def _download_layer(layer_digest: str, name: str) -> None:
+                nonlocal token
+                destination = temp_dir / name
                 blob_url = f"https://{registry}/v2/{repository}/blobs/{layer_digest}"
-                blob_headers = {"Authorization": f"Bearer {token}"} if token else {}
+                with token_lock:
+                    current = token
+                blob_headers = {"Authorization": f"Bearer {current}"} if current else {}
                 auth_response = _stream_blob_to_file(
                     client, blob_url, blob_headers, destination, layer_digest, label=name
                 )
                 if auth_response is not None:
-                    token = _bearer_token(client, auth_response, repository)
+                    with token_lock:
+                        # Another worker may have refreshed the token while we streamed.
+                        if token == current:
+                            token = _bearer_token(client, auth_response, repository)
+                        current = token
                     _stream_blob_to_file(
                         client,
                         blob_url,
-                        {"Authorization": f"Bearer {token}"},
+                        {"Authorization": f"Bearer {current}"},
                         destination,
                         layer_digest,
                         label=name,
                     )
+
+            if pending:
+                max_workers = max(1, min(self.settings.model_download_concurrency, len(pending)))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [
+                        executor.submit(_download_layer, layer_digest, name)
+                        for layer_digest, name in pending
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception:
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            raise
         _require_loadable_model_files(temp_dir, source="oci")
         done_marker_payload = {
             "source": original_ref,

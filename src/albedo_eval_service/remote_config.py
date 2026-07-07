@@ -46,6 +46,7 @@ class RemoteSettings(BaseSettings):
 
     resolve_model_artifacts: bool = True
     model_cache_dir: str = "/tmp/albedo-remote-models"
+    model_download_concurrency: int = 8
     artifact_spool_dir: str = "/tmp/albedo-remote-artifacts"
     remote_state_dir: str = "/tmp/albedo-remote-state"
 
