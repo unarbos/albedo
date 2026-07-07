@@ -12,7 +12,7 @@ class SanityRunRequest(BaseModel):
     digest: str
     prompts: list[str]
     prompt_messages: list[list[dict[str, str]]] | None = None
-    gen_max_tokens: int = 8192
+    gen_max_tokens: int = 32768
     min_tokens: int = 5
     max_repetition: float = 0.85
     min_vocab_ratio: float = 0.05

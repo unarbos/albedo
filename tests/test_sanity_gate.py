@@ -33,7 +33,7 @@ class _FakeJudge:
     def __init__(self, inj1: bool, inj2: bool, viable: bool) -> None:
         self._inj1, self._inj2, self._viable, self._n = inj1, inj2, viable, 0
 
-    async def complete(self, *, model, messages):
+    async def complete(self, *, model, messages, temperature=None):
         if "security auditor" in messages[0]["content"]:
             self._n += 1
             flag = self._inj2 if self._n > 3 else self._inj1
@@ -190,10 +190,11 @@ from sanity_remote.config import SanityRemoteSettings
 from sanity_remote.worker import VllmEngine, _strip_model_config
 
 
-def test_max_model_len_default_is_within_genesis_context():
-    # max_model_len is memory-constrained on the sanity GPU; must not exceed genesis max_position_embeddings.
-    from albedo_eval_service.canonical_model_config import GENESIS_MODEL_CONFIG
-    assert 0 < SanityRemoteSettings().max_model_len <= GENESIS_MODEL_CONFIG["max_position_embeddings"]
+def test_max_model_len_default_matches_eval_context(monkeypatch):
+    from albedo_eval_service.canonical_model_config import canonical_max_model_len
+
+    monkeypatch.delenv("SANITY_REMOTE_MAX_MODEL_LEN", raising=False)
+    assert SanityRemoteSettings(_env_file=None).max_model_len == canonical_max_model_len()
 
 
 def test_strip_model_config_removes_forbidden_keys(tmp_path):

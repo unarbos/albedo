@@ -7,6 +7,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from albedo_eval_service.canonical_model_config import canonical_max_model_len
+
 
 class SanityRemoteSettings(BaseSettings):
     # All knobs the GPU worker needs; it holds no DB creds, no dataset, no OpenRouter key.
@@ -37,7 +39,7 @@ class SanityRemoteSettings(BaseSettings):
     cpu_offload_gb: int = 0  # GB to spill to CPU RAM; 2x5090 BF16 needs ~6 for the 67 GB model
     download_timeout_s: float = 1800.0  # 67 GB model can take 20+ min from Hippius
     model_cache_dir: str = "/root/miners_models"
-    max_model_len: int = 8192
+    max_model_len: int = canonical_max_model_len()
     kv_cache_dtype: str = "auto"
     vllm_limit_mm: str = '{"image": 0, "video": 0}'
     gen_temperature: float = 0.7

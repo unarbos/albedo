@@ -23,7 +23,7 @@ class SanitySettings(BaseSettings):
     dataset_root: str = ""
     sample_count: int = 3
     max_turns_per_sample: int = 10
-    gen_max_tokens: int = 2048
+    gen_max_tokens: int = 32768
 
     skip_viability: bool = False
 
