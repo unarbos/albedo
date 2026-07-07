@@ -39,8 +39,63 @@ _ROMAN_NUMERALS = (
 )
 
 
+_BACKOFF_BASE_S = 300.0
+_BACKOFF_CAP_S = 6 * 3600.0
+_RATE_LIMIT_COOLDOWN_S = 300.0
+_GONE_STATUSES = frozenset({404, 410})
+
+
 class Unreachable(Exception):
     pass
+
+
+class RateLimited(Exception):
+    """Raised on HF HTTP 429 so a pass can abort and let the quota window reset."""
+
+
+@dataclass
+class UploaderState:
+    """Per-process memory so we stop re-hitting the HF API for kings already handled."""
+
+    completed: set[int] = dataclasses.field(default_factory=set)
+    backoff_until: dict[int, float] = dataclasses.field(default_factory=dict)
+    backoff_delay: dict[int, float] = dataclasses.field(default_factory=dict)
+    permanent_skip: set[int] = dataclasses.field(default_factory=set)
+
+
+def _http_status_from(exc: BaseException | None) -> int | None:
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return status
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    return _http_status_from(exc) == 429
+
+
+def _is_source_gone(exc: Exception) -> bool:
+    if _http_status_from(exc) in _GONE_STATUSES:
+        return True
+    text = str(exc)
+    return "404 Not Found" in text or "410 Gone" in text
+
+
+def _register_backoff(state: UploaderState, version: int, now: float) -> float:
+    prev = state.backoff_delay.get(version, 0.0)
+    delay = _BACKOFF_BASE_S if prev <= 0 else min(prev * 2.0, _BACKOFF_CAP_S)
+    state.backoff_delay[version] = delay
+    state.backoff_until[version] = now + delay
+    return delay
+
+
+def _clear_backoff(state: UploaderState, version: int) -> None:
+    state.backoff_delay.pop(version, None)
+    state.backoff_until.pop(version, None)
 
 
 @dataclass(frozen=True)
@@ -744,40 +799,97 @@ def _verify_and_repair(api, king: KingUpload, settings: Settings, repo_id: str) 
             _delete_work_copy(cleanup, settings.work_dir)
 
 
-def process_once(api, settings: Settings, *, limit: int | None = None, verify: bool = False) -> dict:
+def process_once(
+    api,
+    settings: Settings,
+    state: UploaderState,
+    *,
+    limit: int | None = None,
+    verify: bool = False,
+) -> dict:
     with _connect(settings) as conn:
         conn.execute("SET TRANSACTION READ ONLY")
         kings = list_crowned_kings(conn, settings)
-    counts = {"total": len(kings), "uploaded": 0, "repaired": 0, "skipped": 0, "failed": 0}
+    counts = {
+        "total": len(kings),
+        "uploaded": 0,
+        "repaired": 0,
+        "skipped": 0,
+        "failed": 0,
+        "deferred": 0,
+        "rate_limited": False,
+    }
     done = 0
-    for king in kings:
-        repo_id = repo_id_for(king, settings)
-        try:
-            if not settings.force and already_uploaded(api, repo_id):
-                if verify and _verify_and_repair(api, king, settings, repo_id):
-                    counts["repaired"] += 1
-                    done += 1
+    now = time.time()
+    try:
+        for king in kings:
+            version = king.king_version
+            # Source is permanently gone (HTTP 404/410) — never touch Hippius or HF again.
+            if version in state.permanent_skip:
+                counts["skipped"] += 1
+                continue
+            # Already confirmed complete on HF during this run — never re-hit the API.
+            if not settings.force and version in state.completed:
+                counts["skipped"] += 1
+                continue
+            # A recent attempt failed/was unreachable — wait out the backoff window.
+            retry_at = state.backoff_until.get(version)
+            if retry_at is not None and now < retry_at:
+                counts["deferred"] += 1
+                continue
+            repo_id = repo_id_for(king, settings)
+            try:
+                if not settings.force and already_uploaded(api, repo_id):
+                    if verify and _verify_and_repair(api, king, settings, repo_id):
+                        counts["repaired"] += 1
+                        done += 1
+                    else:
+                        counts["skipped"] += 1
+                        state.completed.add(version)
+                        _clear_backoff(state, version)
                 else:
-                    counts["skipped"] += 1
-            else:
-                _upload_one(api, king, settings, repo_id)
-                counts["uploaded"] += 1
-                done += 1
-        except Unreachable as exc:
-            logger.warning(
-                "{} unreachable on Hippius: {} — skipping to next king", king.king_name, exc
-            )
-            counts["failed"] += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "{} failed ({}): {} — skipping to next king",
-                king.king_name,
-                type(exc).__name__,
-                exc,
-            )
-            counts["failed"] += 1
-        if limit is not None and done >= limit:
-            break
+                    _upload_one(api, king, settings, repo_id)
+                    counts["uploaded"] += 1
+                    done += 1
+                    state.completed.add(version)
+                    _clear_backoff(state, version)
+            except Unreachable as exc:
+                if _is_source_gone(exc):
+                    state.permanent_skip.add(version)
+                    _clear_backoff(state, version)
+                    logger.warning(
+                        "{} source is gone on Hippius (HTTP 404/410) — giving up, will not retry: {}",
+                        king.king_name,
+                        exc,
+                    )
+                else:
+                    delay = _register_backoff(state, version, now)
+                    logger.warning(
+                        "{} unreachable on Hippius: {} — backing off {:.0f}s before retry",
+                        king.king_name,
+                        exc,
+                        delay,
+                    )
+                counts["failed"] += 1
+            except Exception as exc:  # noqa: BLE001
+                if _is_rate_limited(exc):
+                    raise RateLimited() from exc
+                delay = _register_backoff(state, version, now)
+                logger.warning(
+                    "{} failed ({}): {} — backing off {:.0f}s before retry",
+                    king.king_name,
+                    type(exc).__name__,
+                    exc,
+                    delay,
+                )
+                counts["failed"] += 1
+            if limit is not None and done >= limit:
+                break
+    except RateLimited:
+        counts["rate_limited"] = True
+        logger.warning(
+            "hit Hugging Face API rate limit — aborting this pass to let the 5-minute quota reset"
+        )
     return counts
 
 
@@ -877,6 +989,7 @@ def main() -> None:
         raise SystemExit("no Hugging Face token; set ALBEDO_KING_HF_TOKEN or HF_TOKEN")
 
     api = _hf_api(settings.hf_token)
+    state = UploaderState()
     lock_conn = _connect(settings)
     try:
         if not _claim_advisory_lock(lock_conn):
@@ -888,7 +1001,7 @@ def main() -> None:
             )
         else:
             logger.info("back-fill phase: mirroring crowned kings missing from Hugging Face")
-        counts = process_once(api, settings, limit=args.limit, verify=settings.verify)
+        counts = process_once(api, settings, state, limit=args.limit, verify=settings.verify)
         logger.info(
             "back-fill complete: {} uploaded, {} repaired, {} already complete on HF, {} failed "
             "(will retry) — entering monitor mode",
@@ -903,12 +1016,18 @@ def main() -> None:
         while True:
             time.sleep(settings.poll_interval_s)
             try:
-                counts = process_once(api, settings)
+                counts = process_once(api, settings, state)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("monitor pass error ({}): {}", type(exc).__name__, exc)
                 continue
             if counts["uploaded"]:
                 logger.info("monitor: uploaded {} new king(s)", counts["uploaded"])
+            if counts["rate_limited"]:
+                logger.warning(
+                    "monitor: rate limited — cooling down {:.0f}s before the next pass",
+                    _RATE_LIMIT_COOLDOWN_S,
+                )
+                time.sleep(_RATE_LIMIT_COOLDOWN_S)
     finally:
         lock_conn.close()
 
