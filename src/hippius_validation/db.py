@@ -406,6 +406,24 @@ async def hotkey_sanity_block_reason(pool: asyncpg.Pool, hotkey: str) -> str | N
         )
 
 
+async def hotkey_duplicate_block_reason(pool: asyncpg.Pool, hotkey: str) -> str | None:
+    """fault_message of this hotkey's most recent duplicate rejection, or None."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            SELECT fault_message
+            FROM model_submissions
+            WHERE hotkey = $1
+              AND state = 'TERMINAL_INVALID'
+              AND fault_class = 'MINER_FAULT'
+              AND fault_code = 'duplicate'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            hotkey,
+        )
+
+
 async def _attempt_submission(conn: asyncpg.Connection, attempt_id) -> asyncpg.Record:
     row = await conn.fetchrow(
         """

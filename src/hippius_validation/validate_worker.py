@@ -249,6 +249,21 @@ async def run() -> None:
                 log.info("skip — hotkey sanity-blocked ({}): {}", sanity_reason, attempt["hotkey"][:10])
                 continue
 
+            # A hotkey that previously submitted a duplicate model is blocked for good;
+            # any later commitment is rejected here without re-validating.
+            dup_reason = await db.hotkey_duplicate_block_reason(pool, attempt["hotkey"])
+            if dup_reason is not None:
+                await db.mark_failed(
+                    pool,
+                    attempt["id"],
+                    fault_class="MINER_FAULT",
+                    fault_code="hotkey_duplicate_blocked",
+                    fault_message=f"hotkey blocked from further submissions — prior duplicate: {dup_reason}",
+                    result_summary={"hotkey": attempt["hotkey"], "duplicate_reason": dup_reason},
+                )
+                log.info("skip — hotkey duplicate-blocked: {}", attempt["hotkey"][:10])
+                continue
+
             # One passed Hippius validation per hotkey. A later commit is a miner-side duplicate.
             if await db.hotkey_validated(pool, attempt["hotkey"]):
                 await db.mark_failed(
