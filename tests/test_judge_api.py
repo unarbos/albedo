@@ -34,9 +34,10 @@ class FakeClient:
 
 
 def test_evaluator_provider_is_always_fp8():
+    # order list -> fallbacks off; failover is the retry-rotation over the list.
     settings = JudgeSettings(evaluator_providers="prov-a, prov-b")
     provider = _evaluator_provider(settings)
-    assert provider == {"allow_fallbacks": True, "quantizations": ["fp8"], "order": ["prov-a", "prov-b"]}
+    assert provider == {"allow_fallbacks": False, "quantizations": ["fp8"], "order": ["prov-a", "prov-b"]}
     # no providers listed -> still fp8 + allow_fallbacks (OpenRouter fails over across fp8 providers)
     bare = _evaluator_provider(JudgeSettings(evaluator_providers=""))
     assert bare == {"allow_fallbacks": True, "quantizations": ["fp8"]}

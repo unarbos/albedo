@@ -89,11 +89,14 @@ class QuestionScoringUnavailable(RuntimeError):
 
 
 def _evaluator_provider(settings: JudgeSettings) -> dict[str, Any]:
-    """Evaluator provider block: always fp8, optional `order` + allow_fallbacks for cross-provider failover."""
+    """Evaluator provider block: always fp8. With an `order` list, fallbacks are disabled — failover
+    happens by rotating the order across retries (deterministic provenance, ~3x less draw-to-draw
+    strictness wobble measured offline). Without a list, generic fallbacks stay on."""
     block: dict[str, Any] = {"allow_fallbacks": True, "quantizations": ["fp8"]}
     order = [p.strip() for p in settings.evaluator_providers.split(",") if p.strip()]
     if order:
         block["order"] = order
+        block["allow_fallbacks"] = False
     return block
 
 
