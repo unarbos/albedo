@@ -14,7 +14,7 @@ Validators then read your commitment off-chain, download the model from Hippius,
 the **same validation checks you can run locally** (file manifest + architecture lock +
 near-duplicate dedup), and finally **evaluate** the model. A model that beats the current
 king earns weight/emissions. So your job is: produce a model that (a) passes validation and
-(b) scores higher than the incumbent by at least the **6% win margin**.
+(b) scores higher than the incumbent by at least the **3% win margin**.
 
 Your model is scored by dueling the reigning king on coding trajectories from two datasets —
 **SWE-ZERO** ([12M](https://huggingface.co/datasets/AlienKevin/SWE-ZERO-12M-trajectories)) and
