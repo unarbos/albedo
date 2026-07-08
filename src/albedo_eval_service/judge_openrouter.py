@@ -100,11 +100,12 @@ class OpenRouterJudgeClient:
             # Retry a 200-that-doesn't-parse (accept=False) up to parse_retries times; each retry is a
             # fresh call that may re-route to a different provider via allow_fallbacks.
             last: JudgeRawResponse | None = None
-            for _ in range(max(1, self.settings.parse_retries)):
+            for parse_attempt in range(max(1, self.settings.parse_retries)):
                 last = await self._score_with_retries(
                     model=model, messages=messages, response_schema=response_schema,
                     schema_name=schema_name, temperature=temperature, max_tokens=max_tokens,
                     provider=provider,
+                    base_shift=parse_attempt * (self.settings.retry_count + 1),
                 )
                 if last.error is None and (accept is None or accept(last.raw)):
                     return last
@@ -120,6 +121,7 @@ class OpenRouterJudgeClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         provider: dict[str, Any] | None = None,
+        base_shift: int = 0,
     ) -> JudgeRawResponse:
         last_error = ""
         for attempt in range(self.settings.retry_count + 1):
@@ -132,6 +134,7 @@ class OpenRouterJudgeClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     provider=provider,
+                    provider_shift=base_shift + attempt,
                 )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -158,8 +161,10 @@ class OpenRouterJudgeClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         provider: dict[str, Any] | None = None,
+        provider_shift: int = 0,
     ) -> JudgeRawResponse:
         provider_block = provider if provider is not None else JUDGE_PROVIDER_PINS.get(model, {})
+        provider_block = _rotate_order(provider_block, provider_shift)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -180,6 +185,14 @@ class OpenRouterJudgeClient:
         raw = _message_content(body.get("choices", []))
         provider = _provider_name(model)
         return JudgeRawResponse(model=model, provider=provider, raw=raw)
+
+
+def _rotate_order(provider: dict[str, Any], shift: int) -> dict[str, Any]:
+    order = provider.get("order")
+    if not shift or not isinstance(order, list) or len(order) < 2:
+        return provider
+    k = shift % len(order)
+    return {**provider, "order": order[k:] + order[:k]}
 
 
 def _provider_name(model: str) -> str | None:

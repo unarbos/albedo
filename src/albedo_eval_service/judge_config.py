@@ -26,7 +26,7 @@ class JudgeSettings(BaseSettings):
     max_concurrency_per_model: int = 128
     min_valid_fraction: float = 0.8
     evaluator_model: str = "z-ai/glm-5.2"
-    evaluator_providers: str = ""
+    evaluator_providers: str = "z-ai,novita,siliconflow,streamlake"
     num_questions: int = 50
     question_max_tokens: int = 16000
     answer_max_tokens: int = 8000
