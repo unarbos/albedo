@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+import asyncpg
 from loguru import logger as log
 
 from config_validation.fingerprint import compute_fingerprint
@@ -186,7 +187,19 @@ async def _heartbeat_loop(pool, attempt_id) -> None:
 
 async def _finalize(pool, attempt, outcome: Outcome) -> None:
     if outcome.state == "done":
-        await db.mark_done(pool, attempt["id"], outcome.result_summary)
+        try:
+            await db.mark_done(pool, attempt["id"], outcome.result_summary)
+        except asyncpg.UniqueViolationError as exc:
+            # Another submission already holds this model_hash: an exact-digest duplicate
+            # that slipped past the claim-time gate (e.g. a race). Terminal miner fault.
+            await db.mark_failed(
+                pool, attempt["id"],
+                fault_class="MINER_FAULT",
+                fault_code="duplicate",
+                fault_message=f"model_hash already belongs to another submission: {exc}",
+                result_summary=outcome.result_summary)
+            log.warning("duplicate model_hash on mark_done — {}", attempt["model_uri"])
+            return
         log.info("done — {}", attempt["model_uri"])
     elif outcome.retryable:
         new_state = await db.mark_retry(
@@ -277,6 +290,30 @@ async def run() -> None:
                 log.info("skip — hotkey already validated: {}", attempt["hotkey"][:10])
                 continue
 
+            # A commit whose digest was already validated for ANY submission is a byte-identical
+            # copy — reject before downloading. The fingerprint dedup can miss exact twins (the
+            # knn norm-vector prefilter saturates on a copycat-heavy corpus), and mark_done would
+            # crash on model_submissions_model_hash_uidx.
+            holder = None
+            if attempt["commit_hash"]:
+                holder = await db.model_hash_holder(
+                    pool, attempt["commit_hash"], attempt["submission_id"])
+            if holder is not None:
+                reason = (f"exact duplicate: digest {attempt['commit_hash']} already submitted "
+                          f"by hotkey {holder['hotkey']} ({holder['model_uri']})")
+                await db.mark_failed(
+                    pool,
+                    attempt["id"],
+                    fault_class="MINER_FAULT",
+                    fault_code="duplicate",
+                    fault_message=reason,
+                    result_summary={"duplicate_of": holder["model_uri"],
+                                    "duplicate_of_hotkey": holder["hotkey"]},
+                )
+                log.info("skip — exact digest duplicate of {}: {}",
+                         holder["hotkey"][:10], attempt["hotkey"][:10])
+                continue
+
             hb = asyncio.create_task(_heartbeat_loop(pool, attempt["id"]))
             try:
                 outcome = await asyncio.to_thread(
@@ -285,7 +322,12 @@ async def run() -> None:
                 outcome = _infra("unexpected", f"{type(exc).__name__}: {exc}")
             finally:
                 hb.cancel()
-            await _finalize(pool, attempt, outcome)
+            try:
+                await _finalize(pool, attempt, outcome)
+            except Exception as exc:  # noqa: BLE001 — keep the worker alive; the attempt
+                # stays RUNNING and returns via lease expiry instead of crash-looping pm2.
+                log.error("finalize failed for {} — left to lease expiry: {}",
+                          attempt["model_uri"], exc)
     finally:
         await pool.close()
 

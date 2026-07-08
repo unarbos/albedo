@@ -406,6 +406,23 @@ async def hotkey_sanity_block_reason(pool: asyncpg.Pool, hotkey: str) -> str | N
         )
 
 
+async def model_hash_holder(
+    pool: asyncpg.Pool, model_hash: str, exclude_submission_id
+) -> asyncpg.Record | None:
+    """The submission (if any) that already holds this model_hash — an exact-digest duplicate."""
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT id, hotkey, model_uri, state
+            FROM model_submissions
+            WHERE model_hash = $1 AND id <> $2
+            LIMIT 1
+            """,
+            model_hash,
+            exclude_submission_id,
+        )
+
+
 async def hotkey_duplicate_block_reason(pool: asyncpg.Pool, hotkey: str) -> str | None:
     """fault_message of this hotkey's most recent duplicate rejection, or None."""
     async with pool.acquire() as conn:
