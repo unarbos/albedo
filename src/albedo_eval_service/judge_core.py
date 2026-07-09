@@ -13,7 +13,7 @@ from statistics import mean
 from typing import Any
 
 # Crown iff (challenger_mean - king_mean) >= this, on the 0-1 absolute scale (margin-only, no LCB).
-CHALLENGER_WIN_MARGIN = 0.03
+CHALLENGER_WIN_MARGIN = 0.015
 
 JUDGE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.1",
@@ -29,9 +29,11 @@ JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {
 # --------------------------------------------------------------------------- prompts (verbatim)
 QUESTION_SYSTEM = """You write an evaluation checklist to judge a coding agent's NEXT assistant \
 turn — the single next action or message it produces given the conversation so far, NOT a finished \
-solution. Given the TASK (the conversation as the agent saw it up to this point), decide what a \
-STRONG NEXT STEP would look like from here, then write EXACTLY {n} yes/no questions that test \
-whether the response is a good next move — a single flat list, NO categories.
+solution. Given the TASK (the conversation as the agent saw it up to this point), consider the \
+SEVERAL different next steps that would each be strong from here — different capable agents \
+legitimately choose different good moves (inspecting any relevant file, searching, running tests, \
+editing) — then write EXACTLY {n} yes/no questions that test whether the response is a good next \
+move — a single flat list, NO categories.
 
 Judge the MOVE, not task completion. The response is ONE turn in an ongoing trajectory; it is NOT \
 expected to solve or finish the task. Do NOT ask whether it fixes the bug, creates the final file, \
@@ -47,11 +49,39 @@ or repeating a step already taken).
 block, only allowed tools).
 - efficiency — it is economical (no needless exploration, no wasted verbosity).
 
+CRITICAL — do NOT lock the checklist onto ONE imagined action. A response that takes a DIFFERENT \
+but equally reasonable next step must still be able to pass most questions. To achieve that:
+- Prefer checks that ANY strong next step passes and weak ones fail: references only \
+files/symbols/outputs that actually appear in the conversation; does not repeat a command already \
+run (name those commands explicitly); syntactically valid; obeys the protocol; concretely advances \
+the task.
+- When a check must name a specific target, allow stated equivalents: "...inspects an existing \
+rule implementation such as `X`, `Y`, or another file under `lib/rules/`...", never a single \
+mandatory file unless the conversation makes it the only defensible target (e.g. the file whose \
+edit just failed).
+- Reserve at most a quarter of the questions for one specific expected action; if you use them, \
+make each pass for any reasonable variant of that action.
+
+CRITICAL — the checklist must IDENTIFY this task. A polished response written for a DIFFERENT \
+repo or bug must FAIL most questions. At least half of the questions must embed concrete facts of \
+THIS conversation that hold for EVERY reasonable next step here — the repository and its real \
+paths, the specific bug/feature being worked, symbols or error text already shown, what has \
+already been done — phrased so a response is checked to engage with those facts, e.g.:
+- "Does the response operate on this project's code (paths like `lib/rules/` or \
+`test/unit/rules/`) rather than unrelated files?"
+- "Is the response consistent with `sed -i '42s/foo/bar/' src/x.py` having ALREADY been run (does \
+not redo or contradict it)?"
+- "Does the response stay on the task of <concrete goal>, e.g. by inspecting, editing, or testing \
+code related to <named symbol/rule/error>?"
+Generic virtues (nice formatting, some bash block, confident tone) must NEVER be enough to pass \
+these.
+
 CRITICAL — the judge will NOT see the task, only your question and the response. Every question \
 must be SELF-CONTAINED and answerable from the response alone:
-- Bake the concrete specifics the check needs INTO the question — name the file, symbol, command, \
-flag, or observed fact explicitly (e.g. "...inspect `src/foo.py`...", never "...the right file..."). \
-If a check would need the task to answer, rewrite it to carry that fact.
+- Bake the concrete specifics the check needs INTO the question — name the files, symbols, \
+commands, flags, or observed facts explicitly (e.g. "...references files that exist in the repo \
+such as `src/foo.py` or `src/bar.py`..."). If a check would need the task to answer, rewrite it \
+to carry that fact.
 - Anchor on OBSERVABLE features of the response — the exact text, code, commands, or file paths \
 it contains, and what it states. No reference solution or outside knowledge required.
 
@@ -59,7 +89,8 @@ Every question must also be:
 - Phrased so YES = the response is GOOD (never the reverse).
 - Discriminative: a plausible but wrong, lazy, ungrounded, or off-track next step should be able to \
 FAIL it — no gimmes that any syntactically valid answer passes.
-- One single check, at most 30 words, no 'and'/'or' compounds.
+- One single check, at most 30 words, no 'and'/'or' compounds (listing allowed equivalent targets \
+is fine).
 
 For each question also give "example_bad": a short, CONCRETE example of a next-turn response in \
 THIS context that would earn NO on that exact question — not a generic "empty response".

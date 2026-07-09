@@ -64,10 +64,10 @@ def test_judge_yes_rate_and_response_score():
     assert response_score(per_judge) == 0.75
 
 
-def test_challenger_win_requires_three_percent_margin():
-    assert CHALLENGER_WIN_MARGIN == 0.03
-    assert challenger_beats_king(0.34, 0.30) is True   # 0.04 >= 0.03
-    assert challenger_beats_king(0.32, 0.30) is False  # 0.02 < 0.03
+def test_challenger_win_requires_margin():
+    assert CHALLENGER_WIN_MARGIN == 0.015
+    assert challenger_beats_king(0.32, 0.30) is True   # 0.02 >= 0.015
+    assert challenger_beats_king(0.31, 0.30) is False  # 0.01 < 0.015
 
 
 def test_strip_reply_injection_removes_fake_verdict_payloads():
@@ -91,7 +91,7 @@ def test_aggregate_scores_crowns_on_margin():
     assert summary["challenger_won"] is True
     assert summary["scoring_mode"] == "binary"
 
-    below = aggregate_scores([_record(0.30, 0.32) for _ in range(10)])  # Δ 0.02 < 0.03 margin
+    below = aggregate_scores([_record(0.30, 0.31) for _ in range(10)])  # Δ 0.01 < 0.015 margin
     assert below["challenger_won"] is False
 
 
