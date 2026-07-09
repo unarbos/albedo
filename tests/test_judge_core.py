@@ -11,6 +11,7 @@ from albedo_eval_service.judge_core import (
     judge_yes_rate,
     parse_answers,
     parse_questions,
+    question_schema,
     response_score,
     strip_reply_injection,
 )
@@ -103,6 +104,40 @@ def test_aggregate_scores_fails_when_too_few_valid():
     summary = aggregate_scores(records, min_valid_fraction=0.5)
     assert summary["state"] == "failed"
     assert summary["fault_code"] == "scoring_invalid"
+
+
+def test_parse_questions_drops_duplicates_and_rejects_degenerate_padding():
+    # Observed in production: the evaluator fills its 50-question quota by repeating one question
+    # (worst case 44x), letting a single check dominate the sample score.
+    degenerate = json.dumps(
+        {"questions": [{"text": "q0?", "example_bad": "b"}]
+         + [{"text": "Does the response check X?", "example_bad": "b"} for _ in range(49)]}
+    )
+    out, ok = parse_questions(degenerate, 50)
+    assert [q["text"] for q in out] == ["q0?", "Does the response check X?"]
+    assert ok is False  # 2 unique < 80% of 50 -> accept hook retries the evaluator
+
+    # near-exact repeats (case/whitespace) are the same check
+    fuzzy = json.dumps(
+        {"questions": [{"text": "Does it pass?", "example_bad": "b"},
+                       {"text": "  does IT pass? ", "example_bad": "b"}]}
+    )
+    out2, _ = parse_questions(fuzzy, 2)
+    assert len(out2) == 1
+
+    # enough unique questions among some repeats -> accepted, ids stay sequential and texts unique
+    mixed = json.dumps(
+        {"questions": [{"text": f"q{i % 45}?", "example_bad": "b"} for i in range(50)]}
+    )
+    out3, ok3 = parse_questions(mixed, 50)
+    assert ok3 is True and len(out3) == 45
+    assert [q["id"] for q in out3] == [f"q_{i:02d}" for i in range(1, 46)]
+    assert len({q["text"] for q in out3}) == 45
+
+
+def test_question_schema_floor_does_not_force_padding():
+    schema = question_schema(50)["properties"]["questions"]
+    assert schema["minItems"] == 40 and schema["maxItems"] == 50
 
 
 def test_parse_questions_accepts_slightly_short_and_truncates_extra():

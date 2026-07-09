@@ -33,7 +33,9 @@ solution. Given the TASK (the conversation as the agent saw it up to this point)
 SEVERAL different next steps that would each be strong from here — different capable agents \
 legitimately choose different good moves (inspecting any relevant file, searching, running tests, \
 editing) — then write EXACTLY {n} yes/no questions that test whether the response is a good next \
-move — a single flat list, NO categories.
+move — a single flat list, NO categories. Every question must be a DISTINCT check: NEVER repeat or \
+trivially rephrase one you already wrote; if you run out of strong distinct checks, stop early and \
+return fewer questions instead of repeating.
 
 Judge the MOVE, not task completion. The response is ONE turn in an ongoing trajectory; it is NOT \
 expected to solve or finish the task. Do NOT ask whether it fixes the bug, creates the final file, \
@@ -176,7 +178,9 @@ def question_schema(n: int) -> dict[str, Any]:
         "properties": {
             "questions": {
                 "type": "array",
-                "minItems": n,
+                # Floor at the parser's accept threshold, not n: forcing exactly n makes the model
+                # pad the quota by repeating a question once it runs out of distinct checks.
+                "minItems": max(1, round(n * 0.8)),
                 "maxItems": n,
                 "items": {
                     "type": "object",
@@ -253,17 +257,25 @@ def extract_json(raw: str, prefer_keys: tuple[str, ...] = ()) -> Any | None:
 
 
 def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
-    """Return ([{id,category,text,example_bad}], ok). ok iff at least n well-formed questions parsed."""
+    """Return ([{id,category,text,example_bad}], ok). ok iff >= 80% of n DISTINCT questions parsed.
+
+    Duplicates are dropped (first occurrence wins): the evaluator sometimes fills its quota by
+    repeating one question dozens of times, which would let a single check dominate the yes-rate.
+    A degenerate payload therefore fails ok and is retried via the client's accept hook."""
     obj = extract_json(raw, prefer_keys=("questions",))
     items = obj.get("questions") if isinstance(obj, dict) else obj
     out: list[dict[str, str]] = []
+    seen: set[str] = set()
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict) or not str(item.get("text", "")).strip():
                 continue
-            out.append(
-                {"text": str(item["text"]).strip(), "example_bad": str(item.get("example_bad", "")).strip()}
-            )
+            text = str(item["text"]).strip()
+            key = " ".join(text.casefold().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"text": text, "example_bad": str(item.get("example_bad", "")).strip()})
     out = out[:n]
     for position, question in enumerate(out, start=1):
         question["id"] = f"q_{position:02d}"
