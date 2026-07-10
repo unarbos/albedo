@@ -1,5 +1,5 @@
 import { el, mount } from "../dom.js";
-import { fmt, fmtRelative } from "../format.js";
+import { pct, fmtDateTime, fmtRelative, toRoman } from "../format.js";
 import { modelRepo } from "../model.js";
 
 const BENCHMARK_LABELS = {
@@ -14,8 +14,10 @@ const BENCHMARK_ORDER = ["tau2_airline", "tau2_retail", "tau2_telecom"];
 const PAGE_SIZES = [5, 10, 25, 50];
 const ACTIVE_STATES = new Set(["QUEUED", "CLAIMED", "LOADING_MODEL", "RUNNING", "SCORING"]);
 
-let pageSize = 10;
-let page = 1;
+let historyOpen = localStorage.getItem("benchPanelHistoryOpen") !== "0";
+let historyPage = Math.max(1, Number(localStorage.getItem("benchPanelHistoryPage")) || 1);
+let historyPageSize = Number(localStorage.getItem("benchPanelHistoryPageSize")) || 10;
+if (!PAGE_SIZES.includes(historyPageSize)) historyPageSize = 10;
 
 function benchmarkLabel(suite) {
   return BENCHMARK_LABELS[suite] || suite || "—";
@@ -25,8 +27,25 @@ function modelName(model) {
   return model?.model_repo || modelRepo(model?.model_uri) || model?.model_uri || "—";
 }
 
+const ROMAN_VALUES = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+
+function romanToInt(value) {
+  let total = 0;
+  let previous = 0;
+  for (const char of value.toUpperCase().split("").reverse()) {
+    const current = ROMAN_VALUES[char] || 0;
+    total += current < previous ? -current : current;
+    previous = Math.max(previous, current);
+  }
+  return total;
+}
+
+// benchmarks.json king labels lag the chain numbering by one (its "King LXXIV" is chain king LXXV).
 function modelLabel(model) {
-  return model?.label || "—";
+  const label = model?.label || "—";
+  const match = /^King\s+([IVXLCDM]+)$/i.exec(label);
+  if (!match) return label;
+  return `King ${toRoman(romanToInt(match[1]) + 1)}`;
 }
 
 function hfRepoUrl(model) {
@@ -103,66 +122,9 @@ function sortModels(models) {
   });
 }
 
-function latestFeaturedModel(models) {
-  return sortModels(models).find(model => completedRuns(model).length) || sortModels(models)[0] || null;
-}
-
-function highestKingModel(models) {
-  return sortModels(models).find(model => !isGenesis(model)) || null;
-}
-
-function latestRunsByBenchmark(model) {
-  const map = new Map();
-  for (const run of completedRuns(model)) {
-    const current = map.get(run.suite);
-    const key = `${run.finished_at || run.started_at || ""}:${run.run_attempt || 0}`;
-    const curKey = current ? `${current.finished_at || current.started_at || ""}:${current.run_attempt || 0}` : "";
-    if (!current || key >= curKey) map.set(run.suite, run);
-  }
-  return [...map.values()].sort((a, b) => String(a.suite).localeCompare(String(b.suite)));
-}
-
-function runStateClass(run) {
-  const state = String(run?.state || "").toLowerCase();
-  if (state === "succeeded") return "ok";
-  if (state.includes("fail") || state.includes("missing")) return "bad";
-  return "live";
-}
-
 function isGenesis(model) {
   const identity = `${model?.label || ""} ${model?.model_repo || ""}`.toLowerCase();
   return identity.includes("genesis") || identity.includes("qwen/qwen3.6-35b-a3b");
-}
-
-function genesisScores(models) {
-  const genesis = (models || []).find(isGenesis);
-  const out = new Map();
-  if (!genesis) return out;
-  for (const run of latestRunsByBenchmark(genesis)) {
-    if (run.score != null) out.set(run.suite, Number(run.score));
-  }
-  return out;
-}
-
-function scoreDelta(model, run, baseline) {
-  if (!run || run.score == null || isGenesis(model)) return null;
-  const base = baseline?.get(run.suite);
-  if (base == null) return null;
-  return Number(run.score) - Number(base);
-}
-
-function deltaCell(delta) {
-  if (delta == null || !Number.isFinite(delta)) return null;
-  const cls = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
-  const sign = delta > 0 ? "+" : "";
-  return el("span", { class: `bench-delta ${cls}`, title: "delta vs genesis" }, `${sign}${fmt(delta, 3)}`);
-}
-
-function scoreCell(run, delta = null) {
-  if (!run) return el("span", { class: "muted-dash" }, "—");
-  return el("span", { class: "bench-score-wrap" },
-    el("span", { class: `bench-score ${runStateClass(run)}` }, fmt(run.score, 3)),
-    deltaCell(delta));
 }
 
 function detailHref(model, runId = null) {
@@ -172,60 +134,157 @@ function detailHref(model, runId = null) {
   return `./benchmark.html?${qs.toString()}`;
 }
 
-function renderFeatured(model, baseline) {
-  if (!model) return el("div", { class: "empty" }, "no benchmark models yet.");
-  const run = latestRun(model);
-  const benchmarkRuns = new Map(latestRunsByBenchmark(model).map(item => [item.suite, item]));
-  const scoreItems = BENCHMARK_ORDER.map(suite => {
-    const item = benchmarkRuns.get(suite);
-    return el("div", { class: item ? "bench-summary-score" : "bench-summary-score pending" },
-      el("span", { class: "k" }, benchmarkLabel(suite)),
-      item ? scoreCell(item, scoreDelta(model, item, baseline)) : el("span", { class: "bench-score pending" }, "pending"),
-      el("span", { class: "meta" }, item?.state || "queued"));
-  });
-  return el("div", { class: "bench-feature" },
-    el("div", { class: "bench-feature-main" },
-      el("div", { class: "bench-feature-eyebrow" }, "benchmark panel"),
-      el("div", { class: "bench-feature-title" }, `${modelLabel(model)} · ${modelName(model)}`),
-      el("div", { class: "bench-feature-meta" },
-        el("span", {}, model.model_repo || "—"),
-        el("span", {}, run ? benchmarkLabel(run.suite) : "pending"),
-        el("span", {}, latestRunTime(model) ? fmtRelative(latestRunTime(model)) : "pending")),
-      el("a", { class: "bench-feature-details", href: detailHref(model, run?.id || null) }, "details")),
-    el("div", { class: "bench-summary-grid" }, scoreItems));
+function suiteScores(model) {
+  return model?.latest_scores || {};
 }
 
-function tableScoreCell(model, run, baseline, boxed = false, progress = null) {
-  const cls = boxed ? "bench-table-score" : "bench-table-score plain";
-  if (!run) {
-    if (progress) {
-      return el("span", { class: `${cls} pending live` },
-        el("span", { class: "bench-card-name" }, activeState(progress).toLowerCase().replaceAll("_", " ") || "active"),
-        el("span", { class: "bench-score pending" }, progressLabel(progress)),
-        el("span", { class: "bench-card-meta" }, progressMeta(progress)));
-    }
-    return el("span", { class: `${cls} pending` },
-      el("span", { class: "bench-card-name" }, "pending"),
-      el("span", { class: "bench-score pending" }, "—"));
+function latestScoreDate(model) {
+  const dates = Object.values(suiteScores(model)).map(entry => entry?.finished_at).filter(Boolean).sort();
+  return dates[dates.length - 1] || null;
+}
+
+function hasPanelScores(model) {
+  const scores = suiteScores(model);
+  return BENCHMARK_ORDER.some(suite => scores[suite]?.score != null);
+}
+
+function panelScore(value) {
+  return `${pct(value, 1)}%`;
+}
+
+function svgEl(tag, attrs = {}, ...children) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    node.setAttribute(k, v);
   }
-  return el("a", { class: `${cls} ${runStateClass(run)}`, href: detailHref(model, run.id) },
-    el("span", { class: "bench-card-name" }, run.state || "done"),
-    scoreCell(run, scoreDelta(model, run, baseline)),
-    el("span", { class: "bench-card-meta" }, run.finished_at ? fmtRelative(run.finished_at) : "running"));
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    node.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return node;
 }
 
-function renderTableRows(models, baseline, highlightedModel, activeProgress) {
-  return models.map(model => {
-    const runs = new Map(latestRunsByBenchmark(model).map(run => [run.suite, run]));
-    const boxed = highlightedModel?.id === model.id;
+function renderTile(model, suite, progress) {
+  const entry = suiteScores(model)[suite];
+  const scored = entry?.score != null;
+  if (!scored && progress) {
+    return el("div", { class: "bench-tile", "data-status": "running" },
+      el("div", { class: "bench-tile-name" }, benchmarkLabel(suite)),
+      el("div", { class: "bench-tile-score" }, progressLabel(progress)),
+      el("div", { class: "bench-tile-status" },
+        el("span", { class: "live" }, activeState(progress).toLowerCase().replaceAll("_", " ") || "active"),
+        el("span", {}, progressMeta(progress))));
+  }
+  const href = entry?.run_id ? detailHref(model, entry.run_id) : null;
+  return el(href ? "a" : "div", { class: "bench-tile", "data-status": scored ? "completed" : "missing", href },
+    el("div", { class: "bench-tile-name" }, benchmarkLabel(suite)),
+    el("div", { class: "bench-tile-score" }, scored ? panelScore(entry.score) : "missing"),
+    el("div", { class: "bench-tile-status" },
+      scored
+        ? [el("span", { class: "ok" }, "succeeded"),
+           el("span", {}, `${entry.passed_count ?? "—"}/${entry.task_count ?? "—"}`)]
+        : [el("span", {}, "—"), el("span", {}, "no run")]));
+}
+
+function renderSparks(sorted) {
+  const chrono = [...sorted].reverse();
+  return el("div", { class: "bench-spark-grid" }, BENCHMARK_ORDER.map(suite => {
+    const points = chrono
+      .map(model => ({ label: modelLabel(model), score: suiteScores(model)[suite]?.score }))
+      .filter(point => point.score != null);
+    const latest = points[points.length - 1];
+    const svg = svgEl("svg", { viewBox: "0 0 360 34", preserveAspectRatio: "none", role: "img" });
+    svg.append(svgEl("line", { x1: 6, y1: 26, x2: 354, y2: 26, stroke: "currentColor", "stroke-width": 1, opacity: 0.15 }));
+    if (!points.length) {
+      svg.append(svgEl("text", { x: 180, y: 20, "text-anchor": "middle", "font-size": 8, fill: "currentColor", opacity: 0.45 }, "no score"));
+    } else {
+      let min = Math.min(...points.map(point => point.score));
+      let max = Math.max(...points.map(point => point.score));
+      if (min === max) { min -= 0.005; max += 0.005; }
+      const span = max - min;
+      const coords = points.map((point, i) => ({
+        x: points.length === 1 ? 180 : 6 + (i / (points.length - 1)) * 348,
+        y: 26 - ((point.score - min) / span) * 20,
+        point,
+      }));
+      if (coords.length > 1) {
+        svg.append(svgEl("polyline", {
+          points: coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" "),
+          fill: "none", stroke: "currentColor", "stroke-width": 2,
+          "stroke-linejoin": "round", "stroke-linecap": "round",
+        }));
+      }
+      coords.forEach((c, i) => {
+        const last = i === coords.length - 1;
+        svg.append(svgEl("circle", {
+          cx: c.x.toFixed(1), cy: c.y.toFixed(1), r: 2.4,
+          fill: "currentColor", opacity: last ? 1 : 0.45,
+          class: last ? "spark-dot-last" : null,
+        }, svgEl("title", {}, `${c.point.label} · ${panelScore(c.point.score)}`)));
+      });
+    }
+    return el("div", { class: "bench-spark" },
+      el("div", { class: "bench-spark-head" },
+        el("strong", {}, benchmarkLabel(suite)),
+        el("span", {}, latest ? panelScore(latest.score) : "waiting")),
+      svg);
+  }));
+}
+
+function renderHistoryPanel(sorted, selectedModel, rerender) {
+  const pages = Math.max(1, Math.ceil(sorted.length / historyPageSize));
+  historyPage = Math.min(Math.max(1, historyPage), pages);
+  const shown = sorted.slice((historyPage - 1) * historyPageSize, historyPage * historyPageSize);
+
+  const setPage = page => {
+    historyPage = page;
+    localStorage.setItem("benchPanelHistoryPage", String(historyPage));
+    rerender();
+  };
+  const pager = el("div", { class: "bench-history-pager" },
+    el("div", { class: "bench-history-pager-left" },
+      el("button", { type: "button", disabled: historyPage <= 1, onClick: () => setPage(historyPage - 1) }, "prev"),
+      el("span", {}, `page ${historyPage} / ${pages} · ${sorted.length} kings`),
+      el("button", { type: "button", disabled: historyPage >= pages, onClick: () => setPage(historyPage + 1) }, "next")),
+    el("label", { class: "bench-history-pager-right" }, "rows",
+      el("select", { onChange: e => {
+        historyPageSize = Number(e.target.value);
+        localStorage.setItem("benchPanelHistoryPageSize", String(historyPageSize));
+        setPage(1);
+      } }, PAGE_SIZES.map(size => el("option", { value: size, selected: size === historyPageSize }, String(size))))));
+
+  const rows = shown.map(model => {
+    const scores = suiteScores(model);
     const repoUrl = hfRepoUrl(model);
-    return el("tr", { class: boxed ? "bench-feature-row" : "" },
-      el("td", { class: "bench-label-col" }, repoUrl
-        ? el("a", { class: "bench-label-link", href: repoUrl, target: "_blank", rel: "noopener" }, modelLabel(model))
-        : modelLabel(model)),
-      BENCHMARK_ORDER.map(suite => el("td", { class: "bench-score-col" },
-        tableScoreCell(model, runs.get(suite), baseline, boxed, activeProgress.get(progressKey(model.model_repo || model.id, suite))))));
+    return el("tr", {
+      class: model.id === selectedModel?.id ? "clickable crowned-now" : "clickable",
+      onClick: e => { if (!e.target.closest("a")) location.href = detailHref(model); },
+    },
+      el("td", { class: "bench-king-col" },
+        el("a", { href: detailHref(model) }, modelLabel(model)),
+        " ", el("span", { class: "muted" }, fmtDateTime(latestScoreDate(model)))),
+      el("td", { class: "model" }, repoUrl
+        ? el("a", { href: repoUrl, target: "_blank", rel: "noopener" }, modelName(model))
+        : el("span", { class: "model-cell" }, modelName(model))),
+      BENCHMARK_ORDER.map(suite => {
+        const entry = scores[suite];
+        if (entry?.score == null) return el("td", { class: "r" }, el("span", { class: "muted-dash" }, "—"));
+        return el("td", { class: "r" }, panelScore(entry.score));
+      }));
   });
+
+  return el("div", { class: "bench-history" },
+    renderSparks(sorted),
+    pager,
+    sorted.length
+      ? el("div", { class: "data-table-wrap" },
+          el("table", { class: "data-table" },
+            el("thead", {}, el("tr", {},
+              el("th", {}, "king"), el("th", {}, "model"),
+              BENCHMARK_ORDER.map(suite => el("th", { class: "r" }, benchmarkLabel(suite))))),
+            el("tbody", {}, rows)))
+      : el("div", { class: "bench-history-empty" }, "no benchmark history yet"));
 }
 
 export function renderBenchmarks(container, metaNode, data) {
@@ -236,31 +295,31 @@ export function renderBenchmarks(container, metaNode, data) {
     if (metaNode) metaNode.textContent = "no data";
     return;
   }
-  const baseline = genesisScores(models);
-  const sortedModels = sortModels(models);
-  const highlightedModel = highestKingModel(sortedModels);
-  const pages = Math.max(1, Math.ceil(sortedModels.length / pageSize));
-  page = Math.min(page, pages);
-  const start = (page - 1) * pageSize;
-  const shown = sortedModels.slice(start, start + pageSize);
-
+  const sorted = sortModels(models).filter(hasPanelScores);
+  if (!sorted.length) {
+    mount(container, el("div", { class: "empty" }, "no benchmark scores yet."));
+    if (metaNode) metaNode.textContent = "no data";
+    return;
+  }
+  const selected = sorted.find(model => !isGenesis(model)) || sorted[0];
   const rerender = () => renderBenchmarks(container, metaNode, data);
-  const pageControls = el("div", { class: "bench-controls" },
-    el("label", {}, "rows", el("select", { onChange: e => { pageSize = Number(e.target.value); page = 1; rerender(); } },
-      PAGE_SIZES.map(size => el("option", { value: size, selected: size === pageSize }, String(size))))),
-    el("button", { type: "button", disabled: page <= 1, onClick: () => { page -= 1; rerender(); } }, "prev"),
-    el("span", { class: "meta" }, `${page}/${pages}`),
-    el("button", { type: "button", disabled: page >= pages, onClick: () => { page += 1; rerender(); } }, "next"));
+  const scores = suiteScores(selected);
+  const done = BENCHMARK_ORDER.filter(suite => scores[suite]?.score != null).length;
 
   mount(container,
-    el("div", { class: "bench-table-head" },
-      el("div", { class: "label" }, "benchmark panel history"),
-      pageControls),
-    el("div", { class: "data-table-wrap bench-table-wrap" },
-      el("table", { class: "data-table" },
-        el("thead", {}, el("tr", {},
-          el("th", { class: "bench-label-col" }, "label"),
-          BENCHMARK_ORDER.map(suite => el("th", { class: "bench-score-col" }, benchmarkLabel(suite))))),
-        el("tbody", {}, shown.length ? renderTableRows(shown, baseline, highlightedModel, activeProgress) : el("tr", {}, el("td", { colspan: String(BENCHMARK_ORDER.length + 1) }, "no models yet."))))));
+    el("section", { class: "bench-panel" },
+      el("div", { class: "bench-panel-head" },
+        el("span", {}, "benchmark panel"),
+        el("div", { class: "bench-panel-tools" },
+          el("button", { class: "bench-history-toggle", type: "button", onClick: () => {
+            historyOpen = !historyOpen;
+            localStorage.setItem("benchPanelHistoryOpen", historyOpen ? "1" : "0");
+            rerender();
+          } }, historyOpen ? "hide history" : "history"),
+          el("span", { class: "bench-panel-meta" },
+            `${done}/${BENCHMARK_ORDER.length} scores · ${modelLabel(selected)}`))),
+      el("div", { class: "bench-tile-grid" }, BENCHMARK_ORDER.map(suite =>
+        renderTile(selected, suite, activeProgress.get(progressKey(selected.model_repo || selected.id, suite))))),
+      historyOpen ? renderHistoryPanel(sorted, selected, rerender) : null));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }
