@@ -146,6 +146,10 @@ def _payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+# hotkeys already warned about having no uid — warn once per process, not every scan
+_warned_no_uid: set[str] = set()
+
+
 def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0,
                      uids: dict[str, int] | None = None) -> list[Commit]:
     """Read all revealed commitments on ``netuid`` and return v7 Commit records.
@@ -170,7 +174,9 @@ def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0,
             continue
         uid = uids.get(hotkey)
         if uid is None:
-            log.warning("no uid for hotkey={}; skipping", hotkey)
+            if hotkey not in _warned_no_uid:
+                _warned_no_uid.add(hotkey)
+                log.warning("no uid for hotkey={}; skipping", hotkey)
             n_skipped += 1
             continue
         commits.append(Commit(
