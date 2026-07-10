@@ -1,6 +1,6 @@
 import { el, mount, link } from "../dom.js";
 import { pct, fmtRelative, fmtDateTime } from "../format.js";
-import { judgeMeta, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
+import { judgeMeta, judgeScore, judgeShortName, sameJudgeFamily, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
 import { verdictInfo, faultCategory, faultCodeLabel } from "../data.js";
 
 const stop = e => e.stopPropagation();
@@ -8,12 +8,17 @@ const stop = e => e.stopPropagation();
 // binary scoring mode: by_judge is the challenger's independent yes-rate — king is not 1 - chal;
 // the king's per-judge yes-rate arrives separately as by_judge_king (monitor.py backfills it
 // from the SCORING_RESULTS artifact), missing on runs not yet backfilled.
-function judgeCell(chal, king, binary) {
-  if (chal == null) return el("span", { class: "muted-dash" }, "—");
-  if (binary && king == null) return el("span", { class: "judge-scores" }, pct(chal));
-  return el("span", { class: "judge-scores" },
-    pct(chal), el("span", { class: "sep" }, " / "),
-    el("span", { class: "king-score" }, pct(binary ? king : 1 - chal)));
+// ``column`` is the judge model heading the column; the score may live under an alias
+// (e.g. a glm-5.1-judged run in the glm-5.2 column) — hover names the version that judged.
+function judgeCell(bj, bjk, column, binary) {
+  const chal = judgeScore(bj, column);
+  if (chal.score == null) return el("span", { class: "muted-dash" }, "—");
+  const king = judgeScore(bjk, column);
+  const title = judgeShortName(chal.model);
+  if (binary && king.score == null) return el("span", { class: "judge-scores", title }, pct(chal.score));
+  return el("span", { class: "judge-scores", title },
+    pct(chal.score), el("span", { class: "sep" }, " / "),
+    el("span", { class: "king-score" }, pct(binary ? king.score : 1 - chal.score)));
 }
 
 const evalHref = r => `detail.html?eval_run_id=${encodeURIComponent(r.eval_run_id || "")}`;
@@ -26,14 +31,18 @@ export function renderHistory(container, rows, judgeModels, netuid, currentKingE
     mount(container, el("div", { class: "empty" }, "no completed duels match."));
     return;
   }
-  const judges = judgeModels?.length ? judgeModels : ["z-ai/glm-5.2", "qwen/qwen3.5-397b-a17b", "deepseek/deepseek-v3.2"];
+  // collapse sibling versions (glm-5.1/5.2) into one column
+  const judges = [];
+  for (const m of (judgeModels?.length ? judgeModels : ["z-ai/glm-5.2", "qwen/qwen3.5-397b-a17b", "deepseek/deepseek-v3.2"])) {
+    if (!judges.some(j => sameJudgeFamily(j, m))) judges.push(m);
+  }
 
   const head = el("tr", {},
     el("th", {}, "when"),
     el("th", {}, "uid"),
     el("th", {}, "model"),
     el("th", {}, "vs king"),
-    ...judges.map(m => el("th", { class: "center", title: m }, judgeMeta(m).letter)),
+    ...judges.map(m => el("th", { class: "center", title: `${judgeMeta(m).label} (all versions) — current: ${m}` }, judgeMeta(m).letter)),
     el("th", { class: "r" }, "result"));
 
   const body = rows.map(r => {
@@ -53,7 +62,7 @@ export function renderHistory(container, rows, judgeModels, netuid, currentKingE
       el("td", { class: "uid" }, tao ? link(tao, String(r.uid ?? "—"), { onClick: stop }) : String(r.uid ?? "—")),
       el("td", { class: "model" }, repoUrl ? link(repoUrl, modelName(r), { class: "model-cell", title: repo, onClick: stop }) : el("span", { class: "model-cell", title: repo }, modelName(r))),
       el("td", { class: "model vs" }, kingUrl ? link(kingUrl, kingName, { class: "model-cell", title: kingTitle, onClick: stop }) : el("span", { class: "model-cell", title: kingTitle }, kingName)),
-      ...judges.map(m => el("td", { class: "center" }, judgeCell(bj[m], bjk[m], r.scoring_mode === "binary"))),
+      ...judges.map(m => el("td", { class: "center" }, judgeCell(bj, bjk, m, r.scoring_mode === "binary"))),
       el("td", { class: "r" }, el("span", { class: `verdict-badge ${v.badge}` }, v.badge)));
   });
 

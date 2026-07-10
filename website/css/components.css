@@ -207,6 +207,7 @@ table.data-table td.when .sep { color: var(--color-fg-4); }
   white-space: pre-wrap; word-break: break-word; }
 
 .judges-table td.judge { color: var(--color-fg); }
+td.judge .judge-ver { color: var(--color-fg-4); font-size: 10px; }
 .judges-table td.win { color: var(--color-ok); }
 .judges-table td.lose { color: var(--color-bad); }
 .judges-table td.tie { color: var(--color-fg-3); }

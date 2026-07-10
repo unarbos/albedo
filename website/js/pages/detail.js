@@ -3,7 +3,7 @@ import { fetchDashboard, fetchText } from "../fetch.js";
 import { verdictInfo, faultCategory, faultCodeLabel } from "../data.js";
 import { el, mount, link } from "../dom.js";
 import { pct, fmtDateTime, shortHotkey, shortDigest } from "../format.js";
-import { judgeMeta, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
+import { judgeMeta, judgeVersion, hubRepoUrl, modelRepo, modelName, taoMinerUrl, kingTitleName } from "../model.js";
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -17,6 +17,13 @@ function setHead(name, sub, modelUri) {
 }
 
 const kv = (k, v, cls) => el("div", { class: "kv" }, el("span", { class: "k" }, k), el("span", { class: cls ? "v " + cls : "v" }, v));
+
+// Judge label with a visible version tag (GLM 5.2, QWEN 3.5-397b-a17b, DEEPSEEK v3.2) —
+// so the detail page always says which version judged this run.
+const judgeLabel = m => {
+  const v = judgeVersion(m);
+  return v ? [judgeMeta(m).label, el("span", { class: "judge-ver" }, " " + v)] : judgeMeta(m).label;
+};
 const scoreCls = n => n == null ? "" : Number(n) >= 0.5 ? "ok" : "bad";
 
 function parseJsonl(text) {
@@ -155,7 +162,7 @@ function legacySampleCard(record, i) {
       el("table", { class: "data-table sample-judge-table" },
         el("thead", {}, el("tr", {}, el("th", {}, "judge"), el("th", {}, "provider"), el("th", { class: "r" }, "mean"), el("th", {}, "metrics"))),
         el("tbody", {}, judges.map(j => el("tr", {},
-          el("td", { class: "judge", title: j.judge_model }, judgeMeta(j.judge_model).label),
+          el("td", { class: "judge", title: j.judge_model }, judgeLabel(j.judge_model)),
           el("td", {}, j.provider || "—"),
           el("td", { class: `r ${j.parse_ok ? scoreCls(j.judge_mean) : "bad"}` }, j.parse_ok ? pct(j.judge_mean) : "error"),
           el("td", { class: "metric-line" }, metricText(j.metric_scores, cats))))))));
@@ -207,7 +214,7 @@ function binaryJudgeTable(p) {
       const king = p.king[m], chal = p.chal[m];
       const failed = [king, chal].filter(j => j && !j.parse_ok);
       return el("tr", {},
-        el("td", { class: "judge", title: m }, judgeMeta(m).label),
+        el("td", { class: "judge", title: m }, judgeLabel(m)),
         el("td", {}, king?.provider || chal?.provider || "—"),
         sideCell(king),
         sideCell(chal),
@@ -229,7 +236,9 @@ function answerGlyphs(sideMap, judges, qid) {
   return judges.map(m => {
     const a = sideMap[m]?.answers?.[qid];
     const [glyph, cls] = a === "1" ? ["✓", "ok"] : a === "0" ? ["✗", "bad"] : ["·", "muted"];
-    return el("span", { class: "q-ans " + cls, title: `${judgeMeta(m).label}: ${a ?? "no answer"}` }, glyph);
+    const v = judgeVersion(m);
+    const tag = v ? `${judgeMeta(m).label} ${v}` : judgeMeta(m).label;
+    return el("span", { class: "q-ans " + cls, title: `${tag}: ${a ?? "no answer"}` }, glyph);
   });
 }
 
@@ -245,7 +254,7 @@ function questionRow(q, p) {
       el("table", { class: "data-table q-expl-table" },
         el("thead", {}, el("tr", {}, el("th", {}, "judge"), el("th", {}, "king"), el("th", {}, "challenger"))),
         el("tbody", {}, p.judges.map(m => el("tr", {},
-          el("td", { class: "judge", title: m }, judgeMeta(m).label),
+          el("td", { class: "judge", title: m }, judgeLabel(m)),
           explCell(p.king[m], q.id),
           explCell(p.chal[m], q.id))))),
       q.example_bad ? el("div", { class: "q-bad" }, el("b", {}, "example bad: "), q.example_bad) : false,
@@ -305,7 +314,7 @@ function renderEval(r, netuid) {
         el("tbody", {}, byJudge.map(([model, chal]) => {
           const o = chal > 0.5 ? "win" : chal < 0.5 ? "lose" : "tie";
           return el("tr", {},
-            el("td", { class: "judge", title: model }, judgeMeta(model).label),
+            el("td", { class: "judge", title: model }, judgeLabel(model)),
             el("td", { class: "r" }, pct(chal)),
             binary
               ? (kingCells[model] = el("td", { class: "r" }, summaryKing[model] != null ? pct(summaryKing[model]) : "…"))

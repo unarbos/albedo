@@ -7,6 +7,37 @@ export const JUDGE_META = {
   "deepseek/deepseek-v3.2":  { letter: "D", label: "DEEPSEEK" },
 };
 
+// All versions of one judge family share a table column (e.g. the GLM 5.1→5.2 migration):
+// the family is the provider namespace (z-ai/*, qwen/*, deepseek/*), a score recorded under
+// any version fills the column, and hover/detail names the version that actually judged.
+export function judgeFamily(model) {
+  return (model || "").split("/")[0];
+}
+
+export function sameJudgeFamily(a, b) {
+  return a === b || (judgeFamily(a) !== "" && judgeFamily(a) === judgeFamily(b));
+}
+
+// Look up ``column``'s score in a by_judge map, falling back to any same-family version.
+// Returns { score, model } where ``model`` is the key that actually held the score.
+export function judgeScore(byJudge, column) {
+  if (byJudge?.[column] != null) return { score: byJudge[column], model: column };
+  for (const [m, s] of Object.entries(byJudge || {})) {
+    if (s != null && sameJudgeFamily(m, column)) return { score: s, model: m };
+  }
+  return { score: null, model: null };
+}
+
+// "z-ai/glm-5.1" -> "5.1", "deepseek/deepseek-v3.2" -> "v3.2": the repo-name tail after the
+// family label, for compact version tags. Empty when the label already is the whole name.
+export function judgeVersion(model) {
+  const short = judgeShortName(model);
+  const label = judgeMeta(model).label.toLowerCase();
+  return short.toLowerCase().startsWith(label)
+    ? short.slice(label.length).replace(/^[-_ ]/, "")
+    : short;
+}
+
 export function judgeShortName(model) {
   if (!model) return "—";
   const parts = model.split("/");
