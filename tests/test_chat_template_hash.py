@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from hippius_validation.validate.chat_template import check
+from model_validation.validate.chat_template import check
 
 _CANONICAL_TEMPLATE = (
     Path(__file__).resolve().parents[1]
@@ -55,7 +55,7 @@ def test_bad_tokenizer_config_template_rejected(tmp_path):
 
 
 def test_process_model_rejects_template_before_full_download(tmp_path, monkeypatch):
-    from hippius_validation import validate_worker as worker
+    from model_validation import validate_worker as worker
 
     calls = []
     (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": "bad"}))
@@ -87,7 +87,7 @@ def test_process_model_rejects_template_before_full_download(tmp_path, monkeypat
 
 
 def test_file_manifest_requires_chat_template():
-    from hippius_validation.validate.repo import check as check_repo
+    from model_validation.validate.repo import check as check_repo
 
     ok, msg = check_repo([
         "config.json",

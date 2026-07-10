@@ -14,18 +14,18 @@ from typing import Any
 
 from loguru import logger
 
+from config_validation import repo_pattern
 from config_validation.chain import CommitRecord
 from config_validation.checks import (
     CheckOutcome,
     architecture,
     duplicate,
     files,
-    repo_pattern,
     revision,
 )
 from config_validation.config import SEED_DIGEST, SEED_REPO
 from config_validation.fingerprint.store import FingerprintStore, NullFingerprintStore
-from config_validation.hippius import download_config, download_full, list_files
+from config_validation.storage import download_config, download_full, list_files
 from config_validation.models import ModelRef
 from config_validation.result import ValidationResult
 

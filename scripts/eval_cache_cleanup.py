@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import os
+import re
 import shutil
 import time
 from datetime import datetime, timezone
@@ -62,9 +63,18 @@ def connect():
     )
 
 
+_HF_REVISION_RE = re.compile(r"^([0-9a-f]{40}|[0-9a-f]{64})$")
+
+
 def digest_of(model_uri: str | None) -> str | None:
-    if model_uri and "@sha256:" in model_uri:
+    if not model_uri:
+        return None
+    if "@sha256:" in model_uri:
         return model_uri.split("@sha256:")[-1].strip()
+    # HF refs pin a bare git revision: [hf://]repo@<40/64-hex>.
+    tail = model_uri.rpartition("@")[2].strip()
+    if _HF_REVISION_RE.match(tail):
+        return tail
     return None
 
 
@@ -107,23 +117,32 @@ def dir_size(path: Path) -> int:
     return total
 
 
-def scan(cache_dir: Path):
-    """Yield (model_dir, repo_munged, digest, is_partial)."""
-    base = cache_dir / "oci"
-    if not base.is_dir():
-        return
-    for registry in base.iterdir():
-        if not registry.is_dir():
+def _scan_repo_dir(repo: Path):
+    for model in repo.iterdir():
+        if not model.is_dir():
             continue
-        for repo in registry.iterdir():
+        is_partial = model.name.endswith(".partial")
+        digest = model.name[:-len(".partial")] if is_partial else model.name
+        yield model, repo.name, digest, is_partial
+
+
+def scan(cache_dir: Path):
+    """Yield (model_dir, repo_munged, digest, is_partial) across the oci/ and hf/ cache trees."""
+    base = cache_dir / "oci"
+    if base.is_dir():
+        for registry in base.iterdir():
+            if not registry.is_dir():
+                continue
+            for repo in registry.iterdir():
+                if not repo.is_dir():
+                    continue
+                yield from _scan_repo_dir(repo)
+    hf_base = cache_dir / "hf"
+    if hf_base.is_dir():
+        for repo in hf_base.iterdir():
             if not repo.is_dir():
                 continue
-            for model in repo.iterdir():
-                if not model.is_dir():
-                    continue
-                is_partial = model.name.endswith(".partial")
-                digest = model.name[:-len(".partial")] if is_partial else model.name
-                yield model, repo.name, digest, is_partial
+            yield from _scan_repo_dir(repo)
 
 
 def decide(repo_munged, digest, is_partial, model_dir, king, subs, grace_hours, now):

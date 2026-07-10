@@ -112,7 +112,7 @@ class KingVllmEngine:
 
 
     async def _materialize(self, model_uri: str, digest: str) -> str:
-        from hippius_validation.hippius import cache_dir, download_full, make_ref
+        from model_validation.storage import cache_dir, download_full, make_ref
 
         repo, ref_digest = _model_ref_parts(model_uri, digest)
         ref = make_ref(repo, ref_digest)

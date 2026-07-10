@@ -1,18 +1,22 @@
 """Bittensor chain reading — discover v7 model commits as Commit records.
 
 Self-contained (no external albedo imports). A v7 commitment is a pipe-delimited
-reveal string: ``v7|<repo>|<sha256:digest>``.
+reveal string: ``v7|<repo>|<digest>`` where ``<digest>`` is an immutable pin — a
+Hippius OCI digest (``sha256:<hex64>``) or an HF git revision (40- or 64-hex).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Iterator
 
 from loguru import logger as log
 
 _BLOCK_HASH_CACHE: dict[int, str] = {}
+# Immutable pin: Hippius 'sha256:<hex64>' or an HF git revision (40/64 hex).
+_PIN_RE = re.compile(r"^(sha256:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 @dataclass(frozen=True)
@@ -111,7 +115,7 @@ def _parse_v7(data: str, chain_hotkey: str) -> dict[str, Any] | None:
     if len(parts) != 3:
         return None
     _, repo, digest = parts
-    if "/" not in repo or not digest.startswith("sha256:"):
+    if "/" not in repo or not _PIN_RE.match(digest):
         return None
     return {
         "version": "v7",

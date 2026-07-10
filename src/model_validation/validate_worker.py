@@ -1,4 +1,4 @@
-"""Hippius validation worker — claim queued commits oldest-first and validate each model.
+"""Model validation worker — claim queued commits oldest-first and validate each model.
 
 Startup checks (DB + OpenSearch) → ensure schema → enqueue from chain_commits → loop:
 sweep expired leases → claim oldest queued → run checks (with a heartbeat) → finalize.
@@ -6,6 +6,7 @@ sweep expired leases → claim oldest queued → run checks (with a heartbeat) �
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import socket
 from dataclasses import dataclass, field
@@ -16,18 +17,18 @@ import asyncpg
 from loguru import logger as log
 
 from config_validation.fingerprint import compute_fingerprint
-from hippius_validation import config, db
-from hippius_validation.hippius import (
+from model_validation import config, db
+from model_validation.storage import (
     download_config,
     download_full,
     list_files,
     make_ref,
     safetensors_dtypes,
 )
-from hippius_validation.opensearch import find_duplicate, health, index_fingerprint
-from hippius_validation.uploads import put_fault, update_fingerprint_corpus
-from hippius_validation.validate import check_architecture, check_dtypes, check_index, check_repo
-from hippius_validation.validate.chat_template import check as check_chat_template
+from model_validation.opensearch import find_duplicate, health, index_fingerprint
+from model_validation.uploads import put_fault, update_fingerprint_corpus
+from model_validation.validate import check_architecture, check_dtypes, check_index, check_repo
+from model_validation.validate.chat_template import check as check_chat_template
 
 _WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -53,29 +54,54 @@ def _infra(code: str, msg: str) -> Outcome:
 
 
 _NOT_FOUND_MARKERS = ("not found", "404", "no such", "does not exist", "nosuchkey",
-                      "no revision", "not exist", "norepo")
+                      "no revision", "not exist", "norepo",
+                      # HF gated repos are unusable by validators — the miner's fault, not
+                      # retryable infra. Private repos already match "not found" (HF raises
+                      # RepositoryNotFoundError for them). Do NOT match on bare 401/403: an
+                      # invalid validator HF_TOKEN 401s on every repo and would mass-fault miners.
+                      "gated", "restricted")
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """True if a Hippius error means the repo/revision simply doesn't exist (miner fault)."""
+    """True if a hub error means the repo/revision doesn't exist or is inaccessible
+    (gated/private) — the miner's fault either way."""
     return any(m in str(exc).lower() for m in _NOT_FOUND_MARKERS)
+
+
+def _weights_hash(model_dir: str) -> str:
+    """Backend-independent exact-content key: sha256 over the sorted content sha256s of every
+    *.safetensors file. Equal weights ⇒ equal hash, no matter which hub (HF or Hippius), repo
+    name, or revision served them — unlike commit_hash, which for HF is a git SHA, not content."""
+    hashes: list[str] = []
+    for path in Path(model_dir).glob("*.safetensors"):
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        hashes.append(h.hexdigest())
+    return hashlib.sha256("\n".join(sorted(hashes)).encode()).hexdigest()
 
 
 def process_model(model_uri: str, hotkey: str) -> Outcome:
     """Run the per-model check flow synchronously (blocking I/O). Returns an Outcome."""
     repo, _, digest = model_uri.partition("@")
-    ref = make_ref(repo, digest)
+    # chain_reader's ingest gate is looser than ModelRef (it only checks "/" in repo), so a
+    # committed ref can still be malformed here — that's the miner's fault, not retryable infra.
+    try:
+        ref = make_ref(repo, digest)
+    except ValueError as exc:
+        return _miner("invalid_ref", f"malformed on-chain model reference: {exc}", {})
 
     # 1 — file manifest
     try:
         files = list_files(ref)
     except Exception as exc:  # noqa: BLE001
         if _is_not_found(exc):
-            return _miner("repo_not_found", f"repo/revision not found on Hippius: {exc}", {})
+            return _miner("repo_not_found", f"repo/revision not found on {ref.backend}: {exc}", {})
         return _infra("list_files_failed", f"could not list repo files: {exc}")
     # An empty repo is the miner's fault, not infra.
     if not files:
-        return _miner("empty_repo", "Hippius repo has no files", {})
+        return _miner("empty_repo", "model repo has no files", {})
     ok, msg = check_repo(files)
     if not ok:
         return _miner("file_manifest", msg, {"files": sorted(files)[:50]})
@@ -85,7 +111,7 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         shard_dtypes = safetensors_dtypes(ref)
     except Exception as exc:  # noqa: BLE001
         if _is_not_found(exc):
-            return _miner("repo_not_found", f"repo/revision not found on Hippius: {exc}", {})
+            return _miner("repo_not_found", f"repo/revision not found on {ref.backend}: {exc}", {})
         return _infra("preflight_failed", f"could not read safetensors headers: {exc}")
     ok, msg = check_dtypes(shard_dtypes)
     if not ok:
@@ -96,7 +122,7 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         config_dir = download_config(ref)
     except Exception as exc:  # noqa: BLE001
         if _is_not_found(exc):
-            return _miner("repo_not_found", f"repo/revision not found on Hippius: {exc}", {})
+            return _miner("repo_not_found", f"repo/revision not found on {ref.backend}: {exc}", {})
         return _infra("download_config_failed", f"model config download failed: {exc}")
     ok, msg = check_chat_template(config_dir, files)
     if not ok:
@@ -107,7 +133,7 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         model_dir = download_full(ref)
     except Exception as exc:  # noqa: BLE001
         if _is_not_found(exc):
-            return _miner("repo_not_found", f"repo/revision not found on Hippius: {exc}", {})
+            return _miner("repo_not_found", f"repo/revision not found on {ref.backend}: {exc}", {})
         return _infra("download_failed", f"model download failed: {exc}")
     # Repo that resolved but yielded no usable model content is a miner fault, not infra.
     mdir = Path(model_dir)
@@ -136,6 +162,11 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     except Exception as exc:  # noqa: BLE001
         return _infra("fingerprint_failed", f"could not fingerprint model: {exc}")
 
+    try:
+        whash = _weights_hash(model_dir)
+    except Exception as exc:  # noqa: BLE001
+        return _infra("weights_hash_failed", f"could not hash weight files: {exc}")
+
     # The norm_vector has one element per tensor; OpenSearch's lucene knn_vector (and thus the
     # per-architecture dedup index) caps dimension at MAX_KNN_DIM. A vector over the cap is a
     # non-canonical architecture (canonical models are a few thousand tensors), so reject it
@@ -152,16 +183,20 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     fp_uri, tensors_uri = update_fingerprint_corpus(model_uri, fp)
 
     try:
-        dedup = find_duplicate(fp, hotkey)
+        dedup = find_duplicate(fp, hotkey, weights_hash=whash)
     except Exception as exc:  # noqa: BLE001
         return _infra("opensearch_failed", f"dedup search failed: {exc}")
 
     if dedup["is_duplicate"]:
-        reason = (f"duplicate of {dedup['matched_key']}: similarity "
-                  f"{dedup['similarity']:.6f} >= {dedup['threshold']} threshold")
+        if dedup.get("exact_weights_match"):
+            reason = f"duplicate of {dedup['matched_key']}: exact weights match (weights_hash)"
+        else:
+            reason = (f"duplicate of {dedup['matched_key']}: similarity "
+                      f"{dedup['similarity']:.6f} >= {dedup['threshold']} threshold")
         summary = {"reason": reason, "similarity": dedup["similarity"], "threshold": dedup["threshold"],
                    "duplicate_of": dedup["matched_key"], "duplicate_of_hotkey": dedup["matched_hotkey"],
-                   "candidates_checked": dedup["candidates_checked"]}
+                   "candidates_checked": dedup["candidates_checked"],
+                   "exact_weights_match": dedup.get("exact_weights_match", False)}
         # The full duplicate explanation + fingerprint evidence goes into fault.json.
         fault_detail = {**summary, "fingerprint": fp}
         return _miner("duplicate", reason, summary, fault_detail=fault_detail)
@@ -170,7 +205,7 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     created_at = datetime.now(timezone.utc).isoformat()
     try:
         index_fingerprint(model_uri, fp, hotkey=hotkey, repo=repo, digest=digest,
-                          model_uri=model_uri, created_at=created_at)
+                          model_uri=model_uri, created_at=created_at, weights_hash=whash)
     except Exception as exc:  # noqa: BLE001
         return _infra("opensearch_index_failed", f"could not index fingerprint: {exc}")
 
@@ -231,7 +266,7 @@ async def run() -> None:
     if not health():
         raise RuntimeError(f"OpenSearch not healthy at {config.OPENSEARCH_URL}")
 
-    log.info("hippius_validation started — worker={} netuid={}", _WORKER_ID, config.NETUID)
+    log.info("model_validation started — worker={} netuid={}", _WORKER_ID, config.NETUID)
     n = await db.enqueue_from_commits(pool, config.NETUID)
     log.info("enqueued {} new commit(s)", n)
 
@@ -336,7 +371,7 @@ def main() -> None:
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        log.info("hippius_validation stopped")
+        log.info("model_validation stopped")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
-"""Async Postgres layer for the Hippius validation stage."""
+"""Async Postgres layer for the model validation stage."""
 
 from __future__ import annotations
 
 import json
 
 import asyncpg
+
+from config_validation.models import BACKEND_HF, detect_backend
 
 _VALIDATED_OR_BEYOND = (
     "HIPPIUS_VALIDATED",
@@ -489,10 +491,12 @@ async def _record_model_manifest_artifact(
 
 
 def _model_manifest_uri(model_uri: str) -> str:
-    if model_uri.startswith(("s3://", "file://", "local-cache://")):
+    if model_uri.startswith(("s3://", "file://", "local-cache://", "hf://")):
         return model_uri
     if model_uri.startswith("registry.hippius.com/"):
         return model_uri
+    if detect_backend(model_uri.rpartition("@")[2]) == BACKEND_HF:
+        return f"hf://{model_uri}"
     if "@sha256:" in model_uri:
         return f"registry.hippius.com/{model_uri}"
     return model_uri
@@ -503,6 +507,10 @@ def _storage_backend_for_model_uri(model_uri: str) -> str:
         return "s3"
     if model_uri.startswith(("local-cache://", "file://")):
         return "local-cache"
+    if model_uri.startswith("hf://"):
+        return "hf"
+    if detect_backend(model_uri.rpartition("@")[2]) == BACKEND_HF:
+        return "hf"
     return "hippius"
 
 

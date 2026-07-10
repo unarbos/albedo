@@ -47,7 +47,7 @@ albedo-remote-eval-api = "albedo_eval_service.remote_api:main"
 albedo-judge-api = "albedo_eval_service.judge_api:main"
 albedo-score-bridge = "albedo_eval_service.score_bridge_client:main"
 chain-reader = "chain_reader.reader:main"
-hippius-validation = "hippius_validation.validate_worker:main"
+model-validation = "model_validation.validate_worker:main"
 sanity-remote = "sanity_remote.api:main"
 sanity-dispatcher = "sanity_service.dispatcher:main"
 albedo = "miner.cli:main"
@@ -69,7 +69,7 @@ packages = [
     "src/chain_reader",
     "src/chain_guard",
     "src/config_validation",
-    "src/hippius_validation",
+    "src/model_validation",
     "src/sanity_service",
     "src/sanity_remote",
     "miner",

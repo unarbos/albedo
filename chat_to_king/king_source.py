@@ -42,12 +42,12 @@ class King:
 
 def _resolve_dsn(settings: KingChatSettings) -> str:
     """DSN precedence: explicit KING_CHAT_DATABASE_URL/ALBEDO_EVAL_DATABASE_URL, else the box's existing
-    ALBEDO_POSTGRES_* parts (reuses hippius_validation.config.DB_URL — same eval DB the box already uses,
+    ALBEDO_POSTGRES_* parts (reuses model_validation.config.DB_URL — same eval DB the box already uses,
     so no new DB secret is needed). Importing that module also loads albedo/.env into the environment."""
     if settings.database_url:
         return settings.database_url
     try:
-        from hippius_validation.config import DB_URL
+        from model_validation.config import DB_URL
         return DB_URL
     except Exception as exc:
         logger.warning("[king-chat] could not build DSN from ALBEDO_POSTGRES_*: {}", exc)

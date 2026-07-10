@@ -1,13 +1,13 @@
-"""hippius — model download/listing from the Hippius hub (reuses config_validation)."""
+"""storage — model download/listing, backend-dispatched (reuses config_validation)."""
 
-from hippius_validation.hippius.download import (
+from model_validation.storage.download import (
     cache_dir,
     download_config,
     download_full,
     list_files,
     make_ref,
 )
-from hippius_validation.hippius.preflight import safetensors_dtypes
+from model_validation.storage.preflight import safetensors_dtypes
 
 __all__ = [
     "cache_dir",

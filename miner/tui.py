@@ -22,7 +22,7 @@ _GLYPH = {
     "ok": "<ansigreen>✓</ansigreen>",
     "fail": "<ansired>✗</ansired>",
 }
-_HELP = ("check-hippius (--path | --repo --digest) · upload --path --namespace --name · "
+_HELP = ("check-model (--path | --repo --digest) · upload --path --namespace --name · "
          "register --coldkey --hotkey · commit --repo --digest --coldkey --hotkey · "
          "check-commit [--hotkey] · publish --path --namespace --name --coldkey --hotkey · help · off")
 
@@ -105,19 +105,19 @@ def _dispatch(cmd, opts, state, log, confirm, refresh, netuid, network):
 
     if cmd == "help":
         log(_HELP)
-    elif cmd == "check-hippius":
+    elif cmd == "check-model":
         if opts.get("path"):
             ok, res = validate.validate_local(opts["path"])
         elif opts.get("repo") and opts.get("digest"):
             ok, res = validate.validate_remote(opts["repo"], opts["digest"])
         else:
-            log("check-hippius needs --path OR (--repo and --digest)"); return
+            log("check-model needs --path OR (--repo and --digest)"); return
         for k, v in res.items():
             log(f"  {k}: {'PASS' if v['ok'] else 'FAIL — ' + v['reason']}")
         log("VALID" if ok else "INVALID")
     elif cmd == "upload":
         repo = opts.get("repo") or upload.make_repo(opts["namespace"], opts["name"])
-        ref = upload.upload_to_hippius(opts["path"], repo)
+        ref = upload.upload_model(opts["path"], repo)
         log(f"uploaded {ref.immutable_ref}")
         log(f"  reveal: {commit_mod.build_reveal(ref)}")
     elif cmd == "commit":

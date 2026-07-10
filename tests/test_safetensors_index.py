@@ -1,7 +1,7 @@
 import json
 import struct
 
-from hippius_validation.validate.safetensors_index import check
+from model_validation.validate.safetensors_index import check
 
 
 def _write_shard(path, tensor_keys):

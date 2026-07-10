@@ -5,7 +5,7 @@ import functools
 
 from loguru import logger as log
 
-from hippius_validation import config
+from model_validation import config
 
 
 @functools.lru_cache(maxsize=1)
@@ -46,6 +46,9 @@ def _mapping(dim: int) -> dict:
                 "digest": {"type": "keyword"},
                 "model_uri": {"type": "keyword"},
                 "created_at": {"type": "date"},
+                # Backend-independent exact-content key (sha256 over the weight files'
+                # content sha256s) — exact-duplicate gate ahead of the saturable kNN.
+                "weights_hash": {"type": "keyword"},
                 "norm_vector": {
                     "type": "knn_vector",
                     "dimension": dim,
@@ -72,4 +75,8 @@ def ensure_index(dim: int) -> str:
     if not c.indices.exists(index=name):
         c.indices.create(index=name, body=_mapping(dim))
         log.info("created opensearch index {} (knn dim={})", name, dim)
+    else:
+        # Indices created before weights_hash existed need the field mapped explicitly, or a
+        # dynamic text mapping would break the exact term query. put_mapping is idempotent.
+        c.indices.put_mapping(index=name, body={"properties": {"weights_hash": {"type": "keyword"}}})
     return name

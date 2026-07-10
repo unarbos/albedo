@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stand up a local single-node OpenSearch for the hippius_validation dedup index.
+# Stand up a local single-node OpenSearch for the model_validation dedup index.
 # Pulls the image, runs the container (security disabled, bound to localhost), waits for health.
 # Idempotent: re-running recreates the container.
 set -euo pipefail

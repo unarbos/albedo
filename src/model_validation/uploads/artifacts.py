@@ -17,7 +17,7 @@ import json
 
 from loguru import logger as log
 
-from hippius_validation import config
+from model_validation import config
 
 ENABLED = bool(config.S3_BUCKET and config.S3_ACCESS_KEY and config.S3_SECRET_KEY)
 
@@ -101,5 +101,7 @@ def update_fingerprint_corpus(model_uri: str, fingerprint: dict) -> tuple[str | 
 
 def put_fault(hotkey: str, digest: str, detail: dict) -> str | None:
     """Upload a per-model miner-fault report (the full explanation of why it was rejected)."""
+    # "hippius_validation/" is the published S3 key prefix miners already fetch — do not
+    # rename it along with the package.
     key = f"hippius_validation/{hotkey}/{_safe_digest(digest)}/fault.json"
     return _put(key, detail)

@@ -1,6 +1,6 @@
 """S3 publishing for chain_guard reuse detections.
 
-Mirrors the hippius_validation fault uploader: boto3 against the ALBEDO_S3_* bucket, public-read
+Mirrors the model_validation fault uploader: boto3 against the ALBEDO_S3_* bucket, public-read
 JSON, env-gated no-op when credentials are unset (so chain_reader runs fine without S3).
 """
 from __future__ import annotations

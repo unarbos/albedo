@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from hippius_validation import config
+from model_validation import config
 
 
 @functools.lru_cache(maxsize=4)

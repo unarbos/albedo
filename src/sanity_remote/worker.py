@@ -103,8 +103,8 @@ def _inject_seed_processor_files(model_dir: str) -> None:
         return
     try:
         from config_validation.config import SEED_DIGEST, SEED_REPO
-        from config_validation.hippius import download_config
-        from hippius_validation.hippius import make_ref
+        from config_validation.storage import download_config
+        from model_validation.storage import make_ref
         if not SEED_REPO or not SEED_DIGEST:
             return
         seed_dir = "/root/albedo-seed-processor"
@@ -217,7 +217,7 @@ class VllmEngine:
 
     async def _materialize(self, model_uri: str, digest: str) -> str:
         # Reuse an already-downloaded copy if present; otherwise download from Hippius.
-        from hippius_validation.hippius import cache_dir, download_full, make_ref
+        from model_validation.storage import cache_dir, download_full, make_ref
 
         repo, ref_digest = _model_ref_parts(model_uri, digest)
         ref = make_ref(repo, ref_digest)

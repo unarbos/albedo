@@ -1,4 +1,4 @@
-"""Fetch + inspect model repos on the Hippius hub, pinned to a commit digest."""
+"""Hippius hub backend — fetch + inspect model repos pinned to an OCI commit digest."""
 from __future__ import annotations
 
 import logging
@@ -6,10 +6,9 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
 
-from config_validation.config import MODEL_CACHE_DIR
 from config_validation.models import ModelRef
+from config_validation.storage._paths import _cache_dir
 
 log = logging.getLogger(__name__)
 
@@ -55,21 +54,6 @@ def _hub():
 
 def _token() -> str | None:
     return os.environ.get(_HUB_TOKEN_ENV)
-
-
-def _cache_dir(ref: ModelRef) -> Path:
-    """Per-(repo, digest) cache dir, guarded against path traversal via crafted repo names."""
-    safe_digest = ref.digest.replace(":", "_")
-    root = Path(MODEL_CACHE_DIR).resolve()
-    resolved = (root / ref.repo / safe_digest).resolve()
-    if resolved != root and not str(resolved).startswith(str(root) + os.sep):
-        raise ValueError(f"ModelRef.repo {ref.repo!r} resolves outside cache root — blocked")
-    return resolved
-
-
-def cache_dir(ref: ModelRef) -> Path:
-    """Public: per-(repo, digest) local cache dir for ``ref`` (no I/O, no download)."""
-    return _cache_dir(ref)
 
 
 def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:

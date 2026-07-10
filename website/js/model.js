@@ -49,9 +49,18 @@ export function modelRepo(uri) {
   return s || "—";
 }
 
+// hf:// URIs and bare 40/64-hex git revisions are HuggingFace models; sha256: digests are Hippius.
+function isHfUri(uri) {
+  if (!uri) return false;
+  if (uri.startsWith("hf://")) return true;
+  const tail = uri.split("@").pop();
+  return /^[0-9a-f]{40}$/.test(tail) || /^[0-9a-f]{64}$/.test(tail);
+}
+
 export function hubRepoUrl(uri) {
   const repo = modelRepo(uri);
   if (!repo || repo === "—") return null;
+  if (isHfUri(uri)) return `https://huggingface.co/${repo}`;
   const parts = repo.split("/");
   if (parts.length < 2) return "https://hub.hippius.com/models";
   return `https://hub.hippius.com/models/${parts[0]}/${parts.slice(1).join("/")}`;

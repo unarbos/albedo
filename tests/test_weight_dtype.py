@@ -1,7 +1,7 @@
 import json
 import struct
 
-from hippius_validation.validate.dtype import check
+from model_validation.validate.dtype import check
 
 
 def _write_shard(path, dtypes_by_key):

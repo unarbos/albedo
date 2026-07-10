@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_models import ModelArtifactResolver, parse_oci_ref
+from config_validation.models import BACKEND_HF, detect_backend
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_ENV_PATH = _ROOT / ".env"
@@ -138,9 +139,13 @@ class KingUpload:
     @property
     def source_ref(self) -> str:
         uri = self.artifact_uri or self.model_uri
-        if uri.startswith(("s3://", "file://")) or "@" in uri or not self.model_hash:
-            return uri
-        return f"{uri}@{self.model_hash}"
+        if not uri.startswith(("s3://", "file://", "hf://")):
+            if "@" not in uri and self.model_hash:
+                uri = f"{uri}@{self.model_hash}"
+            # A bare repo@<git-sha> is an HF ref; the resolver only routes it with the scheme.
+            if _is_hf_source(uri):
+                uri = f"hf://{uri}"
+        return uri
 
     @property
     def king_name(self) -> str:
@@ -177,10 +182,18 @@ def model_repo(uri: str) -> str:
     return s
 
 
+def _is_hf_source(uri: str) -> bool:
+    if not uri:
+        return False
+    return uri.startswith("hf://") or detect_backend(uri.rpartition("@")[2]) == BACKEND_HF
+
+
 def hub_repo_url(uri: str) -> str | None:
     repo = model_repo(uri)
     if not repo:
         return None
+    if _is_hf_source(uri):
+        return f"https://huggingface.co/{repo}"
     parts = repo.split("/")
     if len(parts) < 2:
         return "https://hub.hippius.com/models"
@@ -399,25 +412,30 @@ def list_crowned_kings(conn: psycopg.Connection, settings: Settings) -> list[Kin
     return crowned
 
 
-def _oci_cache_path(base_dir: Path, king: KingUpload) -> Path | None:
+def _source_cache_path(base_dir: Path, king: KingUpload) -> Path | None:
+    """Where ModelArtifactResolver would have cached this king under ``base_dir``."""
     parsed = parse_oci_ref(king.source_ref)
-    if not parsed:
-        return None
-    registry, repository, digest = parsed
-    return (
-        base_dir / "oci" / registry / repository.replace("/", "__") / digest.removeprefix("sha256:")
-    )
+    if parsed:
+        registry, repository, digest = parsed
+        return (
+            base_dir / "oci" / registry / repository.replace("/", "__") / digest.removeprefix("sha256:")
+        )
+    if _is_hf_source(king.source_ref):
+        repo, _, revision = king.source_ref.removeprefix("hf://").partition("@")
+        if repo and revision:
+            return base_dir / "hf" / repo.replace("/", "__") / revision
+    return None
 
 
 def eval_dir_path(king: KingUpload, settings: Settings) -> Path | None:
-    path = _oci_cache_path(settings.eval_dir, king)
+    path = _source_cache_path(settings.eval_dir, king)
     if path is None:
         return None
     return path if (path / ".albedo-model-cache.json").exists() else None
 
 
 def work_dir_path(king: KingUpload, settings: Settings) -> Path | None:
-    path = _oci_cache_path(settings.work_dir, king)
+    path = _source_cache_path(settings.work_dir, king)
     if path is None:
         return None
     return path if (path / ".albedo-model-cache.json").exists() else None
@@ -442,6 +460,10 @@ def download_to_work_dir(king: KingUpload, settings: Settings) -> Path:
         resolved = resolver.resolve(king.source_ref)
     except Exception as exc:  # noqa: BLE001
         raise Unreachable(str(exc)) from exc
+    if resolved.source == "passthrough":
+        # The resolver did not recognize the ref and returned it verbatim — uploading
+        # from that "path" would silently produce an empty mirror.
+        raise Unreachable(f"resolver could not fetch {king.source_ref} (passthrough)")
     return Path(resolved.local_path).resolve()
 
 
@@ -572,33 +594,36 @@ so the lineage stays public even after the model rotates out of the live serving
 
 - **Title:** {king_name}
 - **Dethroned:** {defeated}
-- **Original Hippius repository:** [`{repo}`]({url})
+- **Original {source_label} repository:** [`{repo}`]({url})
 - **Submitted by miner hotkey:** `{hotkey}`
 
-The model files here are mirrored verbatim from the miner's original Hippius upload
+The model files here are mirrored verbatim from the miner's original {source_label} upload
 linked above. All credit for the model belongs to its original author.
 
 ## Links
 
-- Original model on Hippius Hub: {url}
+- Original model on {source_hub}: {url}
 - Browse Albedo models: https://hub.hippius.com/models
 - Albedo source code (GitHub): https://github.com/unarbos/albedo
 
 ---
 
 *Mirrored automatically by the Albedo king HF uploader. This is an archival copy; the
-authoritative source is the Hippius repository linked above.*
+authoritative source is the {source_label} repository linked above.*
 """
 
 
 def render_albedo_md(king: KingUpload) -> str:
     url = king.hub_url or "https://hub.hippius.com/models"
+    is_hf = _is_hf_source(king.model_uri or king.artifact_uri)
     return _ALBEDO_MD_TEMPLATE.format(
         king_name=king.king_name,
         defeated=_defeated_line(king),
         repo=king.hippius_repo or "unknown",
         url=url,
         hotkey=king.hotkey or "unknown",
+        source_label="HuggingFace" if is_hf else "Hippius",
+        source_hub="HuggingFace" if is_hf else "Hippius Hub",
     )
 
 

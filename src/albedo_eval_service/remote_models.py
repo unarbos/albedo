@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import os
 import re
 import shutil
 import threading
@@ -111,6 +112,8 @@ class ModelArtifactResolver:
             return self._resolved_local(model_ref, path, source="local")
         if model_ref.startswith("s3://"):
             return self._resolve_s3(model_ref)
+        if model_ref.startswith("hf://"):
+            return self._resolve_hf(model_ref)
         parsed_oci = parse_oci_ref(model_ref)
         if parsed_oci:
             registry, repository, digest = parsed_oci
@@ -191,6 +194,51 @@ class ModelArtifactResolver:
         self._apply_canonical_config(cache_dir)
         file_count, total_size_bytes = _tree_stats(cache_dir)
         return ResolvedModel(model_ref, str(cache_dir), "s3", False, file_count, total_size_bytes)
+
+    def _resolve_hf(self, model_ref: str) -> ResolvedModel:
+        ref = model_ref.removeprefix("hf://")
+        repo, _, revision = ref.partition("@")
+        if not repo or not revision:
+            raise ValueError(f"hf:// ref must be 'hf://<repo>@<revision>': {model_ref}")
+        cache_dir = self.cache_root / "hf" / repo.replace("/", "__") / revision
+        done_marker = cache_dir / ".albedo-model-cache.json"
+        if done_marker.exists():
+            if _has_loadable_model_files(cache_dir):
+                self._apply_canonical_config(cache_dir)
+                file_count, total_size_bytes = _tree_stats(cache_dir)
+                return ResolvedModel(
+                    model_ref, str(cache_dir), "hf", True, file_count, total_size_bytes
+                )
+            print(f"model_cache_invalid source=hf path={cache_dir} reason=missing_model_files", flush=True)
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+        # Xet is the live HF fast-transfer path; set before huggingface_hub is imported.
+        os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+        from huggingface_hub import snapshot_download
+
+        temp_dir = cache_dir.with_suffix(".partial")
+        # Resume an interrupted download: snapshot_download skips files already complete
+        # in the target dir, so keep .partial instead of wiping it on each retry.
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        with _download_heartbeat(model_ref):
+            snapshot_download(
+                repo_id=repo,
+                revision=revision,
+                local_dir=str(temp_dir),
+                max_workers=max(1, self.settings.model_download_concurrency),
+                token=os.environ.get("HF_TOKEN") or None,
+            )
+        _require_loadable_model_files(temp_dir, source="hf")
+        (temp_dir / ".albedo-model-cache.json").write_text(
+            json.dumps({"source": model_ref, "repo": repo, "revision": revision}, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        cache_dir.parent.mkdir(parents=True, exist_ok=True)
+        temp_dir.replace(cache_dir)
+        self._apply_canonical_config(cache_dir)
+        file_count, total_size_bytes = _tree_stats(cache_dir)
+        return ResolvedModel(model_ref, str(cache_dir), "hf", False, file_count, total_size_bytes)
 
     def _resolve_oci(
         self, *, registry: str, repository: str, digest: str, original_ref: str

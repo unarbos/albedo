@@ -34,10 +34,10 @@ module.exports = {
       time: true,
     },
     {
-      name: "albedo-hippius_validation",
+      name: "albedo-model_validation",
       cwd: path.resolve(__dirname, ".."),
       script: "uv",
-      args: "run hippius-validation",
+      args: "run model-validation",
       env,
       autorestart: true,
       max_restarts: 20,

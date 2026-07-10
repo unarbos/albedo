@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Iterable
 
-from config_validation.hippius import s3
+from config_validation.storage import s3
 from config_validation.result import ValidationResult
 
 log = logging.getLogger(__name__)

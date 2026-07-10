@@ -1,6 +1,6 @@
 """Validate a model/repo with the validator's OWN check functions — no deduplication.
 
-Reuses hippius_validation.validate (the same code the validator runs): the strict file
+Reuses model_validation.validate (the same code the validator runs): the strict file
 manifest + the universal spec-driven architecture check, plus — on a full local model — the
 safetensors-index consistency check and the 16-bit weight-dtype check. No OpenSearch/Postgres
 involved. The remote check fetches config.json only, so it runs the file + architecture checks
@@ -12,10 +12,10 @@ from pathlib import Path
 
 from loguru import logger
 
-from config_validation.hippius import download_config, list_files
+from config_validation.storage import download_config, list_files
 from config_validation.models import ModelRef
 
-from hippius_validation.validate import (
+from model_validation.validate import (
     check_architecture,
     check_dtype,
     check_index,
@@ -49,7 +49,7 @@ def validate_local(path: str) -> tuple[bool, dict]:
 
 
 def validate_remote(repo: str, digest: str) -> tuple[bool, dict]:
-    """Validate an uploaded Hippius repo (lists files + fetches config.json only)."""
+    """Validate an uploaded repo (lists files + fetches config.json only); HF or Hippius."""
     from huggingface_hub.errors import (
         EntryNotFoundError,
         RepositoryNotFoundError,
@@ -57,17 +57,17 @@ def validate_remote(repo: str, digest: str) -> tuple[bool, dict]:
     )
 
     ref = ModelRef(repo=repo, digest=digest)
-    logger.info(f"validating remote repo: {repo}@{digest}")
+    logger.info(f"validating remote repo: {repo}@{digest} (backend={ref.backend})")
     try:
-        logger.info("listing repo files on Hippius…")
+        logger.info("listing repo files…")
         files = list_files(ref)
         logger.info("downloading config.json…")
         cfg_dir = download_config(ref)
     except RevisionNotFoundError:
-        return _result({"file_manifest": (False, f"digest not found on Hippius: {digest} is not in {repo}"),
+        return _result({"file_manifest": (False, f"digest not found: {digest} is not in {repo}"),
                         "architecture": (False, "skipped")})
     except RepositoryNotFoundError:
-        return _result({"file_manifest": (False, f"repo not found on Hippius: {repo}"),
+        return _result({"file_manifest": (False, f"repo not found: {repo}"),
                         "architecture": (False, "skipped")})
     except EntryNotFoundError:
         return _result({"file_manifest": (False, f"config.json missing from {repo}@{digest}"),

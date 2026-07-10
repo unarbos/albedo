@@ -14,7 +14,6 @@ from pathlib import Path
 from loguru import logger
 
 INDEX_NAME = "model.safetensors.index.json"
-_SHARD_GLOB = "model-*-of-*.safetensors"
 
 
 def _shard_tensor_keys(path: Path) -> set[str]:

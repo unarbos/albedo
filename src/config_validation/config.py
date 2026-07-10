@@ -51,7 +51,12 @@ FORBIDDEN_GLOBS: tuple[str, ...] = tuple(_f.get("forbidden_globs", []))
 # Dedup (check #4)
 SIM_THRESHOLD: float = float(_p.get("similarity_threshold", 0.95))
 
-# Local cache root for Hippius downloads.
+# Local cache root for model downloads.
 MODEL_CACHE_DIR: str = os.environ.get(
     "CV_MODEL_CACHE_DIR", str(Path.home() / ".cache" / "cv_models")
 )
+
+# Primary model storage backend (HF unless overridden); per-model detection still applies.
+MODEL_BACKEND: str = os.environ.get("ALBEDO_MODEL_BACKEND", "hf").strip().lower()
+# Xet is the live HF fast-transfer path (huggingface_hub>=1.0); set before any hub import.
+os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")

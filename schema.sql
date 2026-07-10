@@ -180,7 +180,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
     size_bytes BIGINT,
     content_type TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT artifacts_storage_backend_ck CHECK (storage_backend IN ('s3', 'hippius', 'local-cache'))
+    -- Existing DBs need a manual migration ('hf' added 2026-07):
+    --   ALTER TABLE artifacts DROP CONSTRAINT artifacts_storage_backend_ck;
+    --   ALTER TABLE artifacts ADD CONSTRAINT artifacts_storage_backend_ck
+    --     CHECK (storage_backend IN ('s3', 'hippius', 'hf', 'local-cache'));
+    CONSTRAINT artifacts_storage_backend_ck CHECK (storage_backend IN ('s3', 'hippius', 'hf', 'local-cache'))
 );
 
 CREATE TABLE IF NOT EXISTS remote_gpu_hosts (

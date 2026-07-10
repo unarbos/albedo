@@ -239,3 +239,43 @@ def test_resolve_lock_is_shared_per_ref():
 
     assert _resolve_lock("oci://registry/a@sha256:aa") is _resolve_lock("oci://registry/a@sha256:aa")
     assert _resolve_lock("oci://registry/a@sha256:aa") is not _resolve_lock("oci://registry/b@sha256:bb")
+
+
+def test_model_resolver_downloads_hf_ref(tmp_path, monkeypatch):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+
+    calls = {}
+
+    def fake_snapshot_download(**kw):
+        calls.update(kw)
+        local_dir = Path(kw["local_dir"])
+        (local_dir / "config.json").write_text('{"model_type":"qwen3"}', encoding="utf-8")
+        (local_dir / "model.safetensors").write_bytes(b"not-real-safetensors")
+        return kw["local_dir"]
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download, raising=False)
+    revision = "d" * 40
+    ref = f"hf://alice/albedo-qwen3.6-35b-hf@{revision}"
+    resolver = ModelArtifactResolver(
+        RemoteSettings(model_cache_dir=str(tmp_path / "cache"), use_canonical_model_config=False)
+    )
+
+    resolved = resolver.resolve(ref)
+
+    assert calls["repo_id"] == "alice/albedo-qwen3.6-35b-hf"
+    assert calls["revision"] == revision
+    assert resolved.source == "hf"
+    assert resolved.cache_hit is False
+    assert Path(resolved.local_path, "config.json").exists()
+    assert Path(resolved.local_path, ".albedo-model-cache.json").exists()
+
+    again = resolver.resolve(ref)
+    assert again.cache_hit is True
+    assert again.local_path == resolved.local_path
+
+
+def test_model_resolver_rejects_malformed_hf_ref(tmp_path):
+    resolver = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache")))
+
+    with pytest.raises(ValueError, match="hf:// ref must be"):
+        resolver.resolve("hf://no-revision-here")

@@ -1,4 +1,4 @@
-"""hippius_validation configuration — loaded from albedo/.env + process environment."""
+"""model_validation configuration — loaded from albedo/.env + process environment."""
 from __future__ import annotations
 
 import os
@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 _ROOT = Path(__file__).resolve().parents[2]          # albedo repo root
-_PKG = Path(__file__).resolve().parent                  # hippius_validation/
+_PKG = Path(__file__).resolve().parent                  # model_validation/
 _ENV_PATH = _ROOT / ".env"
 
 
@@ -41,7 +41,7 @@ def _db_url() -> str:
 DB_URL: str = _db_url()
 NETUID: int = int(os.environ.get("CHAIN_NETUID", "97"))
 
-# --- Hippius model download cache (where downloaded models land) ---
+# --- Model download cache (where downloaded models land) ---
 # Empty/unset ALBEDO_MODEL_CACHE_DIR falls back to ~/.cache/albedo_models (resolved at runtime).
 MODEL_CACHE_DIR: str = os.environ.get("ALBEDO_MODEL_CACHE_DIR") or str(Path.home() / ".cache" / "albedo_models")
 # The shared downloader (config_validation) reads CV_MODEL_CACHE_DIR — point it at ours.

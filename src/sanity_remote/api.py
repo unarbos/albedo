@@ -107,7 +107,7 @@ def main() -> None:
     import uvicorn
 
     settings = get_remote_settings()
-    # hippius_validation.config reads ALBEDO_MODEL_CACHE_DIR at first import (inside _materialize).
+    # model_validation.config reads ALBEDO_MODEL_CACHE_DIR at first import (inside _materialize).
     # Propagate our setting now so the lazy import picks up the right cache root.
     os.environ.setdefault("ALBEDO_MODEL_CACHE_DIR", settings.model_cache_dir)
     uvicorn.run(

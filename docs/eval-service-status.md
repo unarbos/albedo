@@ -86,7 +86,7 @@ Run these on the backend/controller host.
   - Command: `uv run chain-reader`
   - Reads chain commits into the database.
 
-- `hippius_validation`
+- `model_validation`
   - PM2 config: `pm2/ecosystem.chain-validation.config.js`
   - Command: `uv run hippius-validation`
   - Validates model artifacts before eval eligibility.

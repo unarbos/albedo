@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import fnmatch
 
-from hippius_validation import config
+from model_validation import config
 
 
 def _matches_any(name: str, globs: tuple[str, ...]) -> bool:

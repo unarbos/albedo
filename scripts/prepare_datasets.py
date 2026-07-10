@@ -103,7 +103,7 @@ def _upload_manifest_to_hippius(manifest_path: Path, key: str) -> str:
     from botocore.config import Config
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    from hippius_validation import config as hv
+    from model_validation import config as hv
 
     if not (hv.S3_BUCKET and hv.S3_ACCESS_KEY and hv.S3_SECRET_KEY):
         raise SystemExit(

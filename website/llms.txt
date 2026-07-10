@@ -27,7 +27,7 @@
 albedo/
 │
 ├── pyproject.toml              All console entrypoints (see "Services" below) + deps (bittensor, fastapi, asyncpg, opensearch, vllm-via-remote)
-├── chain.toml                  Subnet constants for the config_validation commit-validator (seed digest, arch-lock keys, file allowlist, dedup threshold). NOTE: the LIVE miner/validator manifest is hippius_validation/config.py + architecture_spec.json — see below.
+├── chain.toml                  Subnet constants for the config_validation commit-validator (seed digest, arch-lock keys, file allowlist, dedup threshold). NOTE: the LIVE miner/validator manifest is model_validation/config.py + architecture_spec.json — see below.
 ├── schema.sql                  Canonical Postgres schema — the single source of truth for pipeline state
 ├── docker-compose.yml          Local Postgres (albedo-postgres) on host port 65432
 ├── .env.example                Full backend/GPU-host env reference
@@ -51,21 +51,21 @@ albedo/
 │   │   ├── chain.py                    decode v7 payloads, resolve hotkey→uid via metagraph
 │   │   └── db.py                       upsert chain_commits / miners / model_submissions / events
 │   │
-│   ├── config_validation/          VALIDATION LIBRARY for the standalone commit-validator; also gives the miner CLI its Hippius download/list utils + ModelRef (the miner's actual checks come from hippius_validation, below)
+│   ├── config_validation/          VALIDATION LIBRARY for the standalone commit-validator; also gives the miner CLI its Hippius download/list utils + ModelRef (the miner's actual checks come from model_validation, below)
 │   │   ├── pipeline.py                 ordered checks: revision → files → architecture → duplicate
 │   │   ├── checks/revision.py          repo@digest resolves on Hippius (fast fail)
 │   │   ├── checks/files.py             strict allowlist from chain.toml [files]
 │   │   ├── checks/architecture.py      config.json matches seed on lock keys; no auto_map/quantization_config
 │   │   ├── checks/duplicate.py         fingerprint cosine ≥ similarity_threshold → reject
 │   │   ├── fingerprint/compute.py      per-tensor L2 norms + deterministic value samples (layer_norms_v2)
-│   │   ├── fingerprint/store.py        pluggable corpus: Null / Jsonl (CLI) — OpenSearch lives in hippius_validation
+│   │   ├── fingerprint/store.py        pluggable corpus: Null / Jsonl (CLI) — OpenSearch lives in model_validation
 │   │   └── models/reveal.py            parse/build v7 reveal
 │   │
 │   ├── chain_guard/                HOTKEY-REUSE GUARD (imported by chain_reader): a `used_hotkeys` ledger seeded from every hotkey committed before CHAIN_START_BLOCK (all reveal versions); a hotkey is burned into the ledger after its submission finishes eval, so a hotkey can't re-submit to game the duel
 │   │   ├── scan.py                     scan_all_raw(): iterate every RevealedCommitment on the netuid
 │   │   └── db.py                       seed ledger from DB + record a hotkey after eval
 │   │
-│   ├── hippius_validation/         VALIDATE WORKER: claim submissions → download → validate → dedup → persist (the live file/arch/index/dtype authority for miners + validators)
+│   ├── model_validation/         VALIDATE WORKER: claim submissions → download → validate → dedup → persist (the live file/arch/index/dtype authority for miners + validators)
 │   │   ├── validate_worker.py          end-to-end per-model: files→dtype-preflight→download→index→arch→fingerprint→OpenSearch dedup
 │   │   ├── config.py                   the LIVE strict file allowlist (required incl. preprocessor_config.json + video_preprocessor_config.json) + dedup threshold + cache/OpenSearch settings
 │   │   ├── validate/architecture.py    spec-driven arch lock (validate/architecture_spec.json — no hardcoded family)
@@ -154,7 +154,7 @@ on-chain v7 commit
   ▼  chain_reader            poll chain → chain_commits + model_submissions(SUBMITTED)
 SUBMITTED
   │
-  ▼  hippius_validation      download → file manifest → arch lock → fingerprint → OpenSearch dedup
+  ▼  model_validation      download → file manifest → arch lock → fingerprint → OpenSearch dedup
 HIPPIUS_RUNNING → HIPPIUS_VALIDATED          (fail → TERMINAL_INVALID / HIPPIUS_RETRYABLE)
   │
   ▼  requeuer                HIPPIUS_VALIDATED → PRE_EVAL_QUEUED
@@ -190,7 +190,7 @@ mid-stage are recovered by lease expiry, not by in-memory state.
 Mirrors the subnet rules for the standalone `config_validation` commit-validator. The arch-lock keys,
 seed digest, and dedup threshold here are current; the `[files]` block, however, has **drifted** from
 what miners and the backend actually enforce — the live file-manifest + arch authority is
-`hippius_validation/config.py` + `validate/architecture_spec.json` (see *Validation internals* below).
+`model_validation/config.py` + `validate/architecture_spec.json` (see *Validation internals* below).
 
 ```toml
 [chain]
@@ -224,7 +224,7 @@ forbidden_globs     = ["*.py"]                        # no custom modeling code
 similarity_threshold = 0.95                           # fingerprint cosine ≥ this → near-duplicate
 ```
 
-> **Live manifest (what's actually enforced)** — `hippius_validation/config.py` additionally
+> **Live manifest (what's actually enforced)** — `model_validation/config.py` additionally
 > **requires** `preprocessor_config.json` + `video_preprocessor_config.json` (the multimodal
 > Qwen3.6 processor configs) and **allows** `LICENSE` / `configuration.json`. The arch lock
 > compares against `architecture_spec.json` (regenerated from the genesis by `generate_arch_spec.py`),
@@ -274,7 +274,7 @@ to stop after upload). Individual steps also exist: `upload`, `commit`, `check-c
 
 ### What gets a model rejected
 
-These are the **live** checks (`hippius_validation`), run by both the local CLI and the validator
+These are the **live** checks (`model_validation`), run by both the local CLI and the validator
 except where noted. Each maps to a `fault_code`.
 
 1. Repo name doesn't match `^[^/]+/albedo-qwen3\.6-35b-.+$`
@@ -289,7 +289,7 @@ except where noted. Each maps to a `fault_code`.
 6. `config.json` doesn't match the genesis arch spec on the lock keys (incl. the MoE keys), or
    contains `auto_map` (remote code) / `quantization_config` (quantized) (`architecture`)
 7. **Near-duplicate** (fingerprint cosine ≥ 0.95 of an already-seen model) — *not* checked locally;
-   needs OpenSearch, runs only in `hippius_validation`. Make your model genuinely distinct (`duplicate`)
+   needs OpenSearch, runs only in `model_validation`. Make your model genuinely distinct (`duplicate`)
 
 > **Note:** local `check-hippius --path` runs checks 1–6 (file manifest + arch + safetensors index +
 > 16-bit dtype) but **not** the dedup check; the `--repo/--digest` remote check runs only the file
@@ -394,11 +394,11 @@ set. The prefix ends on a user turn and the model generates the next assistant t
 
 ---
 
-## Validation internals (hippius_validation)
+## Validation internals (model_validation)
 
 ```
 claim model_submissions oldest-first  (SUBMITTED | HIPPIUS_RETRYABLE)  → HIPPIUS_RUNNING
-  1. file manifest    hippius_validation/config.py allowlist (required / allowed / forbidden globs)
+  1. file manifest    model_validation/config.py allowlist (required / allowed / forbidden globs)
   2. dtype preflight  header-only HTTP Range read of each shard — must be F16/BF16, else weight_dtype
                       (rejects quantized / F32 / F64 BEFORE the full download)
   3. download         full repo from Hippius → ALBEDO_MODEL_CACHE_DIR
@@ -420,7 +420,7 @@ claim model_submissions oldest-first  (SUBMITTED | HIPPIUS_RETRYABLE)  → HIPPI
 - **Spec-driven arch lock:** `architecture.py` reads a JSON spec, so changing the locked model family
   needs no code change — regenerate with `scripts/generate_arch_spec.py`.
 - **Where the checks live:** the live file / arch / safetensors-index / dtype checks the miner CLI and
-  this worker both run come from `hippius_validation.validate`. `config_validation` backs the separate
+  this worker both run come from `model_validation.validate`. `config_validation` backs the separate
   commit-validator and supplies the miner's Hippius download/list utilities + `ModelRef`. The local
   `check-hippius` skips only OpenSearch dedup.
 
@@ -601,7 +601,7 @@ Full reference in [.env.example](../.env.example) (backend + GPU host) and [.env
 | `ALBEDO_DASHBOARD_NETUID` | netuid stamped into dashboard.json (default 97) |
 | `ALBEDO_DASHBOARD_ARTIFACT_BASE_URL` | base for rewriting artifact `s3://` URIs → https (default https://s3.hippius.com) |
 | `ALBEDO_DASHBOARD_MODEL_FILTER` | `model_uri` LIKE-substring for history/chart (default `qwen3.6-35b`) |
-| `ALBEDO_S3_*` | bucket/endpoint/keys for uploading dashboard.json + state.json (shared with hippius_validation) |
+| `ALBEDO_S3_*` | bucket/endpoint/keys for uploading dashboard.json + state.json (shared with model_validation) |
 
 ---
 

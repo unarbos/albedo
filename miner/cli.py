@@ -1,6 +1,6 @@
 """`albedo` CLI — miner entrypoint.
 
-Headless subcommands: upload, check-hippius, commit, check-commit, publish.
+Headless subcommands: upload, check-model, commit, check-commit, publish.
 Interactive: `albedo on` launches the Rich Live TUI. Bare `albedo` prints help.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument("--name", help="suffix appended after albedo-qwen3.6-35b-")
     up.add_argument("--repo", help="full repo override (ns/albedo-qwen3.6-35b-…)")
 
-    ch = sub.add_parser("check-hippius", help="validate a model/repo (file manifest + architecture, no dedup)")
+    ch = sub.add_parser("check-model", help="validate a model/repo (file manifest + architecture, no dedup)")
     ch.add_argument("--path", help="local model directory")
     ch.add_argument("--repo")
     ch.add_argument("--digest")
@@ -63,7 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--network", default=_NETWORK)
     cc.add_argument("--hotkey", help="filter to one hotkey ss58")
 
-    pub = sub.add_parser("publish", help="validate → upload → check-hippius → commit (end to end)")
+    pub = sub.add_parser("publish", help="validate → upload → check-model → commit (end to end)")
     pub.add_argument("--path", required=True)
     pub.add_argument("--namespace", default=_NAMESPACE, required=_NAMESPACE is None)
     pub.add_argument("--name", required=True)
@@ -112,19 +112,19 @@ def _run(args, parser) -> int:
     if args.cmd == "upload":
         from miner import commit, upload
         repo = args.repo or upload.make_repo(args.namespace, args.name)
-        ref = upload.upload_to_hippius(args.path, repo)
+        ref = upload.upload_model(args.path, repo)
         print(ref.immutable_ref)
         print("reveal:", commit.build_reveal(ref))
         return 0
 
-    if args.cmd == "check-hippius":
+    if args.cmd == "check-model":
         from miner import validate
         if args.path:
             ok, res = validate.validate_local(args.path)
         elif args.repo and args.digest:
             ok, res = validate.validate_remote(args.repo, args.digest)
         else:
-            parser.error("check-hippius needs --path OR (--repo and --digest)")
+            parser.error("check-model needs --path OR (--repo and --digest)")
         _print_checks(ok, res)
         return 0 if ok else 1
 

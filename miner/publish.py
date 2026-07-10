@@ -1,4 +1,4 @@
-"""Publish orchestrator: validate(local) → upload → check-hippius → registered → commit.
+"""Publish orchestrator: validate(local) → upload → check-model → registered → commit.
 
 Shared by `albedo publish` (headless) and the TUI. An optional on_step(step, status, detail)
 callback lets the TUI light up its checklist; log(msg) streams output lines; confirm(preview)
@@ -13,8 +13,8 @@ from miner import commit, upload, validate
 # Pipeline steps, in order (the TUI renders these as a checklist).
 STEPS = [
     ("validate_local", "Validate (local model)"),
-    ("upload", "Upload to Hippius"),
-    ("check_hippius", "Check Hippius repo"),
+    ("upload", "Upload model"),
+    ("check_model", "Check uploaded repo"),
     ("registered", "Hotkey registered on subnet"),
     ("commit", "Commit on-chain"),
 ]
@@ -49,20 +49,20 @@ def run(*, path: str, namespace: str, name: str, coldkey: str, hotkey: str,
         return False, None
 
     # 2 — upload
-    logger.info("step 2/5 — upload to Hippius")
+    logger.info("step 2/5 — upload model")
     repo = upload.make_repo(namespace, name)
     on_step("upload", "running", repo)
-    ref = upload.upload_to_hippius(path, repo)
+    ref = upload.upload_model(path, repo)
     log(f"uploaded {ref.immutable_ref}")
     on_step("upload", "ok", ref.immutable_ref)
 
     # 3 — check the uploaded repo (remote validate)
-    logger.info("step 3/5 — check Hippius repo")
-    on_step("check_hippius", "running", "")
+    logger.info("step 3/5 — check uploaded repo")
+    on_step("check_model", "running", "")
     ok, res = validate.validate_remote(ref.repo, ref.digest)
     for k, v in res.items():
         log(f"{k}: {'OK' if v['ok'] else v['reason']}")
-    on_step("check_hippius", "ok" if ok else "fail", _why(res))
+    on_step("check_model", "ok" if ok else "fail", _why(res))
     if not ok:
         return False, ref
 

@@ -76,6 +76,8 @@ def _storage_backend_for_uri(uri: str) -> str:
         return "s3"
     if uri.startswith(("local-cache://", "file://")):
         return "local-cache"
+    if uri.startswith("hf://"):
+        return "hf"
     return "hippius"
 
 

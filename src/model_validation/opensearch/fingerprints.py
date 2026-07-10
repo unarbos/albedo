@@ -17,20 +17,47 @@ from loguru import logger as log
 
 from config_validation.fingerprint import similarity
 
-from hippius_validation import config
-from hippius_validation.opensearch.client import ensure_index, get_client
+from model_validation import config
+from model_validation.opensearch.client import ensure_index, get_client
 
 
 def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
-                   k: int | None = None) -> dict:
+                   k: int | None = None, weights_hash: str | None = None) -> dict:
     """Decide duplicate-or-not. Returns a result dict:
       {is_duplicate, similarity, threshold, matched_key, matched_hotkey, matched_model_uri,
-       candidates_checked}
+       candidates_checked, exact_weights_match}
     """
     threshold = config.SIM_THRESHOLD if threshold is None else threshold
     k = config.KNN_CANDIDATES if k is None else k
     vec = fp.get("norm_vector") or []
     index = ensure_index(len(vec))   # per-dimension index
+
+    # Stage 0 — exact-content gate. weights_hash is backend-independent (pure content), so a
+    # byte-identical re-upload — other repo, other digest, or the other hub (HF vs Hippius) —
+    # is caught here even when the kNN prefilter below is saturated with identical vectors.
+    if weights_hash:
+        exact_body = {
+            "size": 1,
+            "_source": ["key", "hotkey", "model_uri"],
+            "query": {"bool": {
+                "filter": [{"term": {"weights_hash": weights_hash}}],
+                "must_not": [{"term": {"hotkey": hotkey}}] if hotkey else [],
+            }},
+        }
+        exact_hits = get_client().search(index=index, body=exact_body)["hits"]["hits"]
+        if exact_hits:
+            src = exact_hits[0].get("_source", {})
+            log.warning("duplicate: exact weights_hash match vs {}", src.get("key", ""))
+            return {
+                "is_duplicate": True,
+                "similarity": 1.0,
+                "threshold": threshold,
+                "matched_key": src.get("key", ""),
+                "matched_hotkey": src.get("hotkey", ""),
+                "matched_model_uri": src.get("model_uri", ""),
+                "candidates_checked": len(exact_hits),
+                "exact_weights_match": True,
+            }
 
     body = {
         "size": k,
@@ -59,6 +86,7 @@ def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
         "matched_hotkey": matched["hotkey"] if is_dup else "",
         "matched_model_uri": matched["model_uri"] if is_dup else "",
         "candidates_checked": len(hits),
+        "exact_weights_match": False,
     }
     if is_dup:
         log.warning("duplicate: similarity={:.6f} >= {} vs {}", best_sim, threshold, matched["key"])
@@ -66,17 +94,16 @@ def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
 
 
 def index_fingerprint(key: str, fp: dict, *, hotkey: str, repo: str, digest: str,
-                      model_uri: str, created_at: str) -> None:
+                      model_uri: str, created_at: str, weights_hash: str | None = None) -> None:
     """Index a non-duplicate model's fingerprint into the per-dimension corpus (id=key)."""
     vec = fp.get("norm_vector") or []
     index = ensure_index(len(vec))
-    get_client().index(
-        index=index,
-        id=key,
-        body={
-            "key": key, "hotkey": hotkey, "repo": repo, "digest": digest,
-            "model_uri": model_uri, "created_at": created_at,
-            "norm_vector": vec,
-            "fingerprint": fp,
-        },
-    )
+    body = {
+        "key": key, "hotkey": hotkey, "repo": repo, "digest": digest,
+        "model_uri": model_uri, "created_at": created_at,
+        "norm_vector": vec,
+        "fingerprint": fp,
+    }
+    if weights_hash:
+        body["weights_hash"] = weights_hash
+    get_client().index(index=index, id=key, body=body)

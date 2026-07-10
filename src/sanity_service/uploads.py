@@ -4,7 +4,7 @@ On a terminal pre-eval rejection the dispatcher publishes a per-submission fault
 fault_code, and the full per-judge injection/viability evidence) so it can be linked from the dashboard.
 
 Env-gated and best-effort: when ALBEDO_S3_* is unset the uploader is disabled and calls are no-ops,
-so pre-eval still runs without publishing. Mirrors hippius_validation/uploads/artifacts.py.
+so pre-eval still runs without publishing. Mirrors model_validation/uploads/artifacts.py.
 """
 
 from __future__ import annotations
