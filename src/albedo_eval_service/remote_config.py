@@ -39,6 +39,10 @@ class RemoteSettings(BaseSettings):
     top_p: float = 1.0
     max_model_len: int | None = None
     enforce_eager: bool = False
+    # Pinned torch.compile cache dir shared across models. All contestant models get the
+    # canonical genesis config, so compiled kernels are shape-identical and interchangeable;
+    # the default per-model-path keying recompiles (~50s) and leaks ~1.25 GB per model.
+    compile_cache_dir: str = ""
     gpu_memory_utilization: float = 0.95
     kv_cache_dtype: str = "auto"
     use_canonical_model_config: bool = True

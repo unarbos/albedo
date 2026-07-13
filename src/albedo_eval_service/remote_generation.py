@@ -36,6 +36,7 @@ class VllmProcessGenerator:
         top_k: int | None = None,
         max_model_len: int | None = None,
         enforce_eager: bool = False,
+        compile_cache_dir: str = "",
         gpu_memory_utilization: float = 0.95,
         kv_cache_dtype: str = "auto",
     ):
@@ -47,6 +48,7 @@ class VllmProcessGenerator:
         self.top_k = top_k
         self.max_model_len = max_model_len
         self.enforce_eager = enforce_eager
+        self.compile_cache_dir = compile_cache_dir
         self.gpu_memory_utilization = gpu_memory_utilization
         self.kv_cache_dtype = kv_cache_dtype
 
@@ -69,6 +71,7 @@ class VllmProcessGenerator:
                 "top_k": self.top_k,
                 "max_model_len": self.max_model_len,
                 "enforce_eager": self.enforce_eager,
+                "compile_cache_dir": self.compile_cache_dir,
                 "gpu_memory_utilization": self.gpu_memory_utilization,
                 "kv_cache_dtype": self.kv_cache_dtype,
                 "queue": result_queue,
@@ -117,6 +120,7 @@ def _vllm_worker(
     top_k: int | None,
     max_model_len: int | None,
     enforce_eager: bool,
+    compile_cache_dir: str = "",
     gpu_memory_utilization: float = 0.95,
     kv_cache_dtype: str = "auto",
     queue=None,
@@ -144,6 +148,8 @@ def _vllm_worker(
             llm_kwargs["max_model_len"] = max_model_len
         if enforce_eager:
             llm_kwargs["enforce_eager"] = True
+        if compile_cache_dir:
+            llm_kwargs["compilation_config"] = {"cache_dir": compile_cache_dir}
         llm = LLM(**llm_kwargs)
         params_kwargs = {
             "max_tokens": max_new_tokens,
