@@ -1,6 +1,6 @@
 import { el, mount } from "../dom.js";
-import { pct, fmtDateTime, fmtRelative, toRoman } from "../format.js";
-import { modelRepo } from "../model.js";
+import { pct, fmtDateTime, fmtRelative } from "../format.js";
+import { modelRepo, kingTitleName } from "../model.js";
 
 const BENCHMARK_LABELS = {
   tau2_airline: "Tau2 Airline",
@@ -40,12 +40,15 @@ function romanToInt(value) {
   return total;
 }
 
-// benchmarks.json king labels lag the chain numbering by one (its "King LXXIV" is chain king LXXV).
+// benchmarks.json labels ("King <N>") map 1:1 to chain reigns — each king-<N> repo's
+// albedo.md names the hippius repo/hotkey of chain king N. Display the reign name
+// (ALBEDO-<roman>) used everywhere else on the site.
 function modelLabel(model) {
   const label = model?.label || "—";
+  if (/^genesis$/i.test(label)) return kingTitleName(0);
   const match = /^King\s+([IVXLCDM]+)$/i.exec(label);
   if (!match) return label;
-  return `King ${toRoman(romanToInt(match[1]) + 1)}`;
+  return kingTitleName(romanToInt(match[1]));
 }
 
 function hfRepoUrl(model) {
@@ -232,7 +235,65 @@ function renderSparks(sorted) {
   }));
 }
 
-function renderHistoryPanel(sorted, selectedModel, rerender) {
+function runningLabel(item, labelByRepo) {
+  if (labelByRepo?.has(item?.model_repo)) return labelByRepo.get(item.model_repo);
+  if (item?.label) return modelLabel({ label: item.label });
+  return (item?.model_repo || "").split("/").pop() || "—";
+}
+
+function progressNote(item) {
+  const done = Number(item?.progress_done);
+  const total = Number(item?.progress_total);
+  if (Number.isFinite(done) && Number.isFinite(total) && total > 0) return `${done}/${total}`;
+  return null;
+}
+
+function renderSuiteQueues(data) {
+  const models = data?.models || [];
+  const labelByRepo = new Map(models.filter(m => m.model_repo).map(m => [m.model_repo, modelLabel(m)]));
+  const orderByRepo = new Map(models.filter(m => m.model_repo).map(m => [m.model_repo, Number(m.model_order ?? 999999)]));
+
+  const runningBySuite = new Map();
+  for (const worker of data?.workers || []) {
+    if (worker?.suite && worker?.model_repo && isActiveProgress(worker)) runningBySuite.set(worker.suite, worker);
+  }
+  const queuedBySuite = new Map(BENCHMARK_ORDER.map(suite => [suite, []]));
+  for (const job of data?.jobs || []) {
+    if (!queuedBySuite.has(job?.suite) || !isActiveProgress(job)) continue;
+    if (activeState(job) === "QUEUED") queuedBySuite.get(job.suite).push(job);
+    else if (!runningBySuite.has(job.suite)) runningBySuite.set(job.suite, job);
+  }
+  if (!runningBySuite.size && ![...queuedBySuite.values()].some(jobs => jobs.length)) return null;
+
+  return el("div", { class: "bench-queue-grid" }, BENCHMARK_ORDER.map(suite => {
+    const running = runningBySuite.get(suite);
+    const queued = [...queuedBySuite.get(suite)].sort((a, b) =>
+      (orderByRepo.get(a.model_repo) ?? 999999) - (orderByRepo.get(b.model_repo) ?? 999999));
+    const stateRows = [];
+    if (running) {
+      const note = [activeState(running).toLowerCase().replaceAll("_", " "), progressNote(running)].filter(Boolean).join(" · ");
+      stateRows.push(el("div", { class: "bench-queue-row" },
+        el("span", { class: "bench-queue-state live" }, "running"),
+        el("span", { class: "bench-queue-model" }, runningLabel(running, labelByRepo)),
+        el("span", { class: "bench-queue-note" }, note)));
+    } else {
+      stateRows.push(el("div", { class: "bench-queue-row" },
+        el("span", { class: "bench-queue-state" }, "running"),
+        el("span", { class: "bench-queue-model muted" }, "idle")));
+    }
+    stateRows.push(el("div", { class: "bench-queue-row" },
+      el("span", { class: "bench-queue-state" }, "pending"),
+      el("span", { class: queued.length ? "bench-queue-model" : "bench-queue-model muted" },
+        queued.length ? queued.map(job => runningLabel(job, labelByRepo)).join(", ") : "none")));
+    return el("div", { class: "bench-queue" },
+      el("div", { class: "bench-queue-head" },
+        el("strong", {}, benchmarkLabel(suite)),
+        el("span", {}, queued.length ? `${queued.length} pending` : "")),
+      stateRows);
+  }));
+}
+
+function renderHistoryPanel(sorted, selectedModel, rerender, data) {
   const pages = Math.max(1, Math.ceil(sorted.length / historyPageSize));
   historyPage = Math.min(Math.max(1, historyPage), pages);
   const shown = sorted.slice((historyPage - 1) * historyPageSize, historyPage * historyPageSize);
@@ -276,6 +337,7 @@ function renderHistoryPanel(sorted, selectedModel, rerender) {
 
   return el("div", { class: "bench-history" },
     renderSparks(sorted),
+    renderSuiteQueues(data),
     pager,
     sorted.length
       ? el("div", { class: "data-table-wrap" },
@@ -320,6 +382,6 @@ export function renderBenchmarks(container, metaNode, data) {
             `${done}/${BENCHMARK_ORDER.length} scores · ${modelLabel(selected)}`))),
       el("div", { class: "bench-tile-grid" }, BENCHMARK_ORDER.map(suite =>
         renderTile(selected, suite, activeProgress.get(progressKey(selected.model_repo || selected.id, suite))))),
-      historyOpen ? renderHistoryPanel(sorted, selected, rerender) : null));
+      historyOpen ? renderHistoryPanel(sorted, selected, rerender, data) : null));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }

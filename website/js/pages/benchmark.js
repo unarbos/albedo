@@ -1,7 +1,7 @@
 import { fetchBenchmarks, fetchJson } from "../fetch.js";
 import { el, mount } from "../dom.js";
 import { fmt, fmtDateTime, shortDigest } from "../format.js";
-import { modelRepo } from "../model.js";
+import { modelRepo, kingTitleName } from "../model.js";
 
 const BENCHMARK_LABELS = {
   tau2_airline: "Tau2 Airline",
@@ -26,8 +26,28 @@ function modelName(model) {
   return model?.model_repo || modelRepo(model?.model_uri) || model?.model_uri || "—";
 }
 
+const ROMAN_VALUES = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+
+function romanToInt(value) {
+  let total = 0;
+  let previous = 0;
+  for (const char of value.toUpperCase().split("").reverse()) {
+    const current = ROMAN_VALUES[char] || 0;
+    total += current < previous ? -current : current;
+    previous = Math.max(previous, current);
+  }
+  return total;
+}
+
+// benchmarks.json labels ("King <N>") map 1:1 to chain reigns — each king-<N> repo's
+// albedo.md names the hippius repo/hotkey of chain king N. Display the reign name
+// (ALBEDO-<roman>) used everywhere else on the site.
 function modelLabel(model) {
-  return model?.label || "—";
+  const label = model?.label || "—";
+  if (/^genesis$/i.test(label)) return kingTitleName(0);
+  const match = /^King\s+([IVXLCDM]+)$/i.exec(label);
+  if (!match) return label;
+  return kingTitleName(romanToInt(match[1]));
 }
 
 function hfRepoUrl(model) {
