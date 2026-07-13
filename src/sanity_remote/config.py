@@ -35,6 +35,7 @@ class SanityRemoteSettings(BaseSettings):
     vllm_enforce_eager: bool = True
     # Passed as --moe-backend <value>; "triton" avoids FlashInfer JIT on CUDA 13 / sm_120f hosts.
     vllm_moe_backend: str = ""
+    vllm_compile_cache_dir: str = ""
     tensor_parallel_size: int = 2  # GPU_IDS must list exactly this many indices
     cpu_offload_gb: int = 0  # GB to spill to CPU RAM; 2x5090 BF16 needs ~6 for the 67 GB model
     download_timeout_s: float = 1800.0  # 67 GB model can take 20+ min from Hippius
