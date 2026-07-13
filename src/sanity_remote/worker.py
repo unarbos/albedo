@@ -77,11 +77,62 @@ def _model_ref_parts(model_uri: str, digest: str) -> tuple[str, str]:
 
 
 def _model_present(model_dir: str) -> bool:
-    # A reusable on-disk copy: dir exists, non-empty, has config.json + a safetensors shard.
     p = Path(model_dir)
     if not p.is_dir():
         return False
-    return (p / "config.json").exists() and any(p.glob("*.safetensors"))
+    if not (p / "config.json").exists() or not any(p.glob("*.safetensors")):
+        return False
+    index = p / "model.safetensors.index.json"
+    if not index.exists():
+        return (p / "model.safetensors").exists()
+    try:
+        weight_map = json.loads(index.read_text())["weight_map"]
+    except (ValueError, KeyError, OSError):
+        return False
+    return all((p / shard).exists() for shard in set(weight_map.values()))
+
+
+_HIPPIUS_REGISTRY = "https://registry.hippius.com"
+
+
+async def _audit_hippius_blobs(model_uri: str, digest: str) -> str:
+    repo, ref_digest = _model_ref_parts(model_uri, digest)
+    if not ref_digest.startswith("sha256:"):
+        return ""  # HF-backend model — its download errors are already explicit
+    try:
+        async with asyncio.timeout(60):
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                token = (
+                    await c.get(
+                        f"{_HIPPIUS_REGISTRY}/service/token",
+                        params={"service": "harbor-registry", "scope": f"repository:{repo}:pull"},
+                    )
+                ).json()["token"]
+                headers = {"Authorization": f"Bearer {token}"}
+                manifest = (
+                    await c.get(
+                        f"{_HIPPIUS_REGISTRY}/v2/{repo}/manifests/{ref_digest}",
+                        headers={**headers, "Accept": "application/vnd.oci.image.manifest.v1+json"},
+                    )
+                ).json()
+                layers = manifest.get("layers", [])
+                if not layers:
+                    return "; blob audit: manifest resolved but lists no layers"
+                dead = []
+                for layer in layers:
+                    r = await c.head(
+                        f"{_HIPPIUS_REGISTRY}/v2/{repo}/blobs/{layer['digest']}", headers=headers
+                    )
+                    if r.status_code != 200:
+                        title = layer.get("annotations", {}).get("org.opencontainers.image.title")
+                        dead.append(title or layer["digest"][:19])
+                if dead:
+                    names = ", ".join(sorted(dead)[:4]) + ("…" if len(dead) > 4 else "")
+                    return f"; blob audit: {len(dead)}/{len(layers)} blobs missing on hippius (404: {names})"
+                return f"; blob audit: all {len(layers)} blobs present"
+    except Exception as exc:  # noqa: BLE001 - audit is best-effort; never mask the original error
+        logger.debug(f"[sanity-remote] blob audit failed: {exc}")
+        return ""
 
 
 class WorkerFault(Exception):
@@ -200,7 +251,8 @@ class VllmEngine:
         except asyncio.TimeoutError as exc:
             raise WorkerFault("download_timeout", f"download exceeded {self._s.download_timeout_s}s") from exc
         except Exception as exc:  # noqa: BLE001 - download failures are retryable infra by default
-            raise WorkerFault("download_failed", f"model download failed: {exc}") from exc
+            detail = await _audit_hippius_blobs(model_uri, digest)
+            raise WorkerFault("download_failed", f"model download failed: {exc}{detail}") from exc
 
         await self._kill_vllm()
         old_dir = self._loaded_dir
@@ -226,7 +278,13 @@ class VllmEngine:
             logger.info("[sanity-remote] reusing on-disk model at {} — skipping download", dest)
         else:
             logger.info("[sanity-remote] downloading {} digest={:.16} to {}", repo, ref_digest, dest)
-            dest = await asyncio.to_thread(download_full, ref)
+            try:
+                dest = await asyncio.to_thread(download_full, ref)
+            except Exception:
+                # A failed download leaves a partial dir that would pass _model_present's
+                # shard check on old copies without an index and poison every retry.
+                await asyncio.to_thread(shutil.rmtree, dest, True)
+                raise
         await asyncio.to_thread(_inject_seed_processor_files, dest)
         return dest
 
@@ -266,6 +324,8 @@ class VllmEngine:
             cmd += ["--enforce-eager"]
         if self._s.vllm_moe_backend:
             cmd += ["--moe-backend", self._s.vllm_moe_backend]
+        if self._s.vllm_compile_cache_dir:
+            cmd += ["--compilation-config", json.dumps({"cache_dir": self._s.vllm_compile_cache_dir})]
         self._proc = subprocess.Popen(
             cmd,
             env={
@@ -298,11 +358,19 @@ class VllmEngine:
             return False
 
     async def _wait_healthy(self, timeout: float) -> None:
-        # Polls the vLLM health endpoint until 200 or the timeout expires.
+        # Polls the vLLM health endpoint until 200, the process dies, or the timeout expires.
         url = f"http://localhost:{self._s.vllm_port}/health"
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        deadline = start + timeout
         async with httpx.AsyncClient(timeout=5.0) as c:
             while time.monotonic() < deadline:
+                if self._proc is not None and self._proc.poll() is not None:
+                    # Fail fast with the real story: a model with missing/corrupt files kills
+                    # vLLM in seconds; waiting out the full timeout misreports it as a hang.
+                    raise RuntimeError(
+                        f"vLLM process exited rc={self._proc.returncode}"
+                        f" after {time.monotonic() - start:.0f}s (crashed before becoming healthy)"
+                    )
                 try:
                     if (await c.get(url)).status_code == 200:
                         return
