@@ -288,6 +288,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
     eval_dir = Path(
         args.eval_dir
         or os.environ.get("ALBEDO_KING_HF_EVAL_DIR")
+        or os.environ.get("ALBEDO_REMOTE_MODEL_CACHE_DIR")
         or os.environ.get("ALBEDO_CACHE_DIR")
         or _DEFAULT_EVAL_DIR
     )
@@ -467,9 +468,13 @@ def download_to_work_dir(king: KingUpload, settings: Settings) -> Path:
     return Path(resolved.local_path).resolve()
 
 
-def _delete_work_copy(path: Path, work_dir: Path) -> None:
+def _delete_work_copy(path: Path, work_dir: Path, eval_dir: Path) -> None:
     work = work_dir.resolve()
     resolved = path.resolve()
+    eval_root = eval_dir.resolve()
+    if resolved == eval_root or eval_root in resolved.parents:
+        logger.info("keeping {} — inside eval dir {} (never deleted)", resolved, eval_root)
+        return
     if resolved == work or work not in resolved.parents:
         logger.warning("refusing to delete {} — not under work dir {}", resolved, work)
         return
@@ -743,7 +748,7 @@ def _upload_one(api, king: KingUpload, settings: Settings, repo_id: str) -> None
         try:
             _upload_model(api, king, cached, settings, repo_id)
         finally:
-            _delete_work_copy(cached, settings.work_dir)
+            _delete_work_copy(cached, settings.work_dir, settings.eval_dir)
         return
     logger.info(
         "{} (v{}) — not cached; downloading {} into work dir",
@@ -755,7 +760,7 @@ def _upload_one(api, king: KingUpload, settings: Settings, repo_id: str) -> None
     try:
         _upload_model(api, king, model_dir, settings, repo_id)
     finally:
-        _delete_work_copy(model_dir, settings.work_dir)
+        _delete_work_copy(model_dir, settings.work_dir, settings.eval_dir)
 
 
 def _iter_model_files(model_dir: Path, ignore_patterns: list[str]) -> list[str]:
@@ -821,7 +826,7 @@ def _verify_and_repair(api, king: KingUpload, settings: Settings, repo_id: str) 
         return True
     finally:
         if cleanup is not None:
-            _delete_work_copy(cleanup, settings.work_dir)
+            _delete_work_copy(cleanup, settings.work_dir, settings.eval_dir)
 
 
 def process_once(
