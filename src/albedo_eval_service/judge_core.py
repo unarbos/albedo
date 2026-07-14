@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from statistics import mean
 from typing import Any
 
 # Crown iff (challenger_mean - king_mean) >= this, on the 0-1 absolute scale (margin-only, no LCB).
 CHALLENGER_WIN_MARGIN = 0.02
+QUESTION_FLOOR_FRACTION = 0.4
+
+
+def question_floor(n: int) -> int:
+    return max(1, round(n * QUESTION_FLOOR_FRACTION))
 
 JUDGE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.2",
@@ -32,10 +38,36 @@ turn — the single next action or message it produces given the conversation so
 solution. Given the TASK (the conversation as the agent saw it up to this point), consider the \
 SEVERAL different next steps that would each be strong from here — different capable agents \
 legitimately choose different good moves (inspecting any relevant file, searching, running tests, \
-editing) — then write EXACTLY {n} yes/no questions that test whether the response is a good next \
-move — a single flat list, NO categories. Every question must be a DISTINCT check: NEVER repeat or \
-trivially rephrase one you already wrote; if you run out of strong distinct checks, stop early and \
-return fewer questions instead of repeating.
+editing) — then write UP TO {n} yes/no questions that test whether the response is a good next \
+move — a single flat list, NO categories. Most tasks support only ~20-35 GENUINELY different \
+checks: a list of {floor}+ distinct questions is a good outcome; padding toward {n} with \
+disguised repeats is a failure.
+
+CRITICAL — every question must probe a DIFFERENT underlying property of the response. \
+Paraphrases ("...as a lazy finish?" / "...as a hasty finish?"), the same template re-instantiated \
+on another file/symbol/command ("avoids editing <file A>?", "avoids editing <file B>?", ... or \
+"does the THOUGHT mention <symbol A>?", "...<symbol B>?", ...), and complements of an earlier \
+question are the SAME check and count as forbidden repeats — checklists that enumerate task \
+concepts through one template reward keyword-stuffing, not quality. Enforce this STRUCTURALLY \
+while you write:
+- Spend the list across the aspects roughly as: 1/4 correctness, 1/4 grounding (each question \
+anchored on a DIFFERENT concrete fact of the conversation), 1/5 protocol, 1/8 efficiency, and AT \
+MOST 3 questions on progress/non-redundancy. Within an aspect, every question must probe a \
+different ANGLE — never the same angle pointed at a different target.
+- AT MOST FIVE questions in the ENTIRE list may be negative-form ("avoids", "does not", \
+"refrains"). Each negative question must cover its whole family by listing the items inside \
+itself — ONE question like "Does the response avoid re-running commands already executed above, \
+such as `ls -la`, `find src -type f`, or `head -50 cluster.c`?", never one question per command.
+- When a check has many valid (or many invalid) targets, the enumeration goes INSIDE one \
+question as listed alternatives ("...edits `utils/result.ts` or its test, rather than any other \
+file?"). NEVER spread an enumeration across several questions.
+- No single file, symbol, or command may be the SUBJECT of more than TWO questions in the whole \
+list — a third question about the same target is a repeat even if it probes a "different" nuance.
+- When you run out of genuinely different checks, STOP and return the shorter list (minimum \
+{floor}) — {floor} distinct checks beat {n} with paraphrase or template filler.
+FINAL SELF-CHECK before emitting: re-read your list; wherever two questions share a template, \
+target, or would be flipped by the same feature of a response, DELETE all but the strongest one \
+and return the shorter list.
 
 Judge the MOVE, not task completion. The response is ONE turn in an ongoing trajectory; it is NOT \
 expected to solve or finish the task. Do NOT ask whether it fixes the bug, creates the final file, \
@@ -106,8 +138,9 @@ QUESTION_USER = """TASK (the conversation so far):
 {task}
 ------
 
-Decide what a strong NEXT step would be from here, then write the {n} self-contained yes/no \
-questions that judge whether the response is a good next move — questions only."""
+Decide what a strong NEXT step would be from here, then write up to {n} self-contained yes/no \
+questions (each probing a different property) that judge whether the response is a good next \
+move — questions only."""
 
 JUDGE_SYSTEM = """You judge a candidate assistant RESPONSE — a coding agent's next turn in a \
 conversation that is NOT shown to you — by answering yes/no questions about it. The questions span \
@@ -149,7 +182,7 @@ When a check cannot be verified from the response alone, answer 0. Return the st
 
 def build_question_messages(*, task: str, n: int) -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": QUESTION_SYSTEM.format(n=n)},
+        {"role": "system", "content": QUESTION_SYSTEM.format(n=n, floor=question_floor(n))},
         {"role": "user", "content": QUESTION_USER.format(task=task.rstrip(), n=n)},
     ]
 
@@ -180,7 +213,7 @@ def question_schema(n: int) -> dict[str, Any]:
                 "type": "array",
                 # Floor at the parser's accept threshold, not n: forcing exactly n makes the model
                 # pad the quota by repeating a question once it runs out of distinct checks.
-                "minItems": max(1, round(n * 0.8)),
+                "minItems": question_floor(n),
                 "maxItems": n,
                 "items": {
                     "type": "object",
@@ -256,16 +289,76 @@ def extract_json(raw: str, prefer_keys: tuple[str, ...] = ()) -> Any | None:
     return candidates[0] if candidates else None
 
 
-def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
-    """Return ([{id,category,text,example_bad}], ok). ok iff >= 80% of n DISTINCT questions parsed.
+_QUESTION_STOPWORDS = frozenset(
+    "does the response a an as its it is are do of to in on for with or and that this by be "
+    "not no any all one when if such e g rather than instead avoid avoids using use uses run "
+    "runs running contain contains include includes reference references".split()
+)
+_DUP_JACCARD = 0.55
+_DUP_CONTAINMENT = 0.75
+_DUP_CHAR_RATIO = 0.75
+_DUP_CHAR_MIN_LEN = 20
+_TEMPLATE_KEY_TOKENS = 5
+_TEMPLATE_MAX_PER_KEY = 2
 
-    Duplicates are dropped (first occurrence wins): the evaluator sometimes fills its quota by
-    repeating one question dozens of times, which would let a single check dominate the yes-rate.
-    A degenerate payload therefore fails ok and is retried via the client's accept hook."""
+
+def _question_signature(text: str) -> frozenset[str]:
+    words = re.sub(r"[^a-z0-9_./-]+", " ", text.casefold()).split()
+    return frozenset(
+        w.rstrip("s") if len(w) > 3 else w for w in words if w not in _QUESTION_STOPWORDS
+    )
+
+
+def _template_key(text: str) -> tuple[str, ...]:
+    """Leading phrase with target-like tokens (code, paths, identifiers, numbers) collapsed to a
+    placeholder, so 'references `A`?' and 'references `B` or `C`?' share one key while
+    'avoid re-running §' and 'avoid editing §' stay distinct."""
+    tokens: list[str] = []
+    for raw in text.split():
+        core = raw.strip("?,.!:;\"'()")
+        if not core:
+            continue
+        is_target = (
+            "`" in raw
+            or any(ch.isdigit() for ch in core)
+            or any(ch in "._/=<>[]{}\\" for ch in core)
+            or any(ch.isupper() for ch in core[1:])  # CamelCase / ALLCAPS / K"str" identifiers
+        )
+        normalized = "§" if is_target else core.casefold()
+        if normalized == "§" and tokens and tokens[-1] == "§":
+            continue
+        tokens.append(normalized)
+    return tuple(tokens[:_TEMPLATE_KEY_TOKENS])
+
+
+def _near_duplicate(sig_a: frozenset[str], sig_b: frozenset[str], text_a: str, text_b: str) -> bool:
+    if sig_a and sig_b:
+        inter = len(sig_a & sig_b)
+        if inter / len(sig_a | sig_b) >= _DUP_JACCARD:
+            return True
+        if inter / min(len(sig_a), len(sig_b)) >= _DUP_CONTAINMENT:
+            return True
+    if min(len(text_a), len(text_b)) >= _DUP_CHAR_MIN_LEN:
+        ratio = SequenceMatcher(None, text_a.casefold(), text_b.casefold()).ratio()
+        if ratio >= _DUP_CHAR_RATIO:
+            return True
+    return False
+
+
+def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
+    """Return ([{id,category,text,example_bad}], ok). ok iff >= question_floor(n) DISTINCT
+    questions parsed.
+
+    Exact and semantic near-duplicates are dropped (first occurrence wins): the evaluator pads its
+    quota by repeating one check as paraphrases or per-file/symbol template copies, which would let
+    a single check dominate the yes-rate. A degenerate payload therefore fails ok and is retried
+    via the client's accept hook."""
     obj = extract_json(raw, prefer_keys=("questions",))
     items = obj.get("questions") if isinstance(obj, dict) else obj
     out: list[dict[str, str]] = []
     seen: set[str] = set()
+    kept_signatures: list[frozenset[str]] = []
+    template_counts: dict[tuple[str, ...], int] = {}
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict) or not str(item.get("text", "")).strip():
@@ -275,13 +368,27 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
             if key in seen:
                 continue
             seen.add(key)
+            template = _template_key(text)
+            if (
+                len(template) == _TEMPLATE_KEY_TOKENS
+                and template_counts.get(template, 0) >= _TEMPLATE_MAX_PER_KEY
+            ):
+                continue
+            signature = _question_signature(text)
+            if any(
+                _near_duplicate(signature, prev_sig, text, prev["text"])
+                for prev_sig, prev in zip(kept_signatures, out)
+            ):
+                continue
+            template_counts[template] = template_counts.get(template, 0) + 1
+            kept_signatures.append(signature)
             out.append({"text": text, "example_bad": str(item.get("example_bad", "")).strip()})
     out = out[:n]
     for position, question in enumerate(out, start=1):
         question["id"] = f"q_{position:02d}"
         question["category"] = "overall"
     # Accept a slightly-short set (model sometimes emits an empty item); the eval-level gate covers the rest.
-    return out, len(out) >= max(1, round(n * 0.8))
+    return out, len(out) >= question_floor(n)
 
 
 _ANSWER_TO_BIT: dict[str, float] = {"1": 1.0, "0": 0.0}

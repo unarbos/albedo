@@ -34,8 +34,8 @@ def test_parse_questions_assigns_ids_and_category():
     assert ok is True
     assert [q["id"] for q in questions] == ["q_01", "q_02", "q_03"]
     assert all(q["category"] == "overall" for q in questions)
-    # fewer than requested -> not ok
-    _, ok2 = parse_questions(json.dumps({"questions": [{"text": "one", "example_bad": "b"}]}), 3)
+    # below the floor -> not ok
+    _, ok2 = parse_questions(json.dumps({"questions": []}), 3)
     assert ok2 is False
 
 
@@ -115,7 +115,7 @@ def test_parse_questions_drops_duplicates_and_rejects_degenerate_padding():
     )
     out, ok = parse_questions(degenerate, 50)
     assert [q["text"] for q in out] == ["q0?", "Does the response check X?"]
-    assert ok is False  # 2 unique < 80% of 50 -> accept hook retries the evaluator
+    assert ok is False  # 2 unique < question_floor(50)=20 -> accept hook retries the evaluator
 
     # near-exact repeats (case/whitespace) are the same check
     fuzzy = json.dumps(
@@ -135,20 +135,71 @@ def test_parse_questions_drops_duplicates_and_rejects_degenerate_padding():
     assert len({q["text"] for q in out3}) == 45
 
 
+def test_parse_questions_drops_semantic_near_duplicates():
+    # Observed in production: paraphrase padding ("...as a lazy/hasty/premature finish?") and
+    # template stamping ("avoids editing <file X>?" per file) survive exact-match dedup.
+    marker = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+    paraphrases = [
+        f"Does the response avoid using echo {marker} as a no-op finish?",
+        f"Does the response avoid using echo {marker} as a lazy finish?",
+        f"Does the response avoid using echo {marker} as a premature finish?",
+        f"Does the response avoid using echo {marker} as a finish without verification?",
+    ]
+    stamped = [
+        "Does the response avoid editing `src/core/client.ts` which is not the bug location?",
+        "Does the response avoid editing `src/core/fetchSource.ts` which is not the bug location?",
+        "Does the response avoid editing `src/core/subscription.ts` which is not the bug location?",
+    ]
+    distinct = [
+        "Does the response start with the literal text THOUGHT: before any code block?",
+        "Does the response contain exactly one fenced bash block with a single command?",
+        "Is the response consistent with `grep -n hasNext result.ts` having already been run?",
+    ]
+    raw = json.dumps(
+        {"questions": [{"text": t, "example_bad": "b"} for t in paraphrases + stamped + distinct]}
+    )
+    out, _ = parse_questions(raw, 10)
+    texts = [q["text"] for q in out]
+    assert texts == [paraphrases[0], stamped[0]] + distinct  # one survivor per padded family
+    assert [q["id"] for q in out] == [f"q_{i:02d}" for i in range(1, 6)]
+
+
+def test_parse_questions_caps_template_stamping():
+    # Observed in production: one template re-aimed at a different symbol each time ("Does the
+    # THOUGHT section mention <X>?" x22) — word-overlap misses it since every target differs.
+    stamped = [
+        "Does the THOUGHT section mention the platform matcher or node selector labels?",
+        "Does the THOUGHT section mention scheduling Kaniko pods on matching nodes?",
+        "Does the THOUGHT section mention multi-platform warnings for unsupported builds?",
+        "Does the THOUGHT section mention removing obsolete init flags from the parser?",
+        "Does the THOUGHT section mention documentation updates for the cluster builder?",
+    ]
+    others = [
+        "Does the response contain exactly one fenced bash block with a single command?",
+        "Does the response use repo-relative paths rather than absolute /tmp/... paths?",
+    ]
+    raw = json.dumps({"questions": [{"text": t, "example_bad": "b"} for t in stamped + others]})
+    out, _ = parse_questions(raw, 10)
+    texts = [q["text"] for q in out]
+    assert texts == stamped[:2] + others  # capped at 2 per leading phrase
+
+
 def test_question_schema_floor_does_not_force_padding():
+    # Floor sits well under the evaluator's real supply of distinct checks (~25-35 per task):
+    # a floor near n forces quota-padding with paraphrase/template repeats.
     schema = question_schema(50)["properties"]["questions"]
-    assert schema["minItems"] == 40 and schema["maxItems"] == 50
+    assert schema["minItems"] == 20 and schema["maxItems"] == 50
 
 
 def test_parse_questions_accepts_slightly_short_and_truncates_extra():
     q49 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(49)]})
     out, ok = parse_questions(q49, 50)
-    assert ok is True and len(out) == 49 and out[-1]["id"] == "q_49"   # 49/50 >= 80% floor -> accepted
+    assert ok is True and len(out) == 49 and out[-1]["id"] == "q_49"   # >= floor -> accepted
 
     q51 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(51)]})
     out2, ok2 = parse_questions(q51, 50)
     assert ok2 is True and len(out2) == 50                             # extra truncated to n
 
-    q39 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(39)]})
-    _, ok3 = parse_questions(q39, 50)
-    assert ok3 is False                                                # < 80% floor -> not ok (retry/fail)
+    q19 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(19)]})
+    _, ok3 = parse_questions(q19, 50)
+    assert ok3 is False                                            # < floor -> not ok (retry/fail)
