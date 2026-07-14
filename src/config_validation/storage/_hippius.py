@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager
 
 from config_validation.models import ModelRef
+from config_validation.storage import _supervise
 from config_validation.storage._paths import _cache_dir
 
 log = logging.getLogger(__name__)
@@ -56,19 +58,44 @@ def _token() -> str | None:
     return os.environ.get(_HUB_TOKEN_ENV)
 
 
+def _download_child() -> None:
+    """Child-process entry point for a supervised full Hippius download (see _supervise).
+
+    Invoked as ``python -c "...; _download_child()" <repo> <revision> <local_dir> <max_workers>``.
+    """
+    repo, revision, local_dir, max_workers = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+    _hub().snapshot_download(
+        repo,
+        revision=revision,
+        local_dir=local_dir,
+        max_workers=max(1, int(max_workers)),
+        token=_token(),
+    )
+
+
 def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:
     dest = _cache_dir(ref)
     dest.mkdir(parents=True, exist_ok=True)
     log.info("hippius: downloading %s (config_only=%s) → %s", ref.immutable_ref, config_only, dest)
-    with _download_heartbeat(ref.immutable_ref):
-        _hub().snapshot_download(
-            ref.repo,
-            revision=ref.digest,
-            local_dir=str(dest),
-            max_workers=max_workers,
-            allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else None,
-            token=_token(),
-        )
+    if config_only or not _supervise.OUT_OF_PROCESS:
+        with _download_heartbeat(ref.immutable_ref):
+            _hub().snapshot_download(
+                ref.repo,
+                revision=ref.digest,
+                local_dir=str(dest),
+                max_workers=max_workers,
+                allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else None,
+                token=_token(),
+            )
+        return str(dest)
+    _supervise.supervise_download(
+        child_call="from config_validation.storage._hippius import _download_child; _download_child()",
+        args=[ref.repo, ref.digest, str(dest), str(max_workers)],
+        watch_dir=dest,
+        label=ref.immutable_ref,
+        stall_seconds=_supervise.HIPPIUS_STALL_SECONDS,
+        max_attempts=_supervise.HIPPIUS_STALL_RETRIES,
+    )
     return str(dest)
 
 

@@ -51,6 +51,16 @@ class RemoteSettings(BaseSettings):
     resolve_model_artifacts: bool = True
     model_cache_dir: str = "/tmp/albedo-remote-models"
     model_download_concurrency: int = 8
+    # Run HF snapshot downloads in a killable child process guarded by a stall
+    # watchdog: kill + resume when the .partial dir stops growing for
+    # model_download_stall_seconds, giving up (retryable) after
+    # model_download_stall_retries consecutive stalls. Set False to fetch in-process.
+    model_download_out_of_process: bool = True
+    model_download_stall_seconds: float = 300.0
+    model_download_stall_retries: int = 3
+    # Per-read timeout for the in-process OCI blob stream so a dead socket raises
+    # instead of hanging forever.
+    model_download_read_timeout_seconds: float = 120.0
     artifact_spool_dir: str = "/tmp/albedo-remote-artifacts"
     remote_state_dir: str = "/tmp/albedo-remote-state"
 

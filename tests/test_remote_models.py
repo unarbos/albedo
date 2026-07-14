@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
 import pytest
 
+from albedo_eval_service import remote_models
 from albedo_eval_service.canonical_model_config import canonical_max_model_len
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_models import ModelArtifactResolver, parse_oci_ref
@@ -257,7 +260,11 @@ def test_model_resolver_downloads_hf_ref(tmp_path, monkeypatch):
     revision = "d" * 40
     ref = f"hf://alice/albedo-qwen3.6-35b-hf@{revision}"
     resolver = ModelArtifactResolver(
-        RemoteSettings(model_cache_dir=str(tmp_path / "cache"), use_canonical_model_config=False)
+        RemoteSettings(
+            model_cache_dir=str(tmp_path / "cache"),
+            use_canonical_model_config=False,
+            model_download_out_of_process=False,
+        )
     )
 
     resolved = resolver.resolve(ref)
@@ -274,8 +281,124 @@ def test_model_resolver_downloads_hf_ref(tmp_path, monkeypatch):
     assert again.local_path == resolved.local_path
 
 
+def test_model_resolver_downloads_bare_hf_chain_ref(tmp_path, monkeypatch):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+
+    calls = {}
+
+    def fake_snapshot_download(**kw):
+        calls.update(kw)
+        local_dir = Path(kw["local_dir"])
+        (local_dir / "config.json").write_text('{"model_type":"qwen3"}', encoding="utf-8")
+        (local_dir / "model.safetensors").write_bytes(b"not-real-safetensors")
+        return kw["local_dir"]
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download, raising=False)
+    revision = "d" * 40
+    # Chain commits store "<repo>@<git-sha>" with no scheme; the resolver must treat it
+    # as an HF ref, not pass it through to vLLM.
+    ref = f"alice/albedo-qwen3.6-35b-hf@{revision}"
+    resolver = ModelArtifactResolver(
+        RemoteSettings(
+            model_cache_dir=str(tmp_path / "cache"),
+            use_canonical_model_config=False,
+            model_download_out_of_process=False,
+        )
+    )
+
+    resolved = resolver.resolve(ref)
+
+    assert calls["repo_id"] == "alice/albedo-qwen3.6-35b-hf"
+    assert calls["revision"] == revision
+    assert resolved.source == "hf"
+    assert resolved.original_ref == ref
+    assert Path(resolved.local_path, "config.json").exists()
+
+    prefixed = resolver.resolve(f"hf://{ref}")
+    assert prefixed.cache_hit is True
+    assert prefixed.local_path == resolved.local_path
+
+
 def test_model_resolver_rejects_malformed_hf_ref(tmp_path):
     resolver = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache")))
 
     with pytest.raises(ValueError, match="hf:// ref must be"):
         resolver.resolve("hf://no-revision-here")
+
+
+def test_download_supervisor_kills_stalled_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
+    launched: list[subprocess.Popen] = []
+
+    def fake_spawn(repo, revision, temp_dir, concurrency, log_path):
+        # A child that never writes to temp_dir and refuses to exit — a wedged transfer.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            start_new_session=True,
+        )
+        launched.append(proc)
+        return proc
+
+    monkeypatch.setattr(remote_models, "_spawn_hf_download", fake_spawn)
+    temp_dir = tmp_path / "m.partial"
+    temp_dir.mkdir()
+
+    with pytest.raises(TimeoutError, match="made no progress"):
+        remote_models._run_hf_download_supervised(
+            repo="ns/m",
+            revision="d" * 40,
+            temp_dir=temp_dir,
+            label="ns/m",
+            concurrency=1,
+            stall_seconds=0.2,
+            max_attempts=2,
+        )
+
+    assert len(launched) == 2  # stalled once, retried, then gave up
+    for proc in launched:
+        assert proc.poll() is not None  # every stalled child was terminated
+
+
+def test_download_supervisor_raises_on_child_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
+
+    def fake_spawn(repo, revision, temp_dir, concurrency, log_path):
+        Path(log_path).write_text("RepositoryNotFoundError: 404\n", encoding="utf-8")
+        return subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
+
+    monkeypatch.setattr(remote_models, "_spawn_hf_download", fake_spawn)
+    temp_dir = tmp_path / "m.partial"
+    temp_dir.mkdir()
+
+    with pytest.raises(RuntimeError, match="exited 3"):
+        remote_models._run_hf_download_supervised(
+            repo="ns/m",
+            revision="d" * 40,
+            temp_dir=temp_dir,
+            label="ns/m",
+            concurrency=1,
+            stall_seconds=5.0,
+            max_attempts=2,
+        )
+
+
+def test_download_supervisor_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
+
+    def fake_spawn(repo, revision, temp_dir, concurrency, log_path):
+        (Path(temp_dir) / "model.safetensors").write_bytes(b"x" * 1024)
+        return subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
+
+    monkeypatch.setattr(remote_models, "_spawn_hf_download", fake_spawn)
+    temp_dir = tmp_path / "m.partial"
+    temp_dir.mkdir()
+
+    remote_models._run_hf_download_supervised(
+        repo="ns/m",
+        revision="d" * 40,
+        temp_dir=temp_dir,
+        label="ns/m",
+        concurrency=1,
+        stall_seconds=5.0,
+        max_attempts=2,
+    )

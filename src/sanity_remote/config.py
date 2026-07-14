@@ -38,7 +38,11 @@ class SanityRemoteSettings(BaseSettings):
     vllm_compile_cache_dir: str = ""
     tensor_parallel_size: int = 2  # GPU_IDS must list exactly this many indices
     cpu_offload_gb: int = 0  # GB to spill to CPU RAM; 2x5090 BF16 needs ~6 for the 67 GB model
-    download_timeout_s: float = 1800.0  # 67 GB model can take 20+ min from Hippius
+    # Outer ceiling on a cold model fetch. Must stay above the supervised-download worst case
+    # (config_validation.storage._supervise: Hippius 1200s x 2 = 2400s) so the stall watchdog —
+    # which kills + resumes cleanly — is what fires, not this blunt cancel (a cancel here can't
+    # reclaim the download thread and would race a retry onto the same dir).
+    download_timeout_s: float = 3000.0  # 67 GB from Hippius, plus supervised-download retries
     model_cache_dir: str = "/root/miners_models"
     max_model_len: int = canonical_max_model_len()
     kv_cache_dtype: str = "auto"

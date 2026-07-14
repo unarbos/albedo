@@ -58,8 +58,11 @@ def test_dispatch_selects_backend():
 def test_hf_download_and_list(monkeypatch, tmp_path):
     huggingface_hub = pytest.importorskip("huggingface_hub")
     import config_validation.storage._hf as hf
+    from config_validation.storage import _supervise
 
     calls = {}
+    # Exercise the in-process download so the monkeypatched snapshot_download is reached.
+    monkeypatch.setattr(_supervise, "OUT_OF_PROCESS", False)
     monkeypatch.setattr(hf, "_cache_dir", lambda ref: tmp_path)
     monkeypatch.setattr(
         huggingface_hub, "snapshot_download",
