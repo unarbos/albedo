@@ -342,6 +342,87 @@ td.judge .judge-ver { color: var(--color-fg-4); font-size: 10px; }
 }
 .q-row.working td:first-child { box-shadow: inset 2px 0 0 var(--color-activity); }
 
+.registration-chart {
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  padding: 10px 12px 8px;
+}
+.registration-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-fg-3);
+}
+.registration-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.registration-range button {
+  height: 22px;
+  min-width: 34px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  color: var(--color-fg-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.registration-range button:hover,
+.registration-range button.active {
+  border-color: rgba(90, 200, 250, 0.45);
+  color: var(--color-accent);
+}
+.registration-plot { position: relative; }
+.registration-plot svg { display: block; width: 100%; }
+.registration-plot .grid { stroke: rgba(255, 255, 255, 0.06); stroke-width: 1; }
+.registration-plot .tick {
+  fill: var(--color-fg-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.registration-plot .reg-line {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.registration-plot .reg-dot {
+  fill: var(--color-accent);
+  opacity: 0.55;
+}
+.registration-plot .reg-active {
+  fill: var(--color-gold);
+  stroke: var(--color-bg);
+  stroke-width: 2;
+}
+.registration-plot .crosshair { stroke: rgba(255, 255, 255, 0.22); stroke-width: 1; }
+.registration-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  padding: 7px 9px;
+  background: var(--color-bg-deep);
+  border: 1px solid var(--color-border-hover);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-fg-2);
+  white-space: nowrap;
+}
+.registration-tip[hidden] { display: none; }
+.registration-tip b { color: var(--color-fg); font-weight: 600; }
+.registration-tip-meta { margin-top: 2px; font-size: 10px; color: var(--color-fg-3); }
+
 @media (max-width: 760px) {
   .q-table-wrap { max-height: 420px; }
   .q-table th:nth-child(3),

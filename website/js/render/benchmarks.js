@@ -137,8 +137,21 @@ function detailHref(model, runId = null) {
   return `./benchmark.html?${qs.toString()}`;
 }
 
+function runTime(run) {
+  return new Date(run?.finished_at || run?.started_at || "").getTime() || 0;
+}
+
 function suiteScores(model) {
-  return model?.latest_scores || {};
+  if (model?.latest_scores && Object.keys(model.latest_scores).length) return model.latest_scores;
+  const scores = {};
+  for (const run of model?.runs || []) {
+    if (!run?.suite || run.score == null) continue;
+    const previous = scores[run.suite];
+    if (!previous || runTime(run) > runTime(previous)) {
+      scores[run.suite] = { ...run, run_id: run.run_id || run.id };
+    }
+  }
+  return scores;
 }
 
 function latestScoreDate(model) {

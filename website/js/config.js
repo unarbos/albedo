@@ -1,24 +1,24 @@
 export const POLL_MS = 4000;
 
 export const DATA_ENDPOINTS = [
-  "./data/dashboard.json",
   "https://s3.hippius.com/albedo/data/dashboard.json",
   "https://us-east-1.hippius.com/albedo/data/dashboard.json",
   "https://eu-central-1.hippius.com/albedo/data/dashboard.json",
+  "./data/dashboard.json",
 ];
 export const STATE_ENDPOINTS = [
-  "./data/state.json",
   "https://s3.hippius.com/albedo/data/state.json",
   "https://us-east-1.hippius.com/albedo/data/state.json",
   "https://eu-central-1.hippius.com/albedo/data/state.json",
+  "./data/state.json",
 ];
 
 
 export const BENCHMARK_ENDPOINTS = [
-  "./data/benchmarks.json",
   "https://s3.hippius.com/albedo/data/benchmarks.json",
   "https://us-east-1.hippius.com/albedo/data/benchmarks.json",
   "https://eu-central-1.hippius.com/albedo/data/benchmarks.json",
+  "./data/benchmarks.json",
 ];
 
 export const MANIFEST_ENDPOINTS = [
@@ -29,10 +29,17 @@ export const MANIFEST_ENDPOINTS = [
 ];
 
 export const LLMS_URLS = [
-  "./llms.txt",
   "https://s3.hippius.com/albedo/llms.txt",
   "https://us-east-1.hippius.com/albedo/llms.txt",
   "https://eu-central-1.hippius.com/albedo/llms.txt",
+  "./llms.txt",
+];
+
+export const REGISTRATION_ENDPOINTS = [
+  "https://s3.hippius.com/albedo/data/registrations_30d.json",
+  "https://us-east-1.hippius.com/albedo/data/registrations_30d.json",
+  "https://eu-central-1.hippius.com/albedo/data/registrations_30d.json",
+  "./data/registrations_30d.json",
 ];
 
 export const ENDPOINT_CACHE_KEY = "albedo.endpoint.v3";

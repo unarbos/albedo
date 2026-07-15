@@ -1,6 +1,7 @@
-import { DATA_ENDPOINTS, STATE_ENDPOINTS, BENCHMARK_ENDPOINTS, MANIFEST_ENDPOINTS, LLMS_URLS } from "./config.js";
+import { DATA_ENDPOINTS, STATE_ENDPOINTS, BENCHMARK_ENDPOINTS, MANIFEST_ENDPOINTS, LLMS_URLS, REGISTRATION_ENDPOINTS } from "./config.js";
 
 let llmsTextCache = null;
+const registrationCacheKey = "albedo.registrationHistory.v2";
 
 async function fetchFirstJson(endpoints) {
   const buster = Date.now();
@@ -41,6 +42,19 @@ export async function fetchLlmsText() {
     } catch {}
   }
   return null;
+}
+
+export async function fetchRegistrationHistory() {
+  for (const url of REGISTRATION_ENDPOINTS) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) continue;
+      const data = await r.json();
+      try { localStorage.setItem(registrationCacheKey, JSON.stringify(data)); } catch {}
+      return data;
+    } catch {}
+  }
+  try { return JSON.parse(localStorage.getItem(registrationCacheKey)); } catch { return null; }
 }
 
 export async function fetchText(url) {

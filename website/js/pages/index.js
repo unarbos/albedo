@@ -1,5 +1,5 @@
 import { POLL_MS } from "../config.js";
-import { fetchDashboard, fetchState, fetchBenchmarks, fetchManifest, fetchLlmsText } from "../fetch.js";
+import { fetchDashboard, fetchState, fetchBenchmarks, fetchManifest, fetchLlmsText, fetchRegistrationHistory } from "../fetch.js";
 import { normalize } from "../data.js";
 import { el, mount } from "../dom.js";
 import { fmtRelative } from "../format.js";
@@ -10,12 +10,14 @@ import { renderPipeline } from "../render/pipeline.js";
 import { renderHistory, renderFails } from "../render/history.js";
 import { renderDatasets } from "../render/datasets.js";
 import { renderHeroChart } from "../render/heroChart.js";
+import { renderRegistrationChart } from "../render/registrationChart.js";
 
 const $ = id => document.getElementById(id);
 
 let state = null;
 let filter = "";
 let netuid = null;
+let registrations = null;
 
 function matches(x, q) {
   if (!q) return true;
@@ -88,6 +90,11 @@ async function loadDatasets() {
   renderDatasets($("datasets-wrap"), $("datasets-meta"), manifest);
 }
 
+async function loadRegistrations() {
+  registrations = await fetchRegistrationHistory();
+  renderRegistrationChart($("registration-chart"), registrations);
+}
+
 async function tickPipeline() {
   const st = await fetchState();
   if (!st) return;
@@ -157,7 +164,10 @@ function wireFilter() {
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if (state) renderHeroChart($("hero-chart"), state.history); }, 150);
+  resizeTimer = setTimeout(() => {
+    if (state) renderHeroChart($("hero-chart"), state.history);
+    if (registrations) renderRegistrationChart($("registration-chart"), registrations);
+  }, 150);
 });
 
 wireFilter();
@@ -166,6 +176,7 @@ tick();
 tickPipeline();
 tickBenchmarks();
 loadDatasets();
+loadRegistrations();
 setInterval(tick, POLL_MS);
 setInterval(tickPipeline, POLL_MS);
 setInterval(tickBenchmarks, POLL_MS);
