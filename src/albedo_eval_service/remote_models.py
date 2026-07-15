@@ -28,6 +28,22 @@ _HF_GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")  # HF git com
 _DEFAULT_OCI_REGISTRY = "registry.hippius.com"
 _HEARTBEAT_INTERVAL_S = 10.0
 
+# hippius chunked-v2 layout markers (hippius-hub >= 0.6.0 writes these by default for
+# files >= 256 MiB): a titled pointer.v2 layer maps a file's bytes onto shared pack blobs.
+_POINTER_MEDIA_TYPE_V2 = "application/vnd.hippius.pointer.v2"
+_LAYOUT_ANNOTATION_KEY = "com.hippius.layout"
+
+
+def _manifest_is_chunked(manifest: dict[str, Any]) -> bool:
+    if (manifest.get("annotations") or {}).get(_LAYOUT_ANNOTATION_KEY):
+        return True
+    for layer in manifest.get("layers", []):
+        if layer.get("mediaType") == _POINTER_MEDIA_TYPE_V2:
+            return True
+        if (layer.get("annotations") or {}).get(_LAYOUT_ANNOTATION_KEY):
+            return True
+    return False
+
 _RESOLVE_LOCKS: dict[str, threading.Lock] = {}
 _RESOLVE_LOCKS_GUARD = threading.Lock()
 
@@ -272,6 +288,48 @@ class ModelArtifactResolver:
             max_attempts=max(1, self.settings.model_download_stall_retries),
         )
 
+    def _download_hippius_snapshot(
+        self, *, registry: str, repository: str, digest: str, temp_dir: Path, label: str
+    ) -> None:
+        """Download a chunked-v2 hippius artifact by delegating to hippius_hub, which
+        owns the pointer→pack reassembly (and digest-verifies the reassembled files)."""
+        if registry != _DEFAULT_OCI_REGISTRY:
+            raise RuntimeError(
+                f"chunked OCI manifest served by unsupported registry {registry!r}; "
+                f"hippius_hub only targets {_DEFAULT_OCI_REGISTRY}"
+            )
+        try:
+            from hippius_hub._oci import group_files  # noqa: F401 — chunked-capable marker
+        except ImportError as exc:
+            raise RuntimeError(
+                "chunked hippius artifact requires hippius-hub>=0.6.0 on this host; "
+                "older readers silently save the pointer blob as the model file"
+            ) from exc
+
+        if not self.settings.model_download_out_of_process:
+            import hippius_hub
+
+            with _download_heartbeat(label, watch_dir=temp_dir):
+                hippius_hub.snapshot_download(
+                    repository,
+                    revision=digest,
+                    local_dir=str(temp_dir),
+                    max_workers=max(1, self.settings.model_download_concurrency),
+                    token=os.environ.get("HIPPIUS_HUB_TOKEN") or None,
+                )
+            return
+
+        _run_hf_download_supervised(
+            repo=repository,
+            revision=digest,
+            temp_dir=temp_dir,
+            label=label,
+            concurrency=self.settings.model_download_concurrency,
+            stall_seconds=self.settings.hippius_download_stall_seconds,
+            max_attempts=max(1, self.settings.model_download_stall_retries),
+            child_entry="_hippius_download_child",
+        )
+
     def _resolve_oci(
         self, *, registry: str, repository: str, digest: str, original_ref: str
     ) -> ResolvedModel:
@@ -322,11 +380,16 @@ class ModelArtifactResolver:
             response.raise_for_status()
             _verify_digest(response.content, digest, label="manifest")
             manifest = response.json()
+            chunked = _manifest_is_chunked(manifest)
             token = None
             if response.request.headers.get("Authorization", "").startswith("Bearer "):
                 token = response.request.headers["Authorization"].removeprefix("Bearer ")
             pending: list[tuple[str, str]] = []
-            for index, layer in enumerate(manifest.get("layers", [])):
+            # Chunked-v2 manifests are delegated to hippius_hub below: the per-layer
+            # streamer would write the ~200-byte pointer blob AS the model file (its
+            # digest check passes — the pointer blob matches its own digest).
+            layers = [] if chunked else manifest.get("layers", [])
+            for index, layer in enumerate(layers):
                 layer_digest = layer.get("digest")
                 if not isinstance(layer_digest, str) or not _DIGEST_RE.match(layer_digest):
                     raise ValueError(f"OCI layer {index} is missing a sha256 digest")
@@ -378,6 +441,14 @@ class ModelArtifactResolver:
                         except Exception:
                             executor.shutdown(wait=False, cancel_futures=True)
                             raise
+        if chunked:
+            self._download_hippius_snapshot(
+                registry=registry,
+                repository=repository,
+                digest=digest,
+                temp_dir=temp_dir,
+                label=original_ref,
+            )
         _require_loadable_model_files(temp_dir, source="oci")
         done_marker_payload = {
             "source": original_ref,
@@ -452,8 +523,31 @@ def _hf_download_child() -> None:
     )
 
 
+def _hippius_download_child() -> None:
+    repo, revision, local_dir, max_workers = (
+        sys.argv[1],
+        sys.argv[2],
+        sys.argv[3],
+        sys.argv[4],
+    )
+    import hippius_hub
+
+    hippius_hub.snapshot_download(
+        repo,
+        revision=revision,
+        local_dir=local_dir,
+        max_workers=max(1, int(max_workers)),
+        token=os.environ.get("HIPPIUS_HUB_TOKEN") or None,
+    )
+
+
 def _spawn_hf_download(
-    repo: str, revision: str, temp_dir: Path, concurrency: int, log_path: Path
+    repo: str,
+    revision: str,
+    temp_dir: Path,
+    concurrency: int,
+    log_path: Path,
+    child_entry: str = "_hf_download_child",
 ) -> subprocess.Popen:
     log_handle = log_path.open("w", encoding="utf-8")
     try:
@@ -461,7 +555,7 @@ def _spawn_hf_download(
             [
                 sys.executable,
                 "-c",
-                "from albedo_eval_service.remote_models import _hf_download_child; _hf_download_child()",
+                f"from albedo_eval_service.remote_models import {child_entry}; {child_entry}()",
                 repo,
                 revision,
                 str(temp_dir),
@@ -520,10 +614,11 @@ def _run_hf_download_supervised(
     concurrency: int,
     stall_seconds: float,
     max_attempts: int,
+    child_entry: str = "_hf_download_child",
 ) -> None:
     log_path = temp_dir.parent / f"{temp_dir.name}.download.log"
     for attempt in range(1, max_attempts + 1):
-        proc = _spawn_hf_download(repo, revision, temp_dir, concurrency, log_path)
+        proc = _spawn_hf_download(repo, revision, temp_dir, concurrency, log_path, child_entry)
         start = time.monotonic()
         last_bytes = -1
         last_progress = start
@@ -556,10 +651,10 @@ def _run_hf_download_supervised(
             return
         detail = _tail_file(log_path, 4000)
         raise RuntimeError(
-            f"hf snapshot_download exited {proc.returncode} for {repo}@{revision}: {detail}"
+            f"snapshot_download exited {proc.returncode} for {repo}@{revision}: {detail}"
         )
     raise TimeoutError(
-        f"hf snapshot_download for {repo}@{revision} made no progress for "
+        f"snapshot_download for {repo}@{revision} made no progress for "
         f"{stall_seconds:.0f}s across {max_attempts} attempts"
     )
 

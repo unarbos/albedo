@@ -246,7 +246,7 @@ requires-dist = [
     { name = "deepspeed", marker = "extra == 'train'" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "hf-transfer", specifier = ">=0.1" },
-    { name = "hippius-hub", specifier = "==0.5.1" },
+    { name = "hippius-hub", specifier = "==0.6.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = "==1.19.0" },
     { name = "loguru", specifier = ">=0.7" },
@@ -1887,7 +1887,7 @@ wheels = [
 
 [[package]]
 name = "hippius-hub"
-version = "0.5.1"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1896,9 +1896,9 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/53/0677556784017ba0ba3607bd4836a20a132b22740b16d22d82eb528950d3/hippius_hub-0.5.1-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:f81f909cad2fafc9dfb7ea3e8c1c2329aa41d249333cea0d897437aaf2186318", size = 2095777, upload-time = "2026-06-01T15:43:37.889Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/88/4aeca91cff54c08a938d02f244922f744c2c78ddf93678b5950c8786824d/hippius_hub-0.5.1-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4c61fbffd56d050754e8d24f10a5f19d0552a073cdafe3580496419d076c2eaf", size = 2343806, upload-time = "2026-06-01T15:43:39.978Z" },
-    { url = "https://files.pythonhosted.org/packages/84/99/937e079176bc21443a1d5d0722ee51cf797b0b9c93ebed306dc7c9e59568/hippius_hub-0.5.1-cp38-abi3-win_amd64.whl", hash = "sha256:34e801776ff7b7dd5b4e4ef113165d4037dcacbabadb84040bc09c027e96db2f", size = 1945533, upload-time = "2026-06-01T15:43:41.649Z" },
+    { url = "https://files.pythonhosted.org/packages/84/d8/77ff840db6f3574d4a4bcdcfdf60e0b038aea10cd585e0a22eba6d3a2072/hippius_hub-0.6.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:bcfbac7798998250fa3d34851492cd1f8f0639641c0a9bc1bdef8fb08386898a", size = 1990664, upload-time = "2026-07-13T11:23:17.71Z" },
+    { url = "https://files.pythonhosted.org/packages/35/fa/614ad96b527b2e72ff3102322d13838fa01fb15963bdbe940e639725a0f0/hippius_hub-0.6.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b7cecb27fcd0e3169abdacf15e9e53f74ca456650f1cdc96b0e755fd035df438", size = 2152977, upload-time = "2026-07-13T11:23:19.337Z" },
+    { url = "https://files.pythonhosted.org/packages/68/8b/7357a3f772496ef16ffcbf0243c25ddca97d185a4d6bef0993ae998c41dc/hippius_hub-0.6.0-cp38-abi3-win_amd64.whl", hash = "sha256:c9dc8d861e0177574366cb90ea404052d972b221b42ac716b0da8468cf60d703", size = 1968601, upload-time = "2026-07-13T11:23:20.9Z" },
 ]
 
 [[package]]

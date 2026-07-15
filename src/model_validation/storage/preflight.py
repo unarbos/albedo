@@ -72,17 +72,64 @@ def _dtypes_from_header(header: dict) -> set[str]:
     return {info["dtype"] for k, info in header.items() if k != "__metadata__"}
 
 
+def _fetch_blob(client: httpx.Client, url: str, headers: dict) -> bytes:
+    resp = client.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.content
+
+
+def _chunk_segments(refs, start: int, end: int) -> list[tuple[str, int, int]]:
+    """Map logical file bytes [start, end] onto (pack_digest, pack_start, pack_end) segments.
+
+    ``refs`` are chunked-v2 pack-chunk refs in file order (``.size``, ``.pack_digest``,
+    ``.pack_offset``); a chunk's bytes live at ``pack_offset`` inside its pack blob."""
+    segments: list[tuple[str, int, int]] = []
+    offset = 0
+    for ref in refs:
+        lo, hi = offset, offset + ref.size - 1
+        if hi >= start and lo <= end:
+            first = max(start, lo) - lo
+            last = min(end, hi) - lo
+            segments.append((ref.pack_digest, ref.pack_offset + first, ref.pack_offset + last))
+        offset += ref.size
+        if offset > end:
+            return segments
+    raise ValueError(f"byte range [{start}, {end}] exceeds chunked file size {offset}")
+
+
+def _read_header_chunked(client: httpx.Client, blobs_base: str, headers: dict, refs) -> dict:
+    """Read a safetensors header from a chunked-v2 file via Range reads on its pack blobs."""
+
+    def read_range(start: int, end: int) -> bytes:
+        return b"".join(
+            _ranged(client, f"{blobs_base}/{digest}", headers, seg_start, seg_end)
+            for digest, seg_start, seg_end in _chunk_segments(refs, start, end)
+        )
+
+    hlen = int.from_bytes(read_range(0, 7), "little")
+    return json.loads(read_range(8, 8 + hlen - 1))
+
+
 def _hippius_dtypes(ref: ModelRef) -> dict[str, set[str]]:
-    from hippius_hub._oci import iter_titled_layers
+    from hippius_hub._oci import group_files, parse_pointer_v2
 
     registry, oci_repo, auth, manifest = _oci_context(ref)
+    blobs_base = f"{registry}/v2/{oci_repo}/blobs"
     out: dict[str, set[str]] = {}
     with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
-        for title, layer in iter_titled_layers(manifest):
-            if not title.endswith(".safetensors"):
+        for group in group_files(manifest):
+            if not group.title.endswith(".safetensors"):
                 continue
-            blob_url = f"{registry}/v2/{oci_repo}/blobs/{layer['digest']}"
-            out[title] = _dtypes_from_header(_read_header(client, blob_url, auth))
+            if group.is_chunked:
+                # Chunked-v2: the shard's bytes span pack blobs mapped by a pointer blob.
+                pointer_url = f"{blobs_base}/{group.pointer_digest}"
+                refs = parse_pointer_v2(_fetch_blob(client, pointer_url, auth))
+                out[group.title] = _dtypes_from_header(
+                    _read_header_chunked(client, blobs_base, auth, refs)
+                )
+                continue
+            blob_url = f"{blobs_base}/{group.digest}"
+            out[group.title] = _dtypes_from_header(_read_header(client, blob_url, auth))
     return out
 
 
