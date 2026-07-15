@@ -881,6 +881,7 @@ a.bench-tile:hover .bench-tile-score { color: var(--color-accent); }
 
 @media (max-width: 760px) {
   .bench-tile-grid, .bench-spark-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bench-queue-grid { grid-template-columns: 1fr; }
   .bench-panel-head { flex-direction: column; align-items: flex-start; gap: 6px; }
 }
 
