@@ -5,7 +5,9 @@ JUDGE_SYSTEM/USER derive from research/judge_yn (CATJUDGE_SYSTEM/USER) with one 
 the judge writes each explanation BEFORE its answer bit (prompt example + schema field order), and
 an answer may never contradict its explanation — fixes observed holistic all-0 sheets whose
 explanations said the checks passed. The QUESTION prompt is adapted from CATQ_FLAT_* to score
-next-step quality, not whole-task completion.
+next-step quality, not whole-task completion. The judge user message carries a MEASUREMENTS block 
+with programmatic word/character/code counts, so size questions are
+answered against computed numbers instead of the judge's own counting.
 """
 
 from __future__ import annotations
@@ -220,6 +222,14 @@ Judge each question independently on its own merits. Every question includes an 
 ONE example of a response that should get 0. It is illustrative, NOT the only way to fail: do not \
 assume a response is good merely because it differs from example_bad; judge the actual check.
 
+MEASUREMENTS — the user message lists counts computed PROGRAMMATICALLY from the response (total \
+words, total characters, THOUGHT/prose words, code-block lines and characters). For any question \
+that checks the response's size or length against a number, answer by comparing the relevant \
+measurement to that number — NEVER count or estimate yourself. Read "under/below/shorter \
+than/within/less than N" as measured < N, "at most N" as measured <= N, and a hedged number \
+("roughly/about N") as exactly N. Cite the measurement in the explanation (e.g. "measured 212 \
+total words, under 250").
+
 For "explanation", give exactly ONE sentence citing the specific part of the response — quote a \
 short fragment, or name the command/flag/text — that justifies your 1 or 0.
 
@@ -242,13 +252,44 @@ JUDGE_USER = """CANDIDATE RESPONSE:
 {response}
 ------
 
-QUESTIONS (across several categories — each tagged with "category"; answer every one from the \
+{measurements}QUESTIONS (across several categories — each tagged with "category"; answer every one from the \
 response above; "example_bad" shows one response that should get 0):
 {questions_json}
 
 For every question give a ONE-sentence explanation citing the response, then the 1 (good) or 0 \
 (bad) that follows from it. When a check cannot be verified from the response alone, answer 0. \
 Return the strict JSON now."""
+
+
+# --------------------------------------------------------------------------- response measurements
+_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)(?:```|\Z)", re.DOTALL)
+
+
+def measure(text: str) -> dict[str, int]:
+    blocks = _FENCE_RE.findall(text)
+    fence = text.find("```")
+    prose = (text[:fence] if fence >= 0 else text).strip()
+    return {
+        "total_words": len(text.split()),
+        "total_chars": len(text),
+        "prose_words": len(prose.split()),
+        "code_blocks": len(blocks),
+        "code_lines": max((len(b.strip("\n").splitlines()) for b in blocks), default=0),
+        "code_chars": sum(len(b) for b in blocks),
+    }
+
+
+def measurements_block(text: str) -> str:
+    m = measure(text)
+    return (
+        "MEASUREMENTS (computed programmatically from the response above — authoritative for "
+        "every size or length question):\n"
+        f"- total words (everything, whitespace-separated): {m['total_words']}\n"
+        f"- total characters: {m['total_chars']}\n"
+        f"- THOUGHT/prose words (text before the first code fence): {m['prose_words']}\n"
+        f"- fenced code blocks: {m['code_blocks']} (longest: {m['code_lines']} lines, "
+        f"{m['code_chars']} code characters total)\n\n"
+    )
 
 
 def build_question_messages(*, task: str, n: int) -> list[dict[str, str]]:
@@ -263,12 +304,14 @@ def build_judge_messages(*, response: str, questions: list[dict[str, str]]) -> l
         {"id": q["id"], "category": q.get("category", "overall"), "text": q["text"], "example_bad": q.get("example_bad", "")}
         for q in questions
     ]
+    cleaned = strip_reply_injection(response).rstrip()
     return [
         {"role": "system", "content": JUDGE_SYSTEM},
         {
             "role": "user",
             "content": JUDGE_USER.format(
-                response=strip_reply_injection(response).rstrip(),
+                response=cleaned,
+                measurements=measurements_block(cleaned),
                 questions_json=json.dumps(shown, ensure_ascii=False, indent=1),
             ),
         },
