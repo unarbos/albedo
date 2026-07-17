@@ -34,24 +34,12 @@ def test_judge_panel_allows_any_fp8_provider():
 def test_question_prompt_requires_trajectory_coverage():
     prompt = build_question_messages(task="Fix bug", n=50)[0]["content"]
 
-    assert "outcome alignment" in prompt
     assert "quality of CANDIDATE OUTPUT 1" in prompt
     assert "reaction to" in prompt and "ENVIRONMENT OBSERVATION" in prompt
     assert "progress between adjacent candidate outputs" in prompt
     assert "no looping/repeated commands" in prompt
     assert "grounding" in prompt
     assert "correct SWE-agent workflow" in prompt
-
-
-def test_question_prompt_requires_outcome_alignment_core():
-    prompt = build_question_messages(task="Fix bug", n=50)[0]["content"]
-
-    assert "MANDATORY OUTCOME-ALIGNMENT CORE" in prompt
-    assert "8 to 12 questions" in prompt
-    assert "root cause" in prompt
-    assert "patch direction" in prompt
-    assert "preservation" in prompt
-    assert "would plausibly lead to the correct patch" in prompt
 
 
 def test_question_prompt_limits_easy_hygiene_checks():

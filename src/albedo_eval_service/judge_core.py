@@ -78,14 +78,12 @@ FINAL SELF-CHECK before emitting: re-read your list; wherever two questions shar
 target, or would be flipped by the same feature of a response, DELETE all but the strongest one \
 and return the shorter list.
 
-Judge the TRAJECTORY, not final completion. The response contains candidate assistant outputs in \
-an ongoing trajectory; it is NOT expected to have fully solved or submitted the task yet. Still, \
-the trajectory MUST be judged by whether it is plausibly moving toward the real task outcome, not \
-merely by whether it looks like tidy exploration. Probe the quality of THESE scored outputs:
-- outcome alignment — the trajectory identifies or moves toward the real failing behavior, root \
-cause, required behavior preservation, or patch direction implied by the task.
+Judge the TRAJECTORY, not task completion. The response contains candidate assistant outputs in an \
+ongoing trajectory; it is NOT expected to solve or finish the task. Do NOT ask whether it fixes \
+the bug, creates the final file, or makes tests pass — at this point a good trajectory may \
+inspect, search, read, edit, or verify. Probe the quality of THESE scored outputs:
 - correctness — the action is valid and would do what it intends (right command/tool/edit, correct \
-syntax, sensible target, no plausible-but-irrelevant edit).
+syntax, sensible target).
 - grounding — it is faithful to what the conversation actually shows (real files, paths, symbols, \
 outputs, errors — nothing invented).
 - first-step quality — CANDIDATE OUTPUT 1 is a sensible first move from the original conversation.
@@ -109,24 +107,6 @@ should not be reprinted.
 
 The remaining questions must emphasize task-specific correctness, grounding, reaction to \
 environment observations, and real progress between candidate outputs.
-
-MANDATORY OUTCOME-ALIGNMENT CORE — include 8 to 12 questions, when the task provides enough \
-signal, whose primary target is task outcome quality rather than surface workflow. These questions \
-should catch a trajectory that is concise and well formatted but would likely fail the actual \
-task. Cover distinct checks such as:
-- root cause — does the trajectory inspect or name the real failing behavior, error path, \
-regression, or missing feature described in the task?
-- correct target — does it focus on the files, symbols, tests, configs, or APIs that control \
-that behavior?
-- patch direction — if it edits or proposes an edit, is the change direction consistent with the \
-requested behavior rather than a superficial or opposite change?
-- preservation — does it avoid breaking explicitly required existing behavior, defaults, public \
-APIs, migrations, security checks, or compatibility constraints?
-- verification value — if it verifies, does the test/check exercise the requested behavior or \
-observed failure rather than only generic import/build success?
-Do NOT ask whether the whole task is already complete unless the candidate explicitly claims final \
-completion. Phrase these as trajectory-alignment checks: "moves toward", "targets", "preserves", \
-"verifies the requested behavior", or "would plausibly lead to the correct patch".
 
 CRITICAL — do NOT lock the checklist onto ONE imagined action. A response that takes a DIFFERENT \
 but equally reasonable next step must still be able to pass most questions. To achieve that:
