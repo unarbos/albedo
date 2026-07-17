@@ -81,20 +81,59 @@ class VllmProcessGenerator:
         self.compile_cache_dir = compile_cache_dir
         self.gpu_memory_utilization = gpu_memory_utilization
         self.kv_cache_dtype = kv_cache_dtype
+        self._ctx = mp.get_context("spawn")
+        self._request_queue = None
+        self._result_queue = None
+        self._process = None
+        self._request_id = 0
 
     def generate(self, samples: list[EvalSample]) -> list[GenerationResult]:
         if not samples:
             return []
 
-        ctx = mp.get_context("spawn")
-        result_queue = ctx.Queue()
-        process = ctx.Process(
+        self._start()
+        self._request_id += 1
+        request_id = str(self._request_id)
+        self._request_queue.put(
+            {
+                "id": request_id,
+                "prompts": [sample.prompt for sample in samples],
+                "sample_ids": [sample.sample_id for sample in samples],
+            }
+        )
+        payload = self._wait_for_payload(request_id, samples)
+        if payload.get("error"):
+            return [
+                GenerationResult(sample_id=sample.sample_id, text="", error=payload["error"])
+                for sample in samples
+            ]
+        return [GenerationResult(**item) for item in payload["results"]]
+
+    def close(self) -> None:
+        if self._process is None:
+            return
+        if self._process.is_alive() and self._request_queue is not None:
+            self._request_queue.put(None)
+            self._process.join(timeout=30)
+        if self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=10)
+        self._process = None
+        self._request_queue = None
+        self._result_queue = None
+
+    def _start(self) -> None:
+        if self._process is not None and self._process.is_alive():
+            return
+        self._request_queue = self._ctx.Queue()
+        self._result_queue = self._ctx.Queue()
+        self._process = self._ctx.Process(
             target=_vllm_worker,
             kwargs={
                 "model": self.model,
                 "gpu_ids": self.gpu_ids,
-                "prompts": [sample.prompt for sample in samples],
-                "sample_ids": [sample.sample_id for sample in samples],
+                "prompts": None,
+                "sample_ids": None,
                 "max_new_tokens": self.max_new_tokens,
                 "temperature": self.temperature,
                 "top_p": self.top_p,
@@ -104,46 +143,40 @@ class VllmProcessGenerator:
                 "compile_cache_dir": self.compile_cache_dir,
                 "gpu_memory_utilization": self.gpu_memory_utilization,
                 "kv_cache_dtype": self.kv_cache_dtype,
-                "queue": result_queue,
+                "queue": self._result_queue,
+                "request_queue": self._request_queue,
             },
         )
-        process.start()
+        self._process.start()
+
+    def _wait_for_payload(self, request_id: str, samples: list[EvalSample]) -> dict[str, Any]:
         payload = None
-        while process.is_alive():
+        while self._process is not None and self._process.is_alive():
             try:
-                payload = result_queue.get(timeout=1)
-                break
+                candidate = self._result_queue.get(timeout=1)
+                if candidate.get("id") == request_id or ("id" not in candidate and candidate.get("error")):
+                    payload = candidate
+                    break
             except queue_module.Empty:
                 continue
         if payload is None:
             try:
-                payload = result_queue.get_nowait()
+                payload = self._result_queue.get_nowait()
             except queue_module.Empty:
                 payload = {
-                    "error": f"vLLM process exited {process.exitcode} without result payload"
+                    "error": f"vLLM process exited {self._process.exitcode} without result payload"
                 }
-        process.join()
-
-        if process.exitcode != 0:
-            error = payload.get("error") or f"vLLM process exited {process.exitcode}"
-            return [
-                GenerationResult(sample_id=sample.sample_id, text="", error=error)
-                for sample in samples
-            ]
-        if payload.get("error"):
-            return [
-                GenerationResult(sample_id=sample.sample_id, text="", error=payload["error"])
-                for sample in samples
-            ]
-        return [GenerationResult(**item) for item in payload["results"]]
+        if self._process is not None and self._process.exitcode not in (None, 0):
+            payload["error"] = payload.get("error") or f"vLLM process exited {self._process.exitcode}"
+        return payload
 
 
 def _vllm_worker(
     *,
     model: str,
     gpu_ids: list[str],
-    prompts: list[str],
-    sample_ids: list[str],
+    prompts: list[str] | None,
+    sample_ids: list[str] | None,
     max_new_tokens: int,
     temperature: float,
     top_p: float,
@@ -154,6 +187,7 @@ def _vllm_worker(
     gpu_memory_utilization: float = 0.95,
     kv_cache_dtype: str = "auto",
     queue=None,
+    request_queue=None,
 ) -> None:
     try:
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_ids)
@@ -168,6 +202,7 @@ def _vllm_worker(
             # do not let vLLM auto-import Hugging Face generation_config.json.
             "generation_config": "vllm",
             "reasoning_parser": "qwen3",
+            "enable_prefix_caching": True,
             "gpu_memory_utilization": gpu_memory_utilization,
             "kv_cache_dtype": kv_cache_dtype,
             # Text-only eval: cap multimodal inputs to 0 so vLLM skips vision-encoder
@@ -190,12 +225,31 @@ def _vllm_worker(
         if top_k is not None:
             params_kwargs["top_k"] = top_k
         params = SamplingParams(**params_kwargs)
-        outputs = llm.generate(prompts, params)
-        results = []
-        for sample_id, output in zip(sample_ids, outputs, strict=True):
-            text = output.outputs[0].text if output.outputs else ""
-            results.append({"sample_id": sample_id, "text": text, "error": None})
-        queue.put({"results": results})
+
+        if request_queue is None:
+            queue.put(_generate_payload(llm, params, prompts or [], sample_ids or []))
+            return
+
+        while True:
+            request = request_queue.get()
+            if request is None:
+                return
+            try:
+                payload = _generate_payload(llm, params, request["prompts"], request["sample_ids"])
+            except Exception as exc:
+                logger.exception(f"[remote-gen] vLLM request failed model={model} gpu_ids={gpu_ids}: {exc}")
+                payload = {"error": f"{type(exc).__name__}: {exc}"}
+            payload["id"] = request["id"]
+            queue.put(payload)
     except Exception as exc:
         logger.exception(f"[remote-gen] vLLM worker failed model={model} gpu_ids={gpu_ids}: {exc}")
         queue.put({"error": f"{type(exc).__name__}: {exc}"})
+
+
+def _generate_payload(llm: Any, params: Any, prompts: list[str], sample_ids: list[str]) -> dict[str, Any]:
+    outputs = llm.generate(prompts, params)
+    results = []
+    for sample_id, output in zip(sample_ids, outputs, strict=True):
+        text = output.outputs[0].text if output.outputs else ""
+        results.append({"sample_id": sample_id, "text": text, "error": None})
+    return {"results": results}

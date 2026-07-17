@@ -302,40 +302,46 @@ class RemoteEvalWorker:
             "challenger": [],
         }
 
-        for turn_index in range(turn_count):
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = {
-                    side: executor.submit(generators[side].generate, side_samples)
-                    for side, side_samples in current_samples.items()
-                }
-                turn_results = {side: future.result() for side, future in futures.items()}
-            for side, results in turn_results.items():
-                all_results[side].append(results)
+        try:
+            for turn_index in range(turn_count):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = {
+                        side: executor.submit(generators[side].generate, side_samples)
+                        for side, side_samples in current_samples.items()
+                    }
+                    turn_results = {side: future.result() for side, future in futures.items()}
+                for side, results in turn_results.items():
+                    all_results[side].append(results)
 
-            if turn_index == turn_count - 1:
-                break
+                if turn_index == turn_count - 1:
+                    break
 
-            observations = self._simulate_observations(
-                request=request,
-                samples_by_side=current_samples,
-                results_by_side=turn_results,
-            )
-            for side in generators:
-                all_observations[side].append(observations)
-                current_samples[side] = _next_turn_samples(
-                    current_samples[side], turn_results[side], observations, side=side
+                observations = self._simulate_observations(
+                    request=request,
+                    samples_by_side=current_samples,
+                    results_by_side=turn_results,
                 )
+                for side in generators:
+                    all_observations[side].append(observations)
+                    current_samples[side] = _next_turn_samples(
+                        current_samples[side], turn_results[side], observations, side=side
+                    )
 
-        return (
-            _merge_trajectory_results(
-                samples, all_results["previous_king"], all_observations["previous_king"],
-                side="previous_king",
-            ),
-            _merge_trajectory_results(
-                samples, all_results["challenger"], all_observations["challenger"],
-                side="challenger",
-            ),
-        )
+            return (
+                _merge_trajectory_results(
+                    samples, all_results["previous_king"], all_observations["previous_king"],
+                    side="previous_king",
+                ),
+                _merge_trajectory_results(
+                    samples, all_results["challenger"], all_observations["challenger"],
+                    side="challenger",
+                ),
+            )
+        finally:
+            for generator in generators.values():
+                close = getattr(generator, "close", None)
+                if callable(close):
+                    close()
 
     def _simulate_observations(
         self,

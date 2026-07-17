@@ -50,6 +50,9 @@ class RecordingGenerator:
             for sample in samples
         ]
 
+    def close(self):
+        self.calls.append({"side": self.side, "closed": True})
+
 
 def _write_dataset(root):
     shard_dir = root / "data"
@@ -160,6 +163,8 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path, monkey
     generate_calls = [call for call in calls if "sample_ids" in call]
     assert [call["side"] for call in generate_calls].count("previous_king") == 3
     assert [call["side"] for call in generate_calls].count("challenger") == 3
+    assert [call["side"] for call in calls if call.get("closed")].count("previous_king") == 1
+    assert [call["side"] for call in calls if call.get("closed")].count("challenger") == 1
 
 
 class RecordingModelResolver:
@@ -328,4 +333,5 @@ def test_vllm_worker_stops_on_qwen_im_end(monkeypatch):
     )
 
     assert captured["params"]["stop_token_ids"] == [248046]
+    assert captured["llm"]["enable_prefix_caching"] is True
     assert queue.payload == {"results": [{"sample_id": "sample-1", "text": "done", "error": None}]}
