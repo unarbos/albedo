@@ -13,6 +13,7 @@ from albedo_eval_service.judge_api import (
     QuestionService,
     ScoreBatchRequest,
     SimulateObservationRequest,
+    _empty_simulation_output,
     _evaluator_provider,
     _simulation_system_prompt,
     _simulation_transcript,
@@ -110,6 +111,35 @@ def test_observation_simulation_uses_glm_and_retries_without_observation_prefix(
     assert client.kwargs["provider"]["quantizations"] == ["fp8"]
     assert client.kwargs["accept"]("Observation: ok") is True
     assert client.kwargs["accept"]("not an observation") is False
+
+
+def test_observation_simulation_falls_back_on_invalid_format():
+    class BadSimClient:
+        async def complete(self, **kwargs):
+            return JudgeRawResponse(model=kwargs["model"], provider="fake", raw="not an observation")
+
+    async def run(sample_id):
+        service = ObservationSimulationService(
+            JudgeSettings(evaluator_model="z-ai/glm-5.2"),
+            BadSimClient(),
+        )
+        return await service.simulate(
+            SimulateObservationRequest(
+                eval_run_id="run",
+                sample_id=sample_id,
+                prompt="task",
+                messages=[{"role": "user", "content": "task"}],
+                assistant_output="```bash\ntrue\n```",
+            )
+        )
+
+    swe = asyncio.run(run("swe-zero/x:0:0"))
+    mini = asyncio.run(run("mini-coder/x:0:0"))
+
+    assert swe == "Observation:"
+    assert mini == "<returncode>0</returncode>\n<output>\n</output>"
+    assert _valid_simulation_output(_empty_simulation_output("swe-zero/x:0:0"), "swe-zero/x:0:0")
+    assert _valid_simulation_output(_empty_simulation_output("mini-coder/x:0:0"), "mini-coder/x:0:0")
 
 
 def test_scoring_scores_both_sides_independently():

@@ -226,7 +226,14 @@ class ObservationSimulationService:
             raise ObservationSimulationUnavailable(response.error)
         observation = response.raw.strip()
         if not _valid_simulation_output(observation, request.sample_id):
-            raise ObservationSimulationUnavailable("simulator returned invalid output format")
+            fallback = _empty_simulation_output(request.sample_id)
+            logger.warning(
+                "observation_simulation_invalid_format eval_run_id={} sample_id={} fallback={!r}",
+                request.eval_run_id,
+                request.sample_id,
+                fallback,
+            )
+            return fallback
         return observation
 
 
@@ -431,6 +438,12 @@ def _simulation_system_prompt(sample_id: str) -> str:
 
 def _simulation_format(sample_id: str) -> str:
     return FORMAT_MINI_CODER if "mini-coder" in sample_id.casefold() else FORMAT_SWE_ZERO
+
+
+def _empty_simulation_output(sample_id: str) -> str:
+    if _simulation_format(sample_id) == FORMAT_MINI_CODER:
+        return "<returncode>0</returncode>\n<output>\n</output>"
+    return "Observation:"
 
 
 def _valid_simulation_output(raw: str, sample_id: str) -> bool:
