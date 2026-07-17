@@ -2,7 +2,7 @@ import pytest
 
 from albedo_eval_service.sampling import BUCKETS, multi_source_manifest_sample_ids
 
-_BUCKET_TOTAL = sum(count for _, count in BUCKETS)  # 128
+_BUCKET_TOTAL = sum(count for _, count in BUCKETS)  # 64
 
 
 def _shard(source: str, rows: int, *, asst: int = 12):
@@ -43,7 +43,7 @@ def test_requires_rows_meta():
 
 def test_sample_count_must_match_buckets():
     with pytest.raises(ValueError, match="BUCKETS"):
-        multi_source_manifest_sample_ids(_manifest(), block_hash="0xabc", sample_count=64)
+        multi_source_manifest_sample_ids(_manifest(), block_hash="0xabc", sample_count=128)
 
 
 def test_stable_and_seed_sensitive():
@@ -59,8 +59,8 @@ def test_70_30_split_and_unique_instances():
     ids = multi_source_manifest_sample_ids(_manifest(), block_hash="0xabc", sample_count=_BUCKET_TOTAL)
     swe = [i for i in ids if i.startswith("swe-zero/")]
     mini = [i for i in ids if i.startswith("mini-coder/")]
-    assert len(swe) == 90
-    assert len(mini) == 38
+    assert len(swe) == 45
+    assert len(mini) == 19
     # each sample is a distinct (shard, row) => a unique instance/rollout
     coords = {i.rsplit(":", 1)[0] for i in ids}
     assert len(coords) == _BUCKET_TOTAL

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # (also update src/sanity_service/settings.py).
     dataset_manifest_hash: str = "980d50ad40e0b5863a4e624b9e313441bda38626fbba089efb95cbec8aa1a9f4"
     dataset_manifest_path: str | None = None
-    sample_count: int = 128
+    sample_count: int = 64
     max_turns_per_sample: int = 10
     sampling_algo: str = "swe-zero-multi-source-sample-v1"
     judge_config_hash: str

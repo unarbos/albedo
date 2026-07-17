@@ -26,7 +26,7 @@ def sample_prompts(*, seed: str, n: int = 3, max_turns: int = 10, manifest_path:
         from albedo_eval_service.sampling import multi_source_manifest_sample_ids
 
         manifest = load_manifest_file(manifest_path, expected_sha256=manifest_hash)
-        # The eval sampler emits a fixed 128-id bucket set; the pre-eval only needs n of them
+        # The eval sampler emits a fixed 64-id bucket set; the pre-eval only needs n of them
         # (turn depth is baked into the buckets, so max_turns is no longer threaded through).
         ids = multi_source_manifest_sample_ids(manifest, block_hash=str(seed))
         sample_ids = random.Random(str(seed)).sample(ids, min(n, len(ids)))

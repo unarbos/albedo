@@ -9,10 +9,10 @@ _SHARD_RE = re.compile(r"^(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)?data/train-[A-Za-z0-9
 
 # Prefix buckets: (Y = prefix length in user/assistant turns, count = #samples at that depth).
 # Y is odd so the prefix ends on a user turn and the model generates the next assistant turn.
-# Sum of counts is the sample budget (128). Assigned deepest-first with per-source 70/30.
+# Sum of counts is the sample budget (64). Assigned deepest-first with per-source 70/30.
 BUCKETS: list[tuple[int, int]] = [
-    (3, 8), (5, 10), (7, 10), (9, 14), (11, 14),
-    (13, 14), (15, 14), (17, 14), (19, 15), (21, 15),
+    (3, 4), (5, 5), (7, 5), (9, 7), (11, 7),
+    (13, 7), (15, 7), (17, 7), (19, 7), (21, 8),
 ]
 
 
@@ -20,7 +20,7 @@ def multi_source_manifest_sample_ids(
     manifest: dict[str, Any],
     *,
     block_hash: str,
-    sample_count: int = 128,
+    sample_count: int = 64,
     max_turns_per_sample: int = 10,  # unused with bucket sampling; kept for call-site compatibility
 ) -> list[str]:
     """Deterministic bucketed sampling: unique instance_ids across sources (70/30 by weight), one
