@@ -280,6 +280,7 @@ class RemoteEvalWorker:
             compile_cache_dir=self.settings.compile_cache_dir,
             gpu_memory_utilization=self.settings.gpu_memory_utilization,
             kv_cache_dtype=self.settings.kv_cache_dtype,
+            result_timeout_seconds=self.settings.generation_result_timeout_seconds,
         )
 
     def _generate_trajectories(

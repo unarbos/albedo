@@ -35,6 +35,7 @@ class RemoteSettings(BaseSettings):
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
     max_new_tokens: int = 32768
+    generation_result_timeout_seconds: float = 900.0
     trajectory_assistant_turns: int = 2
     temperature: float = 0.0
     top_p: float = 1.0

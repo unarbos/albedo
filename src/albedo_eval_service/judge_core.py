@@ -21,7 +21,7 @@ from typing import Any
 # Crown iff (challenger_mean - king_mean) >= this, on the 0-1 absolute scale (margin-only, no LCB).
 CHALLENGER_WIN_MARGIN = 0.02
 QUESTION_FLOOR_FRACTION = 0.4
-GENERIC_HYGIENE_QUESTION_LIMIT = 6
+GENERIC_HYGIENE_QUESTION_LIMIT = 3
 
 
 def question_floor(n: int) -> int:
@@ -98,8 +98,8 @@ block, only allowed tools).
 brevity must not dominate correctness.
 
 LIMITED HYGIENE CHECKS — generic format, length, and command-discipline checks are useful but \
-must be a SMALL minority. Include AT MOST 6 such generic checks in the whole list, with AT MOST \
-2 pure length/brevity checks and AT MOST 4 protocol/command-shape checks. Do NOT create a \
+must be a TINY minority. Include AT MOST 3 such generic checks in the whole list, with AT MOST \
+1 pure length/brevity check and AT MOST 2 protocol/command-shape checks. Do NOT create a \
 word-count ladder, do NOT use questions that differ only by threshold, and do NOT put a mandatory \
 size opening before task-specific checks. Prefer task-specific versions when possible, e.g. name \
 the already-shown command that should not be repeated or the concrete file whose huge output \

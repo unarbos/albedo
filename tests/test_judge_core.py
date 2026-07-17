@@ -45,8 +45,8 @@ def test_question_prompt_requires_trajectory_coverage():
 def test_question_prompt_limits_easy_hygiene_checks():
     prompt = build_question_messages(task="Fix bug", n=50)[0]["content"]
 
-    assert "AT MOST 6 such generic checks" in prompt
-    assert "AT MOST 2 pure length/brevity checks" in prompt
+    assert "AT MOST 3 such generic checks" in prompt
+    assert "AT MOST 1 pure length/brevity check" in prompt
     assert "Do NOT create a word-count ladder" in prompt
     assert "questions 1 through 15" not in prompt
     assert "Questions 1-6 are the WORD-COUNT LADDER" not in prompt
@@ -240,10 +240,11 @@ def test_parse_questions_caps_generic_hygiene_checks():
         {"questions": [{"text": t, "example_bad": "b"} for t in generic + task_specific]}
     )
 
-    out, ok = parse_questions(raw, 20)
+    out, ok = parse_questions(raw, 10)
     texts = [q["text"] for q in out]
 
     assert ok is True
+    assert GENERIC_HYGIENE_QUESTION_LIMIT == 3
     assert sum(t in texts for t in generic) == GENERIC_HYGIENE_QUESTION_LIMIT
     assert texts[-4:] == task_specific
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import sys
 import types
 from uuid import uuid4
@@ -19,6 +20,7 @@ from albedo_eval_service.models import (
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_generation import (
     GenerationResult,
+    VllmProcessGenerator,
     _vllm_worker,
     format_scored_trajectory,
 )
@@ -113,6 +115,39 @@ def test_scored_trajectory_marks_only_candidate_outputs():
     assert "ENVIRONMENT OBSERVATION (context only, do not score)" in text
     assert "CANDIDATE OUTPUT 2" in text
     assert "CANDIDATE OUTPUT 3" in text
+
+
+class _AliveProcess:
+    exitcode = None
+
+    def is_alive(self):
+        return True
+
+
+class _EmptyQueue:
+    def get(self, *, timeout):
+        raise queue.Empty
+
+    def get_nowait(self):
+        raise queue.Empty
+
+
+def test_vllm_generator_times_out_when_worker_sends_no_payload():
+    sample = types.SimpleNamespace(sample_id="sample-1", prompt="Fix it")
+    generator = VllmProcessGenerator(
+        model="m",
+        gpu_ids=["0"],
+        max_new_tokens=1,
+        temperature=0,
+        top_p=1,
+        result_timeout_seconds=0.01,
+    )
+    generator._process = _AliveProcess()
+    generator._result_queue = _EmptyQueue()
+
+    payload = generator._wait_for_payload("1", [sample])
+
+    assert payload["error"] == "vLLM process produced no result payload after 0.01s"
 
 
 def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import queue as queue_module
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -69,6 +70,7 @@ class VllmProcessGenerator:
         compile_cache_dir: str = "",
         gpu_memory_utilization: float = 0.95,
         kv_cache_dtype: str = "auto",
+        result_timeout_seconds: float = 900.0,
     ):
         self.model = model
         self.gpu_ids = gpu_ids
@@ -81,6 +83,7 @@ class VllmProcessGenerator:
         self.compile_cache_dir = compile_cache_dir
         self.gpu_memory_utilization = gpu_memory_utilization
         self.kv_cache_dtype = kv_cache_dtype
+        self.result_timeout_seconds = result_timeout_seconds
         self._ctx = mp.get_context("spawn")
         self._request_queue = None
         self._result_queue = None
@@ -151,7 +154,16 @@ class VllmProcessGenerator:
 
     def _wait_for_payload(self, request_id: str, samples: list[EvalSample]) -> dict[str, Any]:
         payload = None
+        deadline = time.monotonic() + max(1.0, self.result_timeout_seconds)
         while self._process is not None and self._process.is_alive():
+            if time.monotonic() >= deadline:
+                payload = {
+                    "error": (
+                        f"vLLM process produced no result payload after "
+                        f"{self.result_timeout_seconds:g}s"
+                    )
+                }
+                break
             try:
                 candidate = self._result_queue.get(timeout=1)
                 if candidate.get("id") == request_id or ("id" not in candidate and candidate.get("error")):
