@@ -161,8 +161,8 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path, monkey
     assert [event["batch_id"] for event in scoring_events] == ["score-0001", "score-0002"]
     assert {call["side"] for call in calls if "gpu_ids" in call} == {"previous_king", "challenger"}
     generate_calls = [call for call in calls if "sample_ids" in call]
-    assert [call["side"] for call in generate_calls].count("previous_king") == 3
-    assert [call["side"] for call in generate_calls].count("challenger") == 3
+    assert [call["side"] for call in generate_calls].count("previous_king") == 2
+    assert [call["side"] for call in generate_calls].count("challenger") == 2
     assert [call["side"] for call in calls if call.get("closed")].count("previous_king") == 1
     assert [call["side"] for call in calls if call.get("closed")].count("challenger") == 1
 

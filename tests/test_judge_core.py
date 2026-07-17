@@ -4,6 +4,7 @@ import json
 
 from albedo_eval_service.judge_core import (
     CHALLENGER_WIN_MARGIN,
+    GENERIC_HYGIENE_QUESTION_LIMIT,
     JUDGE_MODELS,
     JUDGE_PROVIDER_PINS,
     aggregate_scores,
@@ -39,6 +40,16 @@ def test_question_prompt_requires_trajectory_coverage():
     assert "no looping/repeated commands" in prompt
     assert "grounding" in prompt
     assert "correct SWE-agent workflow" in prompt
+
+
+def test_question_prompt_limits_easy_hygiene_checks():
+    prompt = build_question_messages(task="Fix bug", n=50)[0]["content"]
+
+    assert "AT MOST 6 such generic checks" in prompt
+    assert "AT MOST 2 pure length/brevity checks" in prompt
+    assert "Do NOT create a word-count ladder" in prompt
+    assert "questions 1 through 15" not in prompt
+    assert "Questions 1-6 are the WORD-COUNT LADDER" not in prompt
 
 
 def test_judge_prompt_scores_only_candidate_outputs():
@@ -206,6 +217,35 @@ def test_parse_questions_caps_template_stamping():
     out, _ = parse_questions(raw, 10)
     texts = [q["text"] for q in out]
     assert texts == stamped[:2] + others  # capped at 2 per leading phrase
+
+
+def test_parse_questions_caps_generic_hygiene_checks():
+    generic = [
+        "Is the entire response under roughly 100 words?",
+        "Does the THOUGHT fit in a single paragraph?",
+        "Is the THOUGHT free of restarts or self-corrections such as wait or actually?",
+        "Is the response free of raw chain-of-thought scratch work?",
+        "Does the response avoid quoting more than a few file lines?",
+        "Is the bash block at most about 40 lines?",
+        "Are shell quotes and backslashes balanced?",
+        "Does each command have a plan-action match?",
+    ]
+    task_specific = [
+        "Does the first output inspect `src/cache.py` for `CacheStore`?",
+        "Does the second output react to the observed `KeyError`?",
+        "Does the third output advance by editing `tests/test_cache.py`?",
+        "Does the trajectory stay grounded in `ALBEDO_CACHE_DIR`?",
+    ]
+    raw = json.dumps(
+        {"questions": [{"text": t, "example_bad": "b"} for t in generic + task_specific]}
+    )
+
+    out, ok = parse_questions(raw, 20)
+    texts = [q["text"] for q in out]
+
+    assert ok is True
+    assert sum(t in texts for t in generic) == GENERIC_HYGIENE_QUESTION_LIMIT
+    assert texts[-4:] == task_specific
 
 
 def test_question_schema_floor_does_not_force_padding():

@@ -21,6 +21,7 @@ from typing import Any
 # Crown iff (challenger_mean - king_mean) >= this, on the 0-1 absolute scale (margin-only, no LCB).
 CHALLENGER_WIN_MARGIN = 0.02
 QUESTION_FLOOR_FRACTION = 0.4
+GENERIC_HYGIENE_QUESTION_LIMIT = 6
 
 
 def question_floor(n: int) -> int:
@@ -58,9 +59,9 @@ on another file/symbol/command ("avoids editing <file A>?", "avoids editing <fil
 question are the SAME check and count as forbidden repeats — checklists that enumerate task \
 concepts through one template reward keyword-stuffing, not quality. Enforce this STRUCTURALLY \
 while you write:
-- Spend the list across the aspects roughly as: 1/4 correctness, 1/4 grounding (each question \
-anchored on a DIFFERENT concrete fact of the conversation), 1/5 protocol, 1/8 efficiency, and AT \
-MOST 3 questions on progress/non-redundancy. Within an aspect, every question must probe a \
+- Spend the list across the aspects roughly as: 1/3 correctness, 1/4 grounding (each question \
+anchored on a DIFFERENT concrete fact of the conversation), 1/6 protocol, 1/8 efficiency, and AT \
+MOST 4 questions on progress/non-redundancy. Within an aspect, every question must probe a \
 different ANGLE — never the same angle pointed at a different target.
 - AT MOST FIVE questions in the ENTIRE list may be negative-form ("avoids", "does not", \
 "refrains"). Each negative question must cover its whole family by listing the items inside \
@@ -93,58 +94,19 @@ candidate outputs (not looping, stalling, or repeating a step already taken).
 - protocol — it obeys the agent's operating format (e.g. a THOUGHT plus exactly one action/bash \
 block, only allowed tools).
 - efficiency — it is economical (no needless exploration or redundant work).
-- brevity — it is SHORT: a strong next turn is a few sentences of THOUGHT plus one concise \
-command; thousands of words of looping reasoning is a defect no matter how correct.
+- brevity — it is concise enough to be usable; rambling, repeated reasoning is a defect, but \
+brevity must not dominate correctness.
 
-MANDATORY BREVITY OPENING — questions 1 through 15 of your list MUST be size checks, written \
-BEFORE any other question. Reference agents answer these tasks in roughly 60-150 words total; \
-weak agents emit thousands of words of looping reasoning, and the checklist must catch that.
+LIMITED HYGIENE CHECKS — generic format, length, and command-discipline checks are useful but \
+must be a SMALL minority. Include AT MOST 6 such generic checks in the whole list, with AT MOST \
+2 pure length/brevity checks and AT MOST 4 protocol/command-shape checks. Do NOT create a \
+word-count ladder, do NOT use questions that differ only by threshold, and do NOT put a mandatory \
+size opening before task-specific checks. Prefer task-specific versions when possible, e.g. name \
+the already-shown command that should not be repeated or the concrete file whose huge output \
+should not be reprinted.
 
-Questions 1-6 are the WORD-COUNT LADDER — six rungs at doubling intervals, so that every \
-halving of a response's length earns exactly one more YES (shorter is strictly better at every \
-scale). Each rung MUST use a clearly DIFFERENT sentence shape (rungs that differ only in the \
-number are repeats and will be dropped), and each rung's "example_bad" must name a concrete \
-word count that fails it (e.g. "a ~800-word reply"):
-1. "Is the entire response (THOUGHT plus code block) under roughly 100 words?"
-2. "Does the whole reply stay below about 250 words?"
-3. "Is the total text shorter than roughly 500 words?"
-4. "Does the response avoid exceeding 1000 words?"
-5. "Is the response kept within about 2000 words?"
-6. "Does the full response come in at less than about 4000 words?"
-Questions 7-15 are structural size checks, every one verifiable by just LOOKING at the response:
-7. THOUGHT sentences — "Is the THOUGHT at most about 6 sentences?"
-8. THOUGHT shape — "Does the THOUGHT fit in a single paragraph?"
-9. no restarted reasoning — "Is the THOUGHT free of restarts or self-corrections such as \
-'wait', 'actually', or re-deriving the same conclusion twice?"
-10. no reasoning dumps — "Is the response free of raw chain-of-thought, <think> tags, or \
-scratch work outside the single THOUGHT paragraph?"
-11. no bulk quoting — "Does the response refrain from quoting or restating more than a few \
-lines of file or conversation content?"
-12. command size — "Is the bash block at most about 40 lines (one command or a short heredoc, \
-not a full-file rewrite)?"
-13. decisiveness — "Does the FIRST sentence of the THOUGHT already state the chosen action, \
-rather than recapping the situation?"
-14. no self-repetition — "Is the response free of repeated sentences or paragraphs that restate \
-a point it already made?"
-15. one task-specific size check of your own (e.g. naming the exact large file whose contents \
-must not be restated, or the specific long output that must not be re-printed).
-Adapt wording to this task's protocol but keep the thresholds; a ~100-word response must pass \
-every size check and a 2000-word response must fail most of them.
-
-MANDATORY COMMAND DISCIPLINE — questions 16 through 20 MUST be these checks on the bash commands \
-inside the candidate outputs (verbose agents fail them as often as weak ones):
-16. bounded output — "Do the commands limit what they print (e.g. `grep -n`, `| head`, a `sed` \
-line range) instead of dumping a whole file or directory?"
-17. non-destructive — "Are the commands free of destructive operations such as `rm -rf`, \
-`git checkout/reset --hard`, or blindly overwriting an existing file with `>`?"
-18. read-or-verify — "Is each command either a read-only inspection, or an edit chained with a \
-verification step (e.g. `&& grep -n`/`sed -n` on the changed lines)?"
-19. well-formed — "Are quotes, backslashes, and regex patterns in both commands balanced and \
-correctly escaped so the shell would parse it?"
-20. plan-action match — "Does each bash command do exactly what its THOUGHT says it will do, no \
-more and no less?"
-Then continue with the task-specific questions below; the aspect proportions apply to those \
-remaining questions.
+The remaining questions must emphasize task-specific correctness, grounding, reaction to \
+environment observations, and real progress between candidate outputs.
 
 CRITICAL — do NOT lock the checklist onto ONE imagined action. A response that takes a DIFFERENT \
 but equally reasonable next step must still be able to pass most questions. To achieve that:
@@ -428,6 +390,19 @@ _DUP_CHAR_MIN_LEN = 20
 _TEMPLATE_KEY_TOKENS = 5
 _TEMPLATE_MAX_PER_KEY = 2
 _CONDITIONAL_RE = re.compile(r"^\s*if\b", re.IGNORECASE)
+_GENERIC_HYGIENE_RE = re.compile(
+    r"\b("
+    r"word|words|characters?|shorter|exceeding|less than|"
+    r"under (?:roughly|about|\d)|below (?:about|\d)|within (?:about|\d)|"
+    r"thought (?:at most|fit|free|section)|sentences?|paragraph|"
+    r"self-corrections?|raw chain-of-thought|scratch work|"
+    r"quoting|restating|re-printing|"
+    r"bash block at most|code block|destructive operations?|rm -rf|"
+    r"read-only inspection|verification step|quotes?|backslashes|regex patterns?|"
+    r"plan-action match"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _question_signature(text: str) -> frozenset[str]:
@@ -473,6 +448,10 @@ def _near_duplicate(sig_a: frozenset[str], sig_b: frozenset[str], text_a: str, t
     return False
 
 
+def _is_generic_hygiene_question(text: str) -> bool:
+    return bool(_GENERIC_HYGIENE_RE.search(text))
+
+
 def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
     """Return ([{id,category,text,example_bad}], ok). ok iff >= question_floor(n) DISTINCT
     questions parsed.
@@ -487,6 +466,7 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
     seen: set[str] = set()
     kept_signatures: list[frozenset[str]] = []
     template_counts: dict[tuple[str, ...], int] = {}
+    generic_hygiene_count = 0
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict) or not str(item.get("text", "")).strip():
@@ -498,6 +478,12 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
             if key in seen:
                 continue
             seen.add(key)
+            is_generic_hygiene = _is_generic_hygiene_question(text)
+            if (
+                is_generic_hygiene
+                and generic_hygiene_count >= GENERIC_HYGIENE_QUESTION_LIMIT
+            ):
+                continue
             template = _template_key(text)
             if (
                 len(template) == _TEMPLATE_KEY_TOKENS
@@ -511,6 +497,8 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
             ):
                 continue
             template_counts[template] = template_counts.get(template, 0) + 1
+            if is_generic_hygiene:
+                generic_hygiene_count += 1
             kept_signatures.append(signature)
             out.append({"text": text, "example_bad": str(item.get("example_bad", "")).strip()})
     out = out[:n]
