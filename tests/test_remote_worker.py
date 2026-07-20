@@ -27,7 +27,13 @@ from albedo_eval_service.remote_generation import (
 from albedo_eval_service.remote_models import ResolvedModel
 from albedo_eval_service.remote_scoring import ScoringResult
 from albedo_eval_service.remote_state import RemoteRun
-from albedo_eval_service.remote_worker import RemoteEvalWorker
+from albedo_eval_service.remote_worker import (
+    ObservationResult,
+    RemoteEvalWorker,
+    _completion_observation,
+    _merge_trajectory_results,
+    _next_turn_samples,
+)
 
 
 class _Tokenizer:
@@ -283,6 +289,73 @@ def test_remote_worker_starts_category_prep_before_model_resolution(tmp_path, mo
 
     assert calls.index("category_prep") < calls.index("resolve:s3-or-hippius-uri/king")
     assert any(str(call).startswith("simulate:") for call in calls)
+
+
+def test_submit_echo_stops_future_trajectory_turns(monkeypatch):
+    monkeypatch.setattr(
+        "albedo_eval_service.remote_worker.format_messages", lambda messages, **_kwargs: "next"
+    )
+    sample = types.SimpleNamespace(
+        sample_id="sample-1",
+        prompt="Task",
+        target=None,
+        messages=[{"role": "user", "content": "Task"}],
+    )
+    observation = ObservationResult(
+        "sample-1", "Observation: COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+    )
+
+    assert _next_turn_samples(
+        [sample],
+        [GenerationResult("sample-1", "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```")],
+        {("challenger", "sample-1"): observation},
+        side="challenger",
+    ) == []
+
+    merged = _merge_trajectory_results(
+        [sample],
+        [
+            [GenerationResult("sample-1", "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```")],
+            [],
+        ],
+        [{("challenger", "sample-1"): observation}],
+        side="challenger",
+    )
+
+    assert merged[0].error is None
+    assert "CANDIDATE OUTPUT 2" not in merged[0].text
+    assert "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in merged[0].text
+
+
+def test_submit_echo_bypasses_observation_simulator(tmp_path):
+    class FailingScorer:
+        def simulate_observation(self, **_kwargs):
+            raise AssertionError("simulator should not run for submit echo")
+
+    sample = types.SimpleNamespace(
+        sample_id="mini-coder/data/train-00000.parquet:1:0",
+        prompt="Task",
+        target=None,
+        messages=[{"role": "user", "content": "Task"}],
+    )
+    result = GenerationResult(
+        sample.sample_id, "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```"
+    )
+    worker = RemoteEvalWorker(
+        RemoteSettings(dataset_root=str(tmp_path), scoring_backend="mock"),
+        generator_factory=lambda side, gpu_ids, model: RecordingGenerator(side=side, calls=[]),
+        scorer=FailingScorer(),
+    )
+
+    observations = worker._simulate_observations(
+        request=_request(),
+        samples_by_side={"challenger": [sample]},
+        results_by_side={"challenger": [result]},
+    )
+
+    assert observations[("challenger", sample.sample_id)].observation == _completion_observation(
+        sample.sample_id
+    )
 
 
 def test_remote_worker_rejects_overlapping_gpu_groups(tmp_path):

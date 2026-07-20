@@ -68,9 +68,9 @@ useful investigation/progress, but only when that investigation is grounded and 
 improves or verifies the current repository state. A candidate that keeps probing after enough \
 evidence, rewrites unrelated files, or runs failed edits should not win credit for being busy.
 - Spend the list across these failure-mode families, not generic style: grounding/invented inputs, \
-command/edit correctness, workflow stage, reaction to observations, looping/non-redundancy, and \
-stop-after-success. Within a family, every question must probe a different ANGLE — never the same \
-angle pointed at a different target.
+command/edit correctness, system-prompt compliance, workflow stage, reaction to observations, \
+turn-to-turn progress, looping/non-redundancy, and stop-after-success. Within a family, every \
+question must probe a different ANGLE — never the same angle pointed at a different target.
 - AT MOST FIVE questions in the ENTIRE list may be negative-form ("avoids", "does not", \
 "refrains"). Each negative question must cover its whole family by listing the items inside \
 itself — ONE question like "Does the response avoid re-running commands already executed above, \
@@ -97,21 +97,22 @@ outputs, errors — nothing invented).
 - first-step quality — CANDIDATE OUTPUT 1 is a sensible first move from the original conversation.
 - environment reaction — later CANDIDATE OUTPUT blocks respond appropriately to the preceding \
 ENVIRONMENT OBSERVATION.
-- progress — each later CANDIDATE OUTPUT makes a sensible, non-redundant advance from the prior \
-candidate outputs (not looping, stalling, or repeating a step already taken).
+- progress — each later CANDIDATE OUTPUT uses the preceding observation as evidence and makes a \
+sensible, non-redundant advance from the prior candidate outputs toward resolving the task.
+- system-prompt compliance — the candidate follows the operating rules in the CONTEXT SYSTEM, \
+including required response shape, command/tool limits, forbidden actions, and final-submit rules.
 - protocol — it obeys the agent's operating format (e.g. a THOUGHT plus exactly one action/bash \
 block, only allowed tools).
 - efficiency — it is economical (no needless exploration or redundant work).
-- brevity — it is concise enough to be usable; rambling, repeated reasoning is a defect, but \
-brevity must not dominate correctness.
+- brevity only matters when verbosity causes a concrete protocol or workflow failure; do NOT ask \
+style, tone, polish, elegance, or word-count questions.
 
-LIMITED HYGIENE CHECKS — generic format, length, and command-discipline checks are useful but \
-must be a TINY minority. Include AT MOST 3 such generic checks in the whole list, with AT MOST \
-1 pure length/brevity check and AT MOST 2 protocol/command-shape checks. Do NOT create a \
-word-count ladder, do NOT use questions that differ only by threshold, and do NOT put a mandatory \
-size opening before task-specific checks. Prefer task-specific versions when possible, e.g. name \
-the already-shown command that should not be repeated or the concrete file whose huge output \
-should not be reprinted.
+NO STYLE FILLER — do not generate questions about tone, confidence, politeness, prose quality, \
+paragraph count, "clear explanation", "helpfulness", "conciseness", or "raw chain-of-thought". \
+Generic formatting checks are allowed only when they test a concrete system-prompt requirement, \
+such as exactly one bash block, one command, no extra markdown, no forbidden tool, or the required \
+final-submit command. Word/character count checks are allowed as a small hygiene signal, but do \
+not create a word-count ladder or repeated threshold variants.
 
 The remaining questions must emphasize task-specific correctness, grounding, reaction to \
 environment observations, and real progress between candidate outputs.
@@ -135,6 +136,12 @@ commands should fail even when the THOUGHT correctly describes the bug.
 - Workflow stage: ask whether the trajectory follows the appropriate lifecycle for the current \
 state — inspect before editing unknown code, edit only after enough evidence, verify after edits, \
 and submit/finish only after verification.
+- System-prompt compliance: ask whether the candidate follows the CONTEXT SYSTEM instructions for \
+this trajectory, including the required output shape, tool/command restrictions, forbidden file \
+targets, and when to submit or continue.
+- Turn-to-turn progress: ask whether each later CANDIDATE OUTPUT uses the immediately prior \
+observation to make a new useful move — narrowing the search, correcting an error, editing the \
+right target, verifying the edit, or submitting after success — instead of merely continuing.
 - Stop after success: ask whether the trajectory stops/submits once observations show the \
 requirement is satisfied, tests/checks pass, the diff is verified, or the required final signal is \
 produced, while continuing only when the task remains unresolved.
@@ -143,8 +150,9 @@ immediately preceding ENVIRONMENT OBSERVATION, especially after errors, empty ou
 commands, or failed commands.
 
 Do NOT treat these as optional niceties. A fluent response with invented inputs, broken edits, a \
-repeated action, the wrong workflow stage, premature submission, repository damage, or continuing \
-exploration after success must fail several questions even if it is concise and well formatted.
+repeated action, ignored system instructions, no real progress between turns, the wrong workflow \
+stage, premature submission, repository damage, or continuing exploration after success must fail \
+several questions even if it is concise and well formatted.
 
 CRITICAL — do NOT lock the checklist onto ONE imagined action. A response that takes a DIFFERENT \
 but equally reasonable next step must still be able to pass most questions. To achieve that:
@@ -198,8 +206,9 @@ FAIL it — no gimmes that any syntactically valid answer passes.
 - One single check, at most 30 words, no 'and'/'or' compounds (listing allowed equivalent targets \
 is fine).
 
-The checklist MUST cover, among other things: quality of CANDIDATE OUTPUT 1, reaction to \
-ENVIRONMENT OBSERVATION blocks, progress between adjacent candidate outputs, no looping/repeated \
+The checklist MUST cover, among other things: quality of CANDIDATE OUTPUT 1, whether the \
+candidate obeys the CONTEXT SYSTEM instructions from the trajectory, reaction to ENVIRONMENT \
+OBSERVATION blocks, concrete progress between adjacent candidate outputs, no looping/repeated \
 commands across candidate outputs, grounding, and correct SWE-agent workflow.
 
 For each question also give "example_bad": a short, CONCRETE example of a candidate trajectory in \
@@ -234,14 +243,15 @@ Judge each question independently on its own merits. Every question includes an 
 ONE example of a response that should get 0. It is illustrative, NOT the only way to fail: do not \
 assume a response is good merely because it differs from example_bad; judge the actual check.
 
-For grounding/invented-input, workflow-stage, looping/non-redundancy, observation-reaction, and \
-stop-after-success questions, be strict: answer 0 unless the CANDIDATE OUTPUT blocks explicitly \
-demonstrate the behavior. Plausible intent, confident prose, recognizing the bug, trying another \
-command, or a syntactically valid command is not enough. Repeating a command/tool/target after its \
-observation already answered it, inventing an unseen path/ID/parameter, running a broken edit, \
-moving required changes into a temporary file, corrupting syntax, skipping verification after an \
-edit, submitting before verification, or continuing to explore after success must earn 0 on the \
-relevant question.
+For grounding/invented-input, system-prompt-compliance, workflow-stage, turn-to-turn-progress, \
+looping/non-redundancy, observation-reaction, and stop-after-success questions, be strict: answer 0 \
+unless the CANDIDATE OUTPUT blocks explicitly demonstrate the behavior. Plausible intent, \
+confident prose, recognizing the bug, trying another command, or a syntactically valid command is \
+not enough. Repeating a command/tool/target after its observation already answered it, inventing \
+an unseen path/ID/parameter, ignoring the CONTEXT SYSTEM instructions, making no useful progress \
+from the prior turn, running a broken edit, moving required changes into a temporary file, \
+corrupting syntax, skipping verification after an edit, submitting before verification, or \
+continuing to explore after success must earn 0 on the relevant question.
 
 MEASUREMENTS — the user message lists counts computed PROGRAMMATICALLY from the trajectory (total \
 words, total characters, THOUGHT/prose words, code-block lines and characters). For any question \

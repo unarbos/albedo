@@ -35,8 +35,10 @@ def test_question_prompt_requires_trajectory_coverage():
     prompt = build_question_messages(task="Fix bug", n=50)[0]["content"]
 
     assert "quality of CANDIDATE OUTPUT 1" in prompt
+    assert "CONTEXT SYSTEM instructions" in prompt
     assert "reaction to" in prompt and "ENVIRONMENT OBSERVATION" in prompt
-    assert "progress between adjacent candidate outputs" in prompt
+    assert "concrete progress between adjacent candidate outputs" in prompt
+    assert "uses the immediately prior" in prompt
     assert "no looping/repeated commands" in prompt
     assert "grounding" in prompt
     assert "correct SWE-agent workflow" in prompt
@@ -51,6 +53,8 @@ def test_question_prompt_prioritizes_observed_failure_modes():
     assert "unconditional trajectory-level checks" in prompt
     assert "Do-no-harm outcome" in prompt
     assert "Stop after success" in prompt
+    assert "System-prompt compliance" in prompt
+    assert "Turn-to-turn progress" in prompt
     assert 'without "if the response..." wording' in prompt
     assert "repository damage" in prompt
     assert "Invented IDs, paths, symbols, or tool arguments should fail" in prompt
@@ -59,9 +63,11 @@ def test_question_prompt_prioritizes_observed_failure_modes():
 def test_question_prompt_limits_easy_hygiene_checks():
     prompt = build_question_messages(task="Fix bug", n=50)[0]["content"]
 
-    assert "AT MOST 3 such generic checks" in prompt
-    assert "AT MOST 1 pure length/brevity check" in prompt
-    assert "Do NOT create a word-count ladder" in prompt
+    assert "NO STYLE FILLER" in prompt
+    assert "do not generate questions about tone" in prompt
+    assert "Word/character count checks are allowed" in prompt
+    assert "concrete system-prompt requirement" in prompt
+    assert "do not create a word-count ladder" in prompt
     assert "questions 1 through 15" not in prompt
     assert "Questions 1-6 are the WORD-COUNT LADDER" not in prompt
 
@@ -85,9 +91,13 @@ def test_judge_prompt_is_strict_on_workflow_and_grounding_failures():
     prompt = messages[0]["content"]
 
     assert "be strict" in prompt
+    assert "system-prompt-compliance" in prompt
+    assert "turn-to-turn-progress" in prompt
     assert "Plausible intent" in prompt
     assert "recognizing the bug" in prompt
     assert "running a broken edit" in prompt
+    assert "ignoring the CONTEXT SYSTEM instructions" in prompt
+    assert "making no useful progress from the prior turn" in prompt
     assert "inventing an unseen path/ID/parameter" in prompt
     assert "continuing to explore after success" in prompt
 

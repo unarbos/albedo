@@ -33,6 +33,7 @@ T = TypeVar("T")
 _CANONICAL_TOKENIZER_PATH = (
     Path(__file__).resolve().parents[2] / "assets" / "tokenizers" / "Qwen3.6-35B-A3B"
 )
+_COMPLETE_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 
 
 class ModelResolver(Protocol):
@@ -364,6 +365,10 @@ class RemoteEvalWorker:
                     )
                 elif result.error:
                     observations[key] = ObservationResult(result.sample_id, "", result.error)
+                elif _assistant_submitted(result.text):
+                    observations[key] = ObservationResult(
+                        result.sample_id, _completion_observation(result.sample_id)
+                    )
                 else:
                     jobs.append((side, sample, result))
         workers = max(1, min(self.settings.scoring_batch_concurrency, len(jobs)))
@@ -750,6 +755,8 @@ def _next_turn_samples(
         observation = observations.get((side, sample.sample_id))
         if result is None or result.error or observation is None or observation.error:
             continue
+        if _assistant_submitted(result.text):
+            continue
         messages = _base_messages(sample) + [
             {"role": "assistant", "content": result.text},
             {"role": "user", "content": observation.observation},
@@ -801,6 +808,8 @@ def _merge_trajectory_results(
                     "environment_observation": True,
                 }
             )
+            if _assistant_submitted(result.text):
+                break
         if error:
             merged.append(GenerationResult(sample.sample_id, "", error))
             continue
@@ -824,6 +833,16 @@ def _context_turns(sample: EvalSample) -> list[dict[str, object]]:
         {"role": message.get("role", "user"), "content": message.get("content", "")}
         for message in _base_messages(sample)
     ]
+
+
+def _assistant_submitted(output: str) -> bool:
+    return _COMPLETE_MARKER in output
+
+
+def _completion_observation(sample_id: str) -> str:
+    if "mini-coder" in sample_id.casefold():
+        return f"<returncode>0</returncode>\n<output>\n{_COMPLETE_MARKER}\n</output>"
+    return f"Observation: {_COMPLETE_MARKER}"
 
 
 def _cleanup_stale_vllm_resources() -> None:
