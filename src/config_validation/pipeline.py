@@ -21,6 +21,7 @@ from config_validation.checks import (
     architecture,
     duplicate,
     files,
+    genesis_metadata,
     revision,
 )
 from config_validation.config import SEED_DIGEST, SEED_REPO
@@ -81,6 +82,7 @@ def validate_commit(
         return result
 
     # Check 2 — strict file manifest.
+    repo_files: list[str] = []
     try:
         repo_files = list_files(ref)
         result.checks.append(files.check(repo_files))
@@ -88,9 +90,22 @@ def validate_commit(
         logger.exception(f"[config-val] could not list repo files repo={record.repo} digest={record.digest}: {exc}")
         result.checks.append(CheckOutcome(files.NAME, False, f"could not list repo files: {exc}"))
 
-    # Check 3 — architecture vs genesis seed.
+    config_dir: str | None = None
+
+    # Check 3 — metadata must be byte-identical to genesis before anything expensive.
     try:
-        cand_cfg = _load_config_json(download_config(ref))
+        config_dir = download_config(ref)
+        result.checks.append(genesis_metadata.check(config_dir, repo_files))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"[config-val] could not check metadata repo={record.repo} digest={record.digest}: {exc}")
+        result.checks.append(CheckOutcome(genesis_metadata.NAME, False,
+                                          f"could not check metadata: {exc}"))
+
+    # Check 4 — architecture vs genesis seed.
+    try:
+        if config_dir is None:
+            config_dir = download_config(ref)
+        cand_cfg = _load_config_json(config_dir)
         seed = seed_cfg if seed_cfg is not None else load_seed_config()
         result.checks.append(architecture.check(cand_cfg, seed))
     except Exception as exc:  # noqa: BLE001
@@ -98,7 +113,7 @@ def validate_commit(
         result.checks.append(CheckOutcome(architecture.NAME, False,
                                           f"could not load config.json: {exc}"))
 
-    # Check 4 — duplicate (expensive full download); skip if already invalid.
+    # Check 5 — duplicate (expensive full download); skip if already invalid.
     if all(c.ok for c in result.checks):
         try:
             model_dir = download_full(ref)

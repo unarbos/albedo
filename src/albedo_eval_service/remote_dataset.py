@@ -186,7 +186,7 @@ def _manual_chat_template(messages: list[dict[str, str]]) -> str:
 def _load_tokenizer(tokenizer_path: str):
     from transformers import AutoTokenizer
 
-    return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=False)
 
 
 def _messages_from_turns(turns: list[Any]) -> list[dict[str, str]]:

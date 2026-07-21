@@ -75,15 +75,14 @@ KNN_CANDIDATES: int = int(os.environ.get("ALBEDO_KNN_CANDIDATES", "20"))
 
 # --- Strict file allowlist (file-manifest check) ---
 REQUIRED_FILES: tuple[str, ...] = (
-    "config.json", "tokenizer_config.json", "tokenizer.json", "chat_template.jinja",
+    "config.json", "generation_config.json",
+    "tokenizer_config.json", "tokenizer.json", "chat_template.jinja",
     "preprocessor_config.json", "video_preprocessor_config.json",
 )
 REQUIRE_SAFETENSORS: bool = True
 ALLOWED_FILES: tuple[str, ...] = (
-    "generation_config.json", "special_tokens_map.json", "added_tokens.json",
-    "merges.txt", "vocab.json",
     "model.safetensors.index.json",
-    ".gitattributes", "LICENSE", "README.md", "configuration.json",
+    ".gitattributes", "LICENSE", "README.md",
 )
 ALLOWED_GLOBS: tuple[str, ...] = ("model-*-of-*.safetensors", "model.safetensors")
 FORBIDDEN_GLOBS: tuple[str, ...] = ("*.py",)

@@ -15,7 +15,17 @@ from config_validation.storage._paths import _cache_dir
 log = logging.getLogger(__name__)
 
 _HUB_TOKEN_ENV = "HIPPIUS_HUB_TOKEN"
-_CONFIG_ONLY_PATTERNS = ["*.json", "chat_template.jinja"]
+_CONFIG_ONLY_PATTERNS = [
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "video_preprocessor_config.json",
+    "chat_template.jinja",
+    "model.safetensors.index.json",
+]
+_MODEL_ONLY_PATTERNS = ["*.safetensors", "model.safetensors.index.json"]
 _HEARTBEAT_INTERVAL_S = 10.0
 
 
@@ -69,6 +79,7 @@ def _download_child() -> None:
         revision=revision,
         local_dir=local_dir,
         max_workers=max(1, int(max_workers)),
+        allow_patterns=_MODEL_ONLY_PATTERNS,
         token=_token(),
     )
 
@@ -84,7 +95,7 @@ def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:
                 revision=ref.digest,
                 local_dir=str(dest),
                 max_workers=max_workers,
-                allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else None,
+                allow_patterns=_CONFIG_ONLY_PATTERNS if config_only else _MODEL_ONLY_PATTERNS,
                 token=_token(),
             )
         return str(dest)

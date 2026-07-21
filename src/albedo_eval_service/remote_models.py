@@ -27,6 +27,7 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _HF_GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")  # HF git commit (sha1 or sha256 era)
 _DEFAULT_OCI_REGISTRY = "registry.hippius.com"
 _HEARTBEAT_INTERVAL_S = 10.0
+_MODEL_PAYLOAD_PATTERNS = ["*.safetensors", "model.safetensors.index.json"]
 
 # hippius chunked-v2 layout markers (hippius-hub >= 0.6.0 writes these by default for
 # files >= 256 MiB): a titled pointer.v2 layer maps a file's bytes onto shared pack blobs.
@@ -43,6 +44,10 @@ def _manifest_is_chunked(manifest: dict[str, Any]) -> bool:
         if (layer.get("annotations") or {}).get(_LAYOUT_ANNOTATION_KEY):
             return True
     return False
+
+
+def _is_model_payload_file(name: str) -> bool:
+    return name.endswith(".safetensors") or name == "model.safetensors.index.json"
 
 _RESOLVE_LOCKS: dict[str, threading.Lock] = {}
 _RESOLVE_LOCKS_GUARD = threading.Lock()
@@ -212,6 +217,8 @@ class ModelArtifactResolver:
                         continue
                     found = True
                     rel = key[len(prefix) :].lstrip("/") if prefix else key
+                    if not _is_model_payload_file(Path(rel).name):
+                        continue
                     destination = cache_dir / rel
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     client.download_file(bucket, key, str(destination))
@@ -274,6 +281,7 @@ class ModelArtifactResolver:
                     revision=revision,
                     local_dir=str(temp_dir),
                     max_workers=max(1, self.settings.model_download_concurrency),
+                    allow_patterns=_MODEL_PAYLOAD_PATTERNS,
                     token=os.environ.get("HF_TOKEN") or None,
                 )
             return
@@ -315,6 +323,7 @@ class ModelArtifactResolver:
                     revision=digest,
                     local_dir=str(temp_dir),
                     max_workers=max(1, self.settings.model_download_concurrency),
+                    allow_patterns=_MODEL_PAYLOAD_PATTERNS,
                     token=os.environ.get("HIPPIUS_HUB_TOKEN") or None,
                 )
             return
@@ -394,6 +403,8 @@ class ModelArtifactResolver:
                 if not isinstance(layer_digest, str) or not _DIGEST_RE.match(layer_digest):
                     raise ValueError(f"OCI layer {index} is missing a sha256 digest")
                 name = _layer_filename(layer, index)
+                if not _is_model_payload_file(Path(name).name):
+                    continue
                 destination = temp_dir / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if destination.exists():
@@ -519,6 +530,7 @@ def _hf_download_child() -> None:
         revision=revision,
         local_dir=local_dir,
         max_workers=max(1, int(max_workers)),
+        allow_patterns=_MODEL_PAYLOAD_PATTERNS,
         token=os.environ.get("HF_TOKEN") or None,
     )
 
@@ -537,6 +549,7 @@ def _hippius_download_child() -> None:
         revision=revision,
         local_dir=local_dir,
         max_workers=max(1, int(max_workers)),
+        allow_patterns=_MODEL_PAYLOAD_PATTERNS,
         token=os.environ.get("HIPPIUS_HUB_TOKEN") or None,
     )
 
@@ -727,8 +740,6 @@ def _layer_filename(layer: dict[str, Any], index: int) -> str:
 
 def _has_loadable_model_files(path: Path) -> bool:
     if not path.is_dir():
-        return False
-    if not (path / "config.json").is_file() and not (path / "params.json").is_file():
         return False
     if (path / "model.safetensors.index.json").is_file():
         return True

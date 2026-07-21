@@ -80,7 +80,7 @@ def _model_present(model_dir: str) -> bool:
     p = Path(model_dir)
     if not p.is_dir():
         return False
-    if not (p / "config.json").exists() or not any(p.glob("*.safetensors")):
+    if not any(p.glob("*.safetensors")):
         return False
     index = p / "model.safetensors.index.json"
     if not index.exists():
@@ -143,7 +143,7 @@ class WorkerFault(Exception):
         self.retryable = retryable
 
 
-_SEED_PROCESSOR_FILES = ("preprocessor_config.json", "video_preprocessor_config.json", "configuration.json")
+_SEED_PROCESSOR_FILES = ("preprocessor_config.json", "video_preprocessor_config.json")
 
 
 def _inject_seed_processor_files(model_dir: str) -> None:
@@ -285,6 +285,9 @@ class VllmEngine:
                 # shard check on old copies without an index and poison every retry.
                 await asyncio.to_thread(shutil.rmtree, dest, True)
                 raise
+        from albedo_eval_service.canonical_model_config import apply_canonical_model_config
+
+        await asyncio.to_thread(apply_canonical_model_config, Path(dest))
         await asyncio.to_thread(_inject_seed_processor_files, dest)
         return dest
 

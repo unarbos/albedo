@@ -27,7 +27,13 @@ from model_validation.storage import (
 )
 from model_validation.opensearch import find_duplicate, health, index_fingerprint
 from model_validation.uploads import put_fault, update_fingerprint_corpus
-from model_validation.validate import check_architecture, check_dtypes, check_index, check_repo
+from model_validation.validate import (
+    check_architecture,
+    check_dtypes,
+    check_genesis,
+    check_index,
+    check_repo,
+)
 from model_validation.validate.chat_template import check as check_chat_template
 
 _WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
@@ -128,6 +134,23 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
     if not ok:
         return _miner("chat_template_hash", msg, {})
 
+    # 2.5 — every metadata file must be byte-identical to the genesis repo
+    # (chat_template.jinja checked at step 2; model.safetensors.index.json checked
+    # structurally at step 3.5 since it is allowed to be custom).
+    ok, msg = check_genesis(config_dir, files)
+    if not ok:
+        return _miner("metadata_hash", msg, {})
+
+    # 2.75 — architecture is checked against the already hash-pinned metadata.
+    try:
+        ok, msg = check_architecture(config_dir)
+    except FileNotFoundError as exc:
+        return _miner("architecture", f"config.json missing: {exc}", {})
+    except Exception as exc:  # noqa: BLE001
+        return _infra("architecture_read_failed", f"could not read config.json: {exc}")
+    if not ok:
+        return _miner("architecture", msg, {})
+
     # 3 — full download
     try:
         model_dir = download_full(ref)
@@ -137,24 +160,14 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         return _infra("download_failed", f"model download failed: {exc}")
     # Repo that resolved but yielded no usable model content is a miner fault, not infra.
     mdir = Path(model_dir)
-    if not (mdir / "config.json").exists() or not any(mdir.glob("*.safetensors")):
+    if not any(mdir.glob("*.safetensors")):
         return _miner("incomplete_repo",
-                      "downloaded repo is missing config.json or *.safetensors", {})
+                      "downloaded repo is missing *.safetensors", {})
 
     # 3.5 — safetensors match model.safetensors.index.json (no unused shards/tensors)
     ok, msg = check_index(model_dir, files)
     if not ok:
         return _miner("safetensors_index", msg, {})
-
-    # 4 — universal, spec-driven architecture
-    try:
-        ok, msg = check_architecture(model_dir)
-    except FileNotFoundError as exc:
-        return _miner("architecture", f"config.json missing: {exc}", {})
-    except Exception as exc:  # noqa: BLE001
-        return _infra("architecture_read_failed", f"could not read config.json: {exc}")
-    if not ok:
-        return _miner("architecture", msg, {})
 
     # 5 — fingerprint + dedup
     try:

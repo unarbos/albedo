@@ -38,17 +38,15 @@ seed_digest = "sha256:efd5b8d0a1c1f472be56ff919419cdd0561bdecd9013d5c2a96dd0e23e
 # file matching a `forbidden_glob`, and any other file is flagged as an unexpected extra.
 required = [
   "config.json",
+  "generation_config.json",
   "tokenizer_config.json",
   "tokenizer.json",
   "chat_template.jinja",
+  "preprocessor_config.json",
+  "video_preprocessor_config.json",
 ]
 require_safetensors = true
 allowed = [
-  "generation_config.json",
-  "special_tokens_map.json",
-  "added_tokens.json",
-  "merges.txt",
-  "vocab.json",
   "model.safetensors.index.json",  # present only on sharded checkpoints
   # ubiquitous repo metadata — present on essentially every repo
   ".gitattributes",

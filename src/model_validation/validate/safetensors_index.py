@@ -45,6 +45,14 @@ def check(model_dir: str, files: list[str]) -> tuple[bool, str]:
         logger.warning(f"[hippius-val] malformed {INDEX_NAME}: {exc}")
         return False, f"malformed {INDEX_NAME}: {exc}"
 
+    # The index is the only metadata file allowed to be custom, so it must carry nothing
+    # beyond the two keys transformers reads — no smuggling extra top-level keys past the
+    # (skipped) content-hash check.
+    extra_keys = sorted(set(index) - {"metadata", "weight_map"})
+    if extra_keys:
+        return False, (f"{INDEX_NAME} has disallowed top-level keys {extra_keys}; "
+                       "only 'metadata' and 'weight_map' are allowed")
+
     referenced = set(weight_map.values())
 
     extra = sorted(actual - referenced)

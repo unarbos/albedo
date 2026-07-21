@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,27 @@ GENESIS_MODEL_CONFIG_REF = (
     "registry.hippius.com/teutonic/qwen3.6-35b-a3b-genesis@"
     "sha256:efd5b8d0a1c1f472be56ff919419cdd0561bdecd9013d5c2a96dd0e23e89c165"
 )
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CANONICAL_TOKENIZER_DIR = _REPO_ROOT / "assets" / "tokenizers" / "Qwen3.6-35B-A3B"
+_CANONICAL_TOKENIZER_FILES = (
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "chat_template.jinja",
+    "vocab.json",
+    "merges.txt",
+)
+_MINER_TOKENIZER_SIDECARS = (
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "configuration.json",
+)
+_CANONICAL_JSON_FILES = (
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "video_preprocessor_config.json",
+)
+_CACHE_MARKER_FILES = (".albedo-model-cache.json",)
 
 # Full Hugging Face config.json for Qwen/Qwen3.6-35B-A3B. Kept byte-for-byte
 # faithful to the published config so apply_canonical_model_config is idempotent
@@ -193,21 +215,19 @@ def canonical_max_model_len() -> int:
 def apply_canonical_model_config(model_dir: Path) -> bool:
     """Replace model-supplied config files with the canonical genesis values.
 
-    Contestant artifacts provide weights/tokenizers, but eval must not trust their
-    bundled model config. Existing extra keys are retained where vLLM/Hugging Face
-    may need them, while explicitly forbidden keys are removed. Generation config
-    is fully pinned to genesis.
+    Eval should use miner artifacts only for weights and model.safetensors.index.json.
+    All model/tokenizer/processor metadata is pinned to the local genesis copy before
+    vLLM or Transformers load the directory.
     """
     config_path = model_dir / "config.json"
-    if not config_path.exists():
-        return False
-
-    try:
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"model config is not valid JSON: {config_path}") from exc
-    if not isinstance(existing, dict):
-        raise ValueError(f"model config must be a JSON object: {config_path}")
+    existing: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"model config is not valid JSON: {config_path}") from exc
+        if not isinstance(existing, dict):
+            raise ValueError(f"model config must be a JSON object: {config_path}")
 
     forbidden = set(GENESIS_ARCH_SPEC["forbidden_keys"])
     merged = {key: value for key, value in existing.items() if key not in forbidden}
@@ -228,5 +248,26 @@ def apply_canonical_model_config(model_dir: Path) -> bool:
     (model_dir / "video_preprocessor_config.json").write_text(
         json.dumps(GENESIS_VIDEO_PREPROCESSOR_CONFIG, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    for name in _CANONICAL_TOKENIZER_FILES:
+        source = _CANONICAL_TOKENIZER_DIR / name
+        if not source.is_file():
+            raise FileNotFoundError(f"canonical tokenizer asset missing: {source}")
+        shutil.copyfile(source, model_dir / name)
+
+    # These optional files are loaded by Hugging Face tokenizers when present. Do
+    # not let a miner-supplied sidecar alter the canonical tokenizer we just pinned.
+    for name in _MINER_TOKENIZER_SIDECARS:
+        (model_dir / name).unlink(missing_ok=True)
+
+    allowed = set(_CANONICAL_JSON_FILES) | set(_CANONICAL_TOKENIZER_FILES) | set(_CACHE_MARKER_FILES)
+    allowed.add("model.safetensors.index.json")
+    for path in sorted(model_dir.rglob("*"), reverse=True):
+        if path.is_file() and path.name not in allowed and not path.name.endswith(".safetensors"):
+            path.unlink()
+        elif path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
     return True
