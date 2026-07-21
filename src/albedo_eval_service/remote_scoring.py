@@ -67,7 +67,9 @@ class HttpScoringClient:
             body = _post_json_with_429_retry(
                 client,
                 "/category-prep",
-                _category_prep_payload(request, samples),
+                _category_prep_payload(
+                    request, samples, self.settings.trajectory_assistant_turns
+                ),
                 retry_count=self.settings.scoring_retry_count,
                 base_backoff_seconds=self.settings.scoring_retry_backoff_seconds,
             )
@@ -138,7 +140,9 @@ class WebSocketScoringClient:
         self, *, request: EvalRequest, samples: list[EvalSample]
     ) -> str | None:
         body = score_bridge_hub.request(
-            _category_prep_payload(request, samples),
+            _category_prep_payload(
+                    request, samples, self.settings.trajectory_assistant_turns
+                ),
             timeout_seconds=self.settings.scoring_timeout_seconds,
             endpoint="/category-prep",
         )
@@ -264,13 +268,21 @@ def build_scorer(settings: RemoteSettings) -> Scorer:
     raise ValueError(f"unsupported scoring backend: {settings.scoring_backend}")
 
 
-def _category_prep_payload(request: EvalRequest, samples: list[EvalSample]) -> dict[str, Any]:
+def _category_prep_payload(
+    request: EvalRequest, samples: list[EvalSample], assistant_turns: int = 0
+) -> dict[str, Any]:
     return {
         "eval_run_id": str(request.eval_run_id),
         "batch_id": "category-prep",
         "total_sample_count": len(samples),
         "samples": [
-            {"sample_id": sample.sample_id, "prompt": sample.prompt} for sample in samples
+            {
+                "sample_id": sample.sample_id,
+                "prompt": sample.prompt,
+                "messages": sample.messages,
+                "assistant_turns": assistant_turns,
+            }
+            for sample in samples
         ],
     }
 

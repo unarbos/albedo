@@ -89,7 +89,12 @@ def test_websocket_scorer_starts_category_prep_over_bridge(monkeypatch):
     assert calls[0]["endpoint"] == "/category-prep"
     assert calls[0]["timeout_seconds"] == 7
     assert calls[0]["payload"]["samples"] == [
-        {"sample_id": "data/train-00000.parquet:0:0", "prompt": "Prompt"}
+        {
+            "sample_id": "data/train-00000.parquet:0:0",
+            "prompt": "Prompt",
+            "messages": None,
+            "assistant_turns": RemoteSettings(scoring_backend="websocket").trajectory_assistant_turns,
+        }
     ]
 
 

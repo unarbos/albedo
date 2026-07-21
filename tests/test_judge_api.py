@@ -305,3 +305,89 @@ def test_scoring_regenerates_questions_when_async_prep_failed():
 
     assert records[0]["scored"] is True
     assert fake.complete_calls == 2
+
+
+# --------------------------------------------------------------------- reference anchoring
+class _AnchorFakeClient:
+    """Reference turns for the SOTA model; distinct question sets for anchored vs task-only."""
+
+    def __init__(self, n_questions: int = 30, fail_reference: bool = False):
+        self.n_questions = n_questions
+        self.fail_reference = fail_reference
+        self.saw_reference_prompt = False
+
+    async def complete(self, *, model, messages, temperature=None, max_tokens=None,
+                       provider=None, response_schema=None, accept=None):
+        if response_schema is None:  # reference-trajectory or observation-simulation call
+            if self.fail_reference:
+                return JudgeRawResponse(model=model, provider="fake", raw="", error="boom")
+            if messages[0]["role"] == "system" and "ENVIRONMENT" in messages[0]["content"]:
+                return JudgeRawResponse(model=model, provider="fake", raw="Observation: ok")
+            return JudgeRawResponse(
+                model=model, provider="fake",
+                raw="THOUGHT: fix lib/x.py\n\n```bash\nsed -i 's/a/b/' lib/x.py\n```",
+            )
+        if "REFERENCE TRAJECTORY" in messages[1]["content"]:
+            self.saw_reference_prompt = True
+        # Short unique texts survive parse_questions' template/near-dup filters.
+        questions = [
+            {"text": f"q{i} gate{i}?", "example_bad": "bad"}
+            for i in range(self.n_questions)
+        ]
+        questions.append(
+            {"text": "Does it avoid re-running the grep the reference already ran?",
+             "example_bad": "bad"}
+        )
+        return JudgeRawResponse(
+            model=model, provider="fake", raw=json.dumps({"questions": questions})
+        )
+
+
+def _anchor_service(fake):
+    from albedo_eval_service.judge_api import ReferenceTrajectoryService
+
+    settings = JudgeSettings(openrouter_api_key="k", num_questions=50)
+    simulator = ObservationSimulationService(settings, fake)
+    return QuestionService(
+        settings, fake, ReferenceTrajectoryService(settings, fake, simulator)
+    )
+
+
+def test_prepare_anchors_on_reference_and_filters_leaks():
+    from albedo_eval_service.judge_api import QuestionPrepSample
+
+    fake = _AnchorFakeClient()
+    service = _anchor_service(fake)
+    sample = QuestionPrepSample(
+        sample_id="swe-zero/data/train-0.parquet:1:1", prompt="TASK",
+        messages=[{"role": "user", "content": "fix the bug"}], assistant_turns=2,
+    )
+    result = asyncio.run(service.prepare(sample, eval_run_id="run-1"))
+    assert fake.saw_reference_prompt
+    assert result.source["question_mode"] == "sota_anchored"
+    assert result.source["reference_model"] == "z-ai/glm-5.2"
+    assert all("the reference" not in q["text"].casefold() for q in result.questions)
+
+
+def test_prepare_falls_back_to_task_only_when_reference_fails():
+    from albedo_eval_service.judge_api import QuestionPrepSample
+
+    fake = _AnchorFakeClient(fail_reference=True)
+    service = _anchor_service(fake)
+    sample = QuestionPrepSample(
+        sample_id="s:1:1", prompt="TASK",
+        messages=[{"role": "user", "content": "fix"}], assistant_turns=2,
+    )
+    result = asyncio.run(service.prepare(sample, eval_run_id="run-1"))
+    assert result.source["question_mode"] == "task_only"
+    assert not fake.saw_reference_prompt
+
+
+def test_prepare_without_messages_stays_task_only():
+    fake = _AnchorFakeClient()
+    service = _anchor_service(fake)
+    result = asyncio.run(service.prepare(JudgeSample(
+        sample_id="s:1:1", prompt="TASK", previous_king_output="k", challenger_output="c",
+    )))
+    assert result.source["question_mode"] == "task_only"
+    assert not fake.saw_reference_prompt

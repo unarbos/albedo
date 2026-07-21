@@ -278,6 +278,113 @@ Decide what a strong trajectory would be from here, then write up to {n} \
 self-contained yes/no questions (each probing a different property) that judge whether the \
 candidate assistant outputs form a good next trajectory — questions only."""
 
+# Appended to QUESTION_SYSTEM when a SOTA reference trajectory is available; must not contain
+# literal braces (the combined prompt is .format()ed). See
+# eval-scoring-sota-anchored-questions-plan.md in the scoring checkout for design + calibration.
+ANCHORED_QUESTION_BLOCK = """\
+REFERENCE TRAJECTORY — the user message also contains a REFERENCE TRAJECTORY: a strong coding \
+agent's own continuation of this exact task, with the environment observations it received. \
+Treat it as ground truth about what competent progress looks like here, not as the only valid \
+path. For THIS checklist the anchoring rules below override the general guidance above where \
+they conflict.
+- Extract the CONCRETE MILESTONES the reference reached and test whether the candidate outputs \
+reach them, weighting by stage: milestones that CHANGE or VERIFY state (the file/region the \
+reference edited, the change direction it took, the command it used to confirm the change, a \
+justified submit) get MORE questions than locate-stage milestones (files it merely read or \
+searched). Bake the concrete facts (paths, symbols, error text) into the questions themselves.
+- READ-ONLY CEILING — hard limit, count before emitting: at most FIVE questions in the whole \
+list may be passable by reading/searching alone (grep, find, ls, cat, sed -n). Do NOT write \
+one question per file the reference read — merge its reads into those few questions, or \
+convert them into convergence checks. Every other question must require demonstrated \
+progress: a grounded edit, a re-read or check confirming it, a diagnosis stated from observed \
+evidence, or narrowing to a specific fault location. A trajectory still enumerating or \
+re-reading files in its final output must FAIL those questions.
+- USE THE FULL BUDGET. With the reference as raw material, {n} genuinely distinct checks are \
+achievable — distinct findings (files, symbols, error strings, fix steps, verification \
+commands) each support their own fact-anchored question. Aim for {n}; the anti-padding rule \
+above still bans disguised repeats, not distinct facts. Spread the list across these \
+categories (keep the output a single flat list):
+  * progress milestones and convergence — roughly half the list, per the stage weighting \
+above;
+  * output economy — ~5 questions: a strong agent is compact; tie economy to concrete \
+failures (an unbounded `cat` of a large named file, re-printing file contents already shown, \
+a THOUGHT that restates the task instead of deciding). At most 3 may be bare size/word-count \
+checks, and each must state its numeric bound;
+  * grounding and correctness — ~10 questions: real paths/symbols/flags only, edits that \
+match observed file content, diagnoses consistent with observed output, reactions to error or \
+empty observations;
+  * protocol and workflow — ~5: the CONTEXT SYSTEM's response shape, forbidden tools, \
+inspect-before-edit, verify-after-edit, stop-after-success.
+- "Avoids X" and do-no-harm checks MUST NOT be passable by inaction. Never write "avoids \
+editing before reading" or "avoids corrupting syntax" alone — a trajectory that never edits \
+passes those for free. Fold the protected action in: "makes a grounded edit to the implicated \
+file (such as `the/file.py` or a stated equivalent) without corrupting its syntax" — so pure \
+exploration fails, a broken edit fails, and only a real careful edit passes.
+- If the reference itself made NO edit within its turns (still investigating), anchor on its \
+CONVERGENCE: by the final candidate output the trajectory must have narrowed to the same \
+file(s) or root cause the reference converged on (allow stated equivalents) and state a \
+concrete diagnosis or next fix target — broad exploration in the final output still fails. \
+The READ-ONLY CEILING applies unchanged in this case: convert the reference's reads into a \
+few convergence and diagnosis checks, never into per-file inspection questions.
+- Phrase milestone questions around the goal, allowing stated equivalents, never the \
+reference's exact command sequence.
+- No conditional phrasing anywhere: never "(if any)", "(if present)", or "if the trajectory \
+edits X". Fold the action in unconditionally — "makes a grounded edit to X (or a stated \
+equivalent) that ..." — so a trajectory that skipped the action fails rather than becoming \
+unverifiable.
+- TEMPLATE VARIETY — hard limit: no more than TWO questions in the list may share the same \
+first five words. Rotate openings across "Does ...", "Is ...", "Are ...", "Has the trajectory \
+...", "By the final output, ...", "After the first edit/observation, ...", and fold related \
+checks into single richer questions — checklists whose questions repeat one opening template \
+get collapsed by deduplication and rejected as too short.
+- INVESTIGATION-TO-ACTION BUDGET: weigh how much investigation the original conversation plus \
+the reference already contain. When the fault region is effectively located (the file and \
+symbol are identified and their relevant content has been displayed in the conversation or \
+would be after one or two reads), several questions MUST require that the scored outputs make \
+or verify a concrete grounded edit — and a trajectory that instead keeps reading, listing, \
+grepping, or slicing files must FAIL those questions even when every individual command is \
+bounded, novel-looking, and accompanied by a confident plan. Endless well-groomed \
+investigation is the failure mode these questions exist to catch.
+- CLAIM CONSISTENCY: include two or three questions that check the THOUGHTs against visible \
+evidence, e.g. "Is every claim in the THOUGHTs about what earlier output showed backed by \
+content actually visible in the conversation or an ENVIRONMENT OBSERVATION block?" and "Does \
+the trajectory avoid re-inspecting file regions whose contents were already displayed earlier, \
+regardless of what the THOUGHT asserts about novelty?" — candidates exist that narrate \
+grounded, non-redundant progress while looping over the same regions.
+- The candidate has NOT seen the reference's actions. Never write checks that treat the \
+reference's commands or observations as already done or shown ("already executed", "already \
+displayed", "advances past the prior grep") unless that command appears in the ORIGINAL \
+conversation. Redundancy/no-repeat checks may only target commands from the original \
+conversation or the candidate's own earlier outputs. The reference's findings are still your \
+main raw material — bake each one into a question as a concrete fact. CORRECT: "Does the \
+trajectory locate the outtmpl key tuple around lines 1310-1345 of `YoutubeDL.py`, e.g. via a \
+bounded grep or `sed -n`?" WRONG: "Does the trajectory avoid re-running the grep that already \
+located the key tuple?"
+- When the issue bundles several sub-tasks, anchor on the sub-task(s) the reference actually \
+worked, mining its steps and findings for as many distinct fact-anchored checks as they \
+support; do NOT spread one question per untouched sub-task — a candidate legitimately picks \
+one thread, and questions about threads nobody worked are unverifiable padding.
+- NEVER reveal that a reference exists: no "reference", "expected solution", "correct \
+approach", or comparison wording. Every question stays self-contained and answerable from the \
+candidate trajectory alone.
+Remember: return STRICT JSON only, exactly as specified above."""
+
+ANCHORED_QUESTION_USER = """TASK (the conversation so far):
+------
+{task}
+------
+
+REFERENCE TRAJECTORY (a strong agent's continuation of this task; ENVIRONMENT OBSERVATION \
+blocks are the environment's replies):
+------
+{reference}
+------
+
+Decide what a strong trajectory would be from here — the REFERENCE TRAJECTORY shows one — then \
+write up to {n} self-contained yes/no questions (each probing a different property, most \
+anchored on the concrete milestones the reference reached) that judge whether the candidate \
+assistant outputs form a good next trajectory — questions only."""
+
 JUDGE_SYSTEM = """You judge a candidate assistant TRAJECTORY by answering yes/no questions about \
 it. The trajectory includes original context, CANDIDATE OUTPUT blocks, and ENVIRONMENT \
 OBSERVATION blocks between them. Score ONLY the CANDIDATE OUTPUT blocks. The original context \
@@ -313,6 +420,16 @@ Treat these as terminal-gate questions: any listed unresolved terminal failure i
 even when the trajectory also contains a plausible diagnosis, useful search, or partially correct \
 edit. Do not award a 1 for "progress" questions when the later output ignores a failed observation, \
 keeps looping, invents inputs, or continues instead of submitting after success.
+
+NARRATED EVIDENCE — a THOUGHT may assert that earlier output showed specific contents, that a \
+target was "already located", or that its next command is new and non-redundant. Never take such \
+claims on faith: verify them against what is actually visible in the original context, the \
+CANDIDATE OUTPUT blocks, and the ENVIRONMENT OBSERVATION blocks. A factual claim about prior \
+evidence that is not visibly present in those blocks is an INVENTED input — answer 0 on the \
+related grounding, progress, or redundancy question. Re-inspecting file regions or re-running \
+lookups whose results any earlier block already displayed is repetition and non-progress even \
+when the THOUGHT declares the command bounded, novel, or "not re-dumping" — judge the commands \
+and observations, not the narration.
 
 MEASUREMENTS — the user message lists counts computed PROGRAMMATICALLY from the trajectory (total \
 words, total characters, THOUGHT/prose words, code-block lines and characters). For any question \
@@ -385,11 +502,43 @@ def measurements_block(text: str) -> str:
     )
 
 
-def build_question_messages(*, task: str, n: int) -> list[dict[str, str]]:
+def build_question_messages(
+    *, task: str, n: int, reference: str | None = None
+) -> list[dict[str, str]]:
+    """Question-writer messages; with a SOTA `reference` trajectory the checklist is anchored
+    on its concrete milestones (see ANCHORED_QUESTION_BLOCK)."""
+    if reference is None:
+        return [
+            {"role": "system", "content": QUESTION_SYSTEM.format(n=n, floor=question_floor(n))},
+            {"role": "user", "content": QUESTION_USER.format(task=task.rstrip(), n=n)},
+        ]
+    system = (QUESTION_SYSTEM + "\n\n" + ANCHORED_QUESTION_BLOCK).format(
+        n=n, floor=question_floor(n)
+    )
+    user = ANCHORED_QUESTION_USER.format(task=task.rstrip(), reference=reference.rstrip(), n=n)
     return [
-        {"role": "system", "content": QUESTION_SYSTEM.format(n=n, floor=question_floor(n))},
-        {"role": "user", "content": QUESTION_USER.format(task=task.rstrip(), n=n)},
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
     ]
+
+
+def format_reference_trajectory(turns: list[dict[str, Any]]) -> str:
+    """Render a reference trajectory's generated turns for the question writer."""
+    parts: list[str] = []
+    step = 0
+    for turn in turns:
+        if turn.get("score_target"):
+            step += 1
+            parts.append(f"REFERENCE STEP {step}:\n{turn['content']}")
+        elif turn.get("environment_observation"):
+            parts.append(f"ENVIRONMENT OBSERVATION:\n{turn['content']}")
+    return "\n\n".join(parts)
+
+
+def filter_reference_leaks(questions: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Drop the rare question that reveals the reference as shared history; judges could never
+    verify it and it leaks the anchoring mechanism."""
+    return [q for q in questions if "the reference" not in q["text"].casefold()]
 
 
 def build_judge_messages(*, response: str, questions: list[dict[str, str]]) -> list[dict[str, str]]:

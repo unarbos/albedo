@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -18,9 +19,12 @@ from .judge_core import (
     answer_schema,
     build_judge_messages,
     build_question_messages,
+    filter_reference_leaks,
+    format_reference_trajectory,
     judge_yes_rate,
     parse_answers,
     parse_questions,
+    question_floor,
     question_schema,
     response_score,
 )
@@ -32,6 +36,10 @@ class QuestionPrepSample(BaseModel):
     sample_id: str
     prompt: str
     sample_index: int = 0  # retained for payload compatibility; scoring ignores order
+    # Structured chat context + trajectory turn budget: present when the caller wants
+    # SOTA-reference-anchored questions (the reference model consumes raw messages).
+    messages: list[dict[str, str]] | None = None
+    assistant_turns: int = 0
 
 
 class QuestionPrepRequest(BaseModel):
@@ -163,39 +171,175 @@ def _evaluator_provider(settings: JudgeSettings) -> dict[str, Any]:
     return block
 
 
-class QuestionService:
-    """Generates the yes/no question set for one sample (task only), via OpenRouter glm-5.2."""
+_COMPLETE_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 
-    def __init__(self, settings: JudgeSettings, client: OpenRouterJudgeClient):
+
+def _reference_completion_observation(sample_id: str) -> str:
+    if "mini-coder" in sample_id.casefold():
+        return f"<returncode>0</returncode>\n<output>\n{_COMPLETE_MARKER}\n</output>"
+    return f"Observation: {_COMPLETE_MARKER}"
+
+
+class ReferenceTrajectoryService:
+    """Runs the SOTA reference model through the same turn -> simulated-observation loop the
+    candidates face; the rendered trajectory anchors the question checklist."""
+
+    def __init__(
+        self,
+        settings: JudgeSettings,
+        client: OpenRouterJudgeClient,
+        simulator: "ObservationSimulationService",
+    ):
         self.settings = settings
         self.client = client
+        self.simulator = simulator
 
-    async def prepare(self, sample: QuestionPrepSample | JudgeSample) -> QuestionPrepResult:
+    def _model_for(self, sample_id: str) -> str:
+        pool = [m.strip() for m in self.settings.sota_models.split(",") if m.strip()]
+        if not pool:
+            raise QuestionScoringUnavailable("ALBEDO_JUDGE_SOTA_MODELS is empty")
+        return random.Random(sample_id).choice(pool)
+
+    async def generate(
+        self, sample: QuestionPrepSample, *, eval_run_id: str = ""
+    ) -> tuple[str, str]:
+        model = self._model_for(sample.sample_id)
+        turn_count = max(1, sample.assistant_turns or self.settings.sota_trajectory_turns)
+        convo = [
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in (sample.messages or [])
+        ]
+        turns: list[dict[str, Any]] = []
+        for turn_index in range(turn_count):
+            response = await self.client.complete(
+                model=model,
+                messages=convo,
+                temperature=0.0,
+                max_tokens=self.settings.sota_max_tokens,
+                provider=_evaluator_provider(self.settings),
+                accept=lambda raw: bool(raw.strip()),
+            )
+            if response.error or not response.raw.strip():
+                raise QuestionScoringUnavailable(
+                    f"reference generation failed: {response.error or 'empty output'}"
+                )
+            text = response.raw.strip()
+            turns.append({"role": "assistant", "content": text, "score_target": True})
+            last = turn_index == turn_count - 1
+            if _COMPLETE_MARKER in text:
+                if not last:
+                    turns.append(
+                        {
+                            "role": "user",
+                            "content": _reference_completion_observation(sample.sample_id),
+                            "environment_observation": True,
+                        }
+                    )
+                break
+            if last:
+                break
+            observation = await self.simulator.simulate(
+                SimulateObservationRequest(
+                    eval_run_id=eval_run_id,
+                    sample_id=sample.sample_id,
+                    prompt=sample.prompt,
+                    assistant_output=text,
+                    messages=convo,
+                )
+            )
+            turns.append(
+                {"role": "user", "content": observation, "environment_observation": True}
+            )
+            convo = convo + [
+                {"role": "assistant", "content": text},
+                {"role": "user", "content": observation},
+            ]
+        reference = format_reference_trajectory(turns)
+        if not reference.strip():
+            raise QuestionScoringUnavailable("reference trajectory rendered empty")
+        return reference, model
+
+
+class QuestionService:
+    """Generates the yes/no question set for one sample via OpenRouter glm-5.2 — anchored on a
+    SOTA reference trajectory when the sample carries messages, task-only otherwise."""
+
+    def __init__(
+        self,
+        settings: JudgeSettings,
+        client: OpenRouterJudgeClient,
+        reference_service: ReferenceTrajectoryService | None = None,
+    ):
+        self.settings = settings
+        self.client = client
+        self.reference_service = reference_service
+
+    async def prepare(
+        self, sample: QuestionPrepSample | JudgeSample, *, eval_run_id: str = ""
+    ) -> QuestionPrepResult:
+        reference: str | None = None
+        reference_model: str | None = None
+        if self.reference_service is not None and getattr(sample, "messages", None):
+            try:
+                reference, reference_model = await self.reference_service.generate(
+                    sample, eval_run_id=eval_run_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reference_trajectory_failed sample_id={} error={}",
+                    sample.sample_id, f"{type(exc).__name__}: {exc}",
+                )
+        if reference is not None:
+            try:
+                return await self._prepare_once(sample, reference, reference_model)
+            except QuestionScoringUnavailable as exc:
+                logger.warning(
+                    "anchored_questions_failed sample_id={} error={} falling_back=task_only",
+                    sample.sample_id, exc,
+                )
+        return await self._prepare_once(sample, None, None)
+
+    async def _prepare_once(
+        self,
+        sample: QuestionPrepSample | JudgeSample,
+        reference: str | None,
+        reference_model: str | None,
+    ) -> QuestionPrepResult:
         n = self.settings.num_questions
+
+        def _accept(raw: str) -> bool:
+            questions, ok = parse_questions(raw, n)
+            if reference is not None:
+                questions = filter_reference_leaks(questions)
+            return ok and len(questions) >= question_floor(n)
+
         response = await self.client.complete(
             model=self.settings.evaluator_model,
-            messages=build_question_messages(task=sample.prompt, n=n),
+            messages=build_question_messages(task=sample.prompt, n=n, reference=reference),
             temperature=self.settings.temperature,
             max_tokens=self.settings.question_max_tokens,
             provider=_evaluator_provider(self.settings),
             response_schema=question_schema(n),
-            accept=lambda raw: parse_questions(raw, n)[1],
+            accept=_accept,
         )
         if response.error:
             raise QuestionScoringUnavailable(response.error)
         questions, ok = parse_questions(response.raw, n)
-        if not ok:
+        if reference is not None:
+            questions = filter_reference_leaks(questions)
+        if not ok or len(questions) < question_floor(n):
             raise QuestionScoringUnavailable(
                 f"evaluator returned {len(questions)}/{n} well-formed questions"
             )
-        return QuestionPrepResult(
-            questions=questions,
-            source={
-                "provider": response.provider,
-                "model": self.settings.evaluator_model,
-                "n_questions": len(questions),
-            },
-        )
+        source: dict[str, object] = {
+            "provider": response.provider,
+            "model": self.settings.evaluator_model,
+            "n_questions": len(questions),
+            "question_mode": "sota_anchored" if reference is not None else "task_only",
+        }
+        if reference_model:
+            source["reference_model"] = reference_model
+        return QuestionPrepResult(questions=questions, source=source)
 
 
 class ObservationSimulationService:
@@ -270,7 +414,7 @@ class QuestionPrepStore:
         self, prep_id: str, request: QuestionPrepRequest, sample: QuestionPrepSample
     ) -> QuestionPrepResult:
         try:
-            return await self.service.prepare(sample)
+            return await self.service.prepare(sample, eval_run_id=request.eval_run_id)
         except Exception as exc:
             logger.warning(
                 "question_prep_sample_failed eval_run_id={} prep_id={} sample_id={} error={}",
@@ -298,7 +442,10 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         client = OpenRouterJudgeClient(settings)
         app.state.eval_client = client
         app.state.observation_service = ObservationSimulationService(settings, client)
-        app.state.question_service = QuestionService(settings, client)
+        app.state.question_service = QuestionService(
+            settings, client,
+            ReferenceTrajectoryService(settings, client, app.state.observation_service),
+        )
         app.state.question_prep_store = QuestionPrepStore(settings, app.state.question_service)
 
     @app.on_event("shutdown")
@@ -319,7 +466,10 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
             client = OpenRouterJudgeClient(settings)
             app.state.eval_client = client
             app.state.observation_service = ObservationSimulationService(settings, client)
-            app.state.question_service = QuestionService(settings, client)
+            app.state.question_service = QuestionService(
+                settings, client,
+                ReferenceTrajectoryService(settings, client, app.state.observation_service),
+            )
             app.state.question_prep_store = QuestionPrepStore(settings, app.state.question_service)
         return app.state.question_prep_store
 

@@ -31,14 +31,16 @@ def _samples(counts: dict[str, int]) -> list[EvalSample]:
     return samples
 
 
-def test_category_prep_payload_carries_only_id_and_prompt():
-    # Flat prep is task-only and order-free: no sample_index counterbalancing.
+def test_category_prep_payload_carries_context_for_reference_anchoring():
+    # Prep is order-free (no sample_index) but carries messages + the trajectory turn budget so
+    # the judge service can generate the SOTA reference trajectory.
     samples = _samples({"swe-zero": 4, "mini-coder": 2})
     request = types.SimpleNamespace(eval_run_id=uuid4())
-    payload = _category_prep_payload(request, samples)
+    payload = _category_prep_payload(request, samples, 3)
     assert payload["total_sample_count"] == len(samples)
     for entry in payload["samples"]:
-        assert set(entry) == {"sample_id", "prompt"}
+        assert set(entry) == {"sample_id", "prompt", "messages", "assistant_turns"}
+        assert entry["assistant_turns"] == 3
 
 
 def test_score_batch_payload_carries_both_outputs_no_index():
