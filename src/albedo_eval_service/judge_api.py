@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -570,6 +571,20 @@ async def _questions_for(
     return await prep_store.service.prepare(sample)
 
 
+_COMMAND_BLOCK_RE = re.compile(r"```(?:bash|sh)?[ \t]*\n(.*?)```", re.DOTALL)
+
+
+def _command_only(text: str) -> str:
+    """The environment must see only the command, never the THOUGHT. Candidate narration can
+    steer an LLM terminal-simulator into confirming invented repository state (observed with
+    king-LXXX: fabricated 'already located/shown' claims got echoed back as observations).
+    Falls back to the full text when no fenced command block exists."""
+    match = _COMMAND_BLOCK_RE.search(text or "")
+    if match:
+        return f"```bash\n{match.group(1).strip()}\n```"
+    return text
+
+
 def _simulation_transcript(
     *,
     messages: list[dict[str, str]] | None,
@@ -582,7 +597,10 @@ def _simulation_transcript(
         role = str(message.get("role") or "user").lower()
         if role not in {"system", "user", "assistant"}:
             role = "user"
-        sections.append(f"### {role}\n{str(message.get('content') or '').rstrip()}")
+        content = str(message.get("content") or "").rstrip()
+        if role == "assistant":
+            content = _command_only(content)
+        sections.append(f"### {role}\n{content}")
     return "\n\n".join(sections).rstrip()
 
 

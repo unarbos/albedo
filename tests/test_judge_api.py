@@ -391,3 +391,30 @@ def test_prepare_without_messages_stays_task_only():
     )))
     assert result.source["question_mode"] == "task_only"
     assert not fake.saw_reference_prompt
+
+
+def test_simulation_transcript_strips_thought_from_assistant_turns():
+    from albedo_eval_service.judge_api import _simulation_transcript
+
+    transcript = _simulation_transcript(
+        messages=[
+            {"role": "user", "content": "fix the bug"},
+            {"role": "assistant", "content": "THOUGHT: files X and Y were already shown\n\n```bash\ncat a.py\n```"},
+            {"role": "user", "content": "Observation: ..."},
+        ],
+        prompt="fix the bug",
+        assistant_output="THOUGHT: the fix is verified and tests pass\n\n```bash\nsed -n '1,5p' a.py\n```",
+    )
+    assert "already shown" not in transcript
+    assert "tests pass" not in transcript
+    assert "cat a.py" in transcript
+    assert "sed -n '1,5p' a.py" in transcript
+
+
+def test_simulation_transcript_keeps_text_without_command_block():
+    from albedo_eval_service.judge_api import _simulation_transcript
+
+    transcript = _simulation_transcript(
+        messages=None, prompt="task", assistant_output="no fenced block here",
+    )
+    assert "no fenced block here" in transcript

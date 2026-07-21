@@ -381,7 +381,12 @@ def test_parse_questions_caps_generic_hygiene_checks():
 
     assert ok is True
     assert GENERIC_HYGIENE_QUESTION_LIMIT == 3
-    assert sum(t in texts for t in generic) == GENERIC_HYGIENE_QUESTION_LIMIT
+    # Numeric-bound size checks ("under 100 words", "40 lines") are measurement-ladder
+    # questions: answered from the MEASUREMENTS block and exempt from the hygiene cap.
+    measurement_bound = [t for t in generic if any(ch.isdigit() for ch in t)]
+    non_numeric_kept = sum(t in texts for t in generic if t not in measurement_bound)
+    assert non_numeric_kept == GENERIC_HYGIENE_QUESTION_LIMIT
+    assert all(t in texts for t in measurement_bound)
     assert texts[-4:] == task_specific
 
 
@@ -477,3 +482,35 @@ def test_parse_questions_accepts_sparse_terminal_gates_when_list_is_large_enough
     assert len(out) == 25
     assert sum(q["category"] == "terminal_gate" for q in out) == 1
     assert ok is True
+
+
+def test_candidate_output_measure_excludes_context():
+    from albedo_eval_service.judge_core import candidate_output_measure
+
+    text = (
+        "FULL CANDIDATE TRAJECTORY\nScore ONLY...\n\n"
+        "CONTEXT USER (do not score):\n------\n" + ("ctx " * 500) + "\n------\n\n"
+        "CANDIDATE OUTPUT 1:\n------\none two three\n------\n\n"
+        "ENVIRONMENT OBSERVATION (context only, do not score):\n------\n" + ("obs " * 200) + "\n------\n\n"
+        "CANDIDATE OUTPUT 2:\n------\nfour five\n------"
+    )
+    m = candidate_output_measure(text)
+    assert m["blocks"] == 2
+    assert m["total_words"] == 5
+    assert m["max_words"] == 3
+
+
+def test_parse_keeps_size_ladder_rungs():
+    import json
+    from albedo_eval_service.judge_core import parse_questions
+
+    rungs = [
+        {"text": f"Are the candidate outputs, all turns combined, under roughly {b} words?",
+         "example_bad": "a ~5000-word trajectory"}
+        for b in (400, 800, 1600, 3200, 6400, 12800)
+    ]
+    extras = [{"text": f"q{i} gate{i}?", "example_bad": "bad"} for i in range(20)]
+    parsed, ok = parse_questions(json.dumps({"questions": rungs + extras}), 50)
+    ladder = [q for q in parsed if q["category"] == "size"]
+    assert len(ladder) == 6
+    assert ok
