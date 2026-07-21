@@ -21,8 +21,6 @@ from typing import Any
 # Crown iff (challenger_mean - king_mean) >= this, on the 0-1 absolute scale (margin-only, no LCB).
 CHALLENGER_WIN_MARGIN = 0.02
 QUESTION_FLOOR_FRACTION = 0.22
-TERMINAL_GATE_FLOOR_FRACTION = 0.20
-TERMINAL_GATE_FLOOR_MIN_N = 20
 GENERIC_HYGIENE_QUESTION_LIMIT = 3
 NEGATIVE_QUESTION_LIMIT = 8
 
@@ -674,12 +672,6 @@ def classify_question_category(text: str) -> str:
     return "other"
 
 
-def terminal_gate_floor(question_count: int, n: int) -> int:
-    if n < TERMINAL_GATE_FLOOR_MIN_N:
-        return 0
-    return max(1, round(question_count * TERMINAL_GATE_FLOOR_FRACTION))
-
-
 def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
     """Return ([{id,category,text,example_bad}], ok). ok iff >= question_floor(n) DISTINCT
     questions parsed.
@@ -702,8 +694,6 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
                 continue
             text = str(item["text"]).strip()
             if _CONDITIONAL_RE.match(text):
-                continue
-            if is_unbounded_submit_question(text):
                 continue
             key = " ".join(text.casefold().split())
             if key in seen:
@@ -745,8 +735,7 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
     for position, question in enumerate(out, start=1):
         question["id"] = f"q_{position:02d}"
     # Accept a slightly-short set (model sometimes emits an empty item); the eval-level gate covers the rest.
-    gate_count = sum(q["category"] == "terminal_gate" for q in out)
-    return out, len(out) >= question_floor(n) and gate_count >= terminal_gate_floor(len(out), n)
+    return out, len(out) >= question_floor(n)
 
 
 _ANSWER_TO_BIT: dict[str, float] = {"1": 1.0, "0": 0.0}
@@ -774,36 +763,11 @@ def parse_answers(
 
 
 # --------------------------------------------------------------------------- scoring
-def terminal_gate_question_ids(questions: list[dict[str, str]] | None) -> list[str]:
-    if not questions:
-        return []
-    return [
-        q["id"]
-        for q in questions
-        if q.get("category") == "terminal_gate" or is_terminal_gate_question(q.get("text", ""))
-    ]
-
-
-def terminal_gate_failed(
-    answers: dict[str, str | None], questions: list[dict[str, str]] | None
-) -> bool:
-    gate_ids = terminal_gate_question_ids(questions)
-    return bool(gate_ids) and any(answers.get(qid) != "1" for qid in gate_ids)
-
-
 def judge_yes_rate(
     answers: dict[str, str | None], questions: list[dict[str, str]] | None = None
 ) -> float | None:
-    """Mean of substantive 1/0 answers. Terminal gates can zero a side, but passing them does not
-    add positive credit."""
-    if terminal_gate_failed(answers, questions):
-        return 0.0
-    score_ids = [
-        q["id"]
-        for q in (questions or [])
-        if q.get("category") != "terminal_gate" and not is_terminal_gate_question(q.get("text", ""))
-    ]
-    values = [answers.get(qid) for qid in score_ids] if score_ids else list(answers.values())
+    """Mean of 1/0 answers."""
+    values = list(answers.values())
     bits = [_ANSWER_TO_BIT[v] for v in values if v in _ANSWER_TO_BIT]
     return round(mean(bits), 6) if bits else None
 

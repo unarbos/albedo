@@ -8,7 +8,6 @@ from albedo_eval_service.judge_core import (
     JUDGE_MODELS,
     JUDGE_PROVIDER_PINS,
     NEGATIVE_QUESTION_LIMIT,
-    TERMINAL_GATE_FLOOR_FRACTION,
     aggregate_scores,
     build_judge_messages,
     build_question_messages,
@@ -22,8 +21,6 @@ from albedo_eval_service.judge_core import (
     question_schema,
     response_score,
     strip_reply_injection,
-    terminal_gate_failed,
-    terminal_gate_question_ids,
 )
 
 
@@ -165,7 +162,7 @@ def test_judge_yes_rate_and_response_score():
     assert response_score(per_judge) == 0.75
 
 
-def test_terminal_gate_failure_zeros_side_score():
+def test_terminal_gate_questions_are_scored_like_regular_questions():
     questions = [
         {"id": "q_01", "category": "overall", "text": "Does it end with no unresolved failed command?"},
         {"id": "q_02", "category": "overall", "text": "Does it inspect the relevant file?"},
@@ -173,26 +170,11 @@ def test_terminal_gate_failure_zeros_side_score():
     ]
     answers = {"q_01": "0", "q_02": "1", "q_03": "1"}
 
-    assert terminal_gate_question_ids(questions) == ["q_01"]
-    assert terminal_gate_failed(answers, questions) is True
-    assert judge_yes_rate(answers, questions) == 0.0
-    assert response_score({"j1": answers}, questions) == 0.0
+    assert judge_yes_rate(answers, questions) == round(2 / 3, 6)
+    assert response_score({"j1": answers}, questions) == round(2 / 3, 6)
 
 
-def test_terminal_gate_pass_allows_normal_side_score():
-    questions = [
-        {"id": "q_01", "category": "overall", "text": "Does it submit after success?"},
-        {"id": "q_02", "category": "overall", "text": "Does it inspect the relevant file?"},
-        {"id": "q_03", "category": "overall", "text": "Does it use a grounded path?"},
-    ]
-    answers = {"q_01": "1", "q_02": "1", "q_03": "0"}
-
-    assert terminal_gate_failed(answers, questions) is False
-    assert judge_yes_rate(answers, questions) == 0.5
-    assert response_score({"j1": answers}, questions) == 0.5
-
-
-def test_terminal_gate_pass_does_not_reward_finish_only():
+def test_terminal_gate_yes_counts_like_regular_yes():
     questions = [
         {"id": "q_01", "category": "terminal_gate", "text": "Does it submit after success?"},
         {"id": "q_02", "category": "work_correctness", "text": "Does it make the correct edit?"},
@@ -201,8 +183,7 @@ def test_terminal_gate_pass_does_not_reward_finish_only():
     ]
     finish_only = {"q_01": "1", "q_02": "0", "q_03": "0", "q_04": "0"}
 
-    assert terminal_gate_failed(finish_only, questions) is False
-    assert judge_yes_rate(finish_only, questions) == 0.0
+    assert judge_yes_rate(finish_only, questions) == 0.25
 
 
 def test_classify_question_category():
@@ -231,7 +212,7 @@ def test_terminal_gate_detection_avoids_broad_topic_matches():
     assert not any(is_terminal_gate_question(text) for text in false_gates)
 
 
-def test_unbounded_submit_questions_are_dropped():
+def test_unbounded_submit_questions_are_diagnostic_only():
     assert is_unbounded_submit_question("Does the trajectory submit?") is True
     assert is_unbounded_submit_question("Does it finalize cleanly?") is True
     assert is_unbounded_submit_question(
@@ -252,10 +233,7 @@ def test_unbounded_submit_questions_are_dropped():
     )
     out, _ok = parse_questions(raw, 3)
 
-    assert [q["text"] for q in out] == [
-        "Does the trajectory submit after observations show the task is solved?",
-        "Does the first output inspect a grounded file?",
-    ]
+    assert "Does the trajectory submit?" in [q["text"] for q in out]
 
 
 def test_challenger_win_requires_margin():
@@ -462,7 +440,7 @@ def test_parse_questions_accepts_slightly_short_and_truncates_extra():
     assert ok3 is False                                            # < floor -> not ok (retry/fail)
 
 
-def test_parse_questions_rejects_sparse_terminal_gates_for_large_lists():
+def test_parse_questions_accepts_sparse_terminal_gates_when_list_is_large_enough():
     items = [
         {"text": text, "example_bad": "b"}
         for text in [
@@ -496,7 +474,6 @@ def test_parse_questions_rejects_sparse_terminal_gates_for_large_lists():
     ]
     out, ok = parse_questions(json.dumps({"questions": items}), 50)
 
-    assert TERMINAL_GATE_FLOOR_FRACTION == 0.20
     assert len(out) == 25
     assert sum(q["category"] == "terminal_gate" for q in out) == 1
-    assert ok is False
+    assert ok is True
