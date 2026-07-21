@@ -403,10 +403,14 @@ async def _questions_for(
     request: ScoreBatchRequest, sample: JudgeSample, prep_store: QuestionPrepStore
 ) -> QuestionPrepResult:
     if request.category_prep_id:
-        lookup = await prep_store.get_with_reason(request.category_prep_id, sample)
-        if lookup.result is not None:
-            return lookup.result
-        reason = lookup.reason
+        try:
+            lookup = await prep_store.get_with_reason(request.category_prep_id, sample)
+        except Exception as exc:
+            reason = f"prep_failed:{type(exc).__name__}"
+        else:
+            if lookup.result is not None:
+                return lookup.result
+            reason = lookup.reason
     else:
         reason = "missing_prep_id"
     logger.warning(

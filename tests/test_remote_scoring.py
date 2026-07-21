@@ -5,6 +5,7 @@ import time
 import types
 from uuid import uuid4
 
+import httpx
 import pytest
 
 import albedo_eval_service.remote_scoring as remote_scoring_module
@@ -15,8 +16,9 @@ from albedo_eval_service.remote_scoring import (
     WebSocketScoringClient,
     _category_prep_payload,
     _collect_score_batches,
-    _simulate_observation_payload,
+    _post_json_with_429_retry,
     _score_batch_payloads,
+    _simulate_observation_payload,
 )
 
 
@@ -101,6 +103,39 @@ def test_collect_score_batches_propagates_batch_failure():
 
     with pytest.raises(RuntimeError, match="boom"):
         _collect_score_batches(payloads, send, max_concurrency=2)
+
+
+def test_remote_scoring_defaults_to_128_concurrent_requests():
+    assert RemoteSettings(_env_file=None).scoring_batch_concurrency == 128
+
+
+def test_post_json_retries_429(monkeypatch):
+    sleeps = []
+    calls = 0
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"retry-after": "0.25"}, request=request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    monkeypatch.setattr(remote_scoring_module.time, "sleep", fake_sleep)
+    with httpx.Client(base_url="http://judge", transport=httpx.MockTransport(handler)) as client:
+        body = _post_json_with_429_retry(
+            client,
+            "/score-batch",
+            {"batch_id": "score-0001"},
+            retry_count=2,
+            base_backoff_seconds=0.01,
+        )
+
+    assert body == {"ok": True}
+    assert calls == 2
+    assert sleeps == [0.25]
 
 
 def test_websocket_scoring_client_sends_batches_concurrently(monkeypatch):

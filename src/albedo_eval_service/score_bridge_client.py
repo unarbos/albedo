@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import json
 import random
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -24,6 +26,8 @@ class ScoreBridgeClientSettings(BaseSettings):
     ping_interval_seconds: float = 20.0
     ping_timeout_seconds: float = 20.0
     websocket_max_size_bytes: int = 2048 * 1024 * 1024
+    retry_count: int = 5
+    retry_backoff_seconds: float = 1.5
 
 
 async def run_bridge(settings: ScoreBridgeClientSettings) -> None:
@@ -70,10 +74,15 @@ async def _run_once(settings: ScoreBridgeClientSettings, *, headers: dict[str, s
                     continue
                 if message.get("type") != "score_request":
                     continue
-                asyncio.create_task(_handle_score_request(websocket, judge_client, message))
+                asyncio.create_task(_handle_score_request(settings, websocket, judge_client, message))
 
 
-async def _handle_score_request(websocket: Any, judge_client: httpx.AsyncClient, message: dict[str, Any]) -> None:
+async def _handle_score_request(
+    settings: ScoreBridgeClientSettings,
+    websocket: Any,
+    judge_client: httpx.AsyncClient,
+    message: dict[str, Any],
+) -> None:
     request_id = str(message.get("request_id") or "")
     payload = message.get("payload")
     endpoint = str(message.get("endpoint") or "/score-batch")
@@ -84,9 +93,13 @@ async def _handle_score_request(websocket: Any, judge_client: httpx.AsyncClient,
             raise ValueError("score_request payload must be an object")
         if endpoint not in {"/score-batch", "/category-prep", "/simulate-observation"}:
             raise ValueError(f"unsupported score bridge endpoint: {endpoint}")
-        response = await judge_client.post(endpoint, json=payload)
-        response.raise_for_status()
-        body = response.json()
+        body = await _post_json_with_429_retry(
+            judge_client,
+            endpoint,
+            payload,
+            retry_count=settings.retry_count,
+            base_backoff_seconds=settings.retry_backoff_seconds,
+        )
         await websocket.send(json.dumps({"type": "score_response", "request_id": request_id, "body": body}))
     except Exception as exc:
         logger.exception(
@@ -95,6 +108,49 @@ async def _handle_score_request(websocket: Any, judge_client: httpx.AsyncClient,
         await websocket.send(
             json.dumps({"type": "score_response", "request_id": request_id, "error": f"{type(exc).__name__}: {exc}"})
         )
+
+
+async def _post_json_with_429_retry(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    retry_count: int,
+    base_backoff_seconds: float,
+) -> dict[str, Any]:
+    for attempt in range(retry_count + 1):
+        response = await client.post(endpoint, json=payload)
+        if response.status_code != 429 or attempt >= retry_count:
+            response.raise_for_status()
+            return response.json()
+        await asyncio.sleep(_retry_sleep_seconds(response, attempt, base_backoff_seconds))
+    raise AssertionError("unreachable")
+
+
+def _retry_sleep_seconds(
+    response: httpx.Response,
+    attempt: int,
+    base_backoff_seconds: float,
+) -> float:
+    retry_after = _retry_after_seconds(response.headers.get("retry-after"))
+    backoff = base_backoff_seconds * (2**attempt) * random.uniform(0.8, 1.2)
+    return max(retry_after, backoff)
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 def main() -> None:

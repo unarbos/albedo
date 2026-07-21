@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import email.utils
+import random
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 import httpx
@@ -60,12 +64,13 @@ class HttpScoringClient:
             headers={"Authorization": f"Bearer {self.settings.scoring_auth_token}"},
             timeout=httpx.Timeout(self.settings.scoring_timeout_seconds),
         ) as client:
-            response = client.post(
+            body = _post_json_with_429_retry(
+                client,
                 "/category-prep",
-                json=_category_prep_payload(request, samples),
+                _category_prep_payload(request, samples),
+                retry_count=self.settings.scoring_retry_count,
+                base_backoff_seconds=self.settings.scoring_retry_backoff_seconds,
             )
-            response.raise_for_status()
-            body = response.json()
             value = body.get("category_prep_id")
             return value if isinstance(value, str) and value else None
 
@@ -77,12 +82,13 @@ class HttpScoringClient:
             headers={"Authorization": f"Bearer {self.settings.scoring_auth_token}"},
             timeout=httpx.Timeout(self.settings.scoring_timeout_seconds),
         ) as client:
-            response = client.post(
+            body = _post_json_with_429_retry(
+                client,
                 "/simulate-observation",
-                json=_simulate_observation_payload(request, sample, assistant_output),
+                _simulate_observation_payload(request, sample, assistant_output),
+                retry_count=self.settings.scoring_retry_count,
+                base_backoff_seconds=self.settings.scoring_retry_backoff_seconds,
             )
-            response.raise_for_status()
-            body = response.json()
             value = body.get("observation")
             if not isinstance(value, str):
                 raise ValueError("simulation backend returned non-string observation")
@@ -107,9 +113,13 @@ class HttpScoringClient:
         ) as client:
 
             def send(payload: dict[str, Any]) -> dict[str, Any]:
-                response = client.post("/score-batch", json=payload)
-                response.raise_for_status()
-                return response.json()
+                return _post_json_with_429_retry(
+                    client,
+                    "/score-batch",
+                    payload,
+                    retry_count=self.settings.scoring_retry_count,
+                    base_backoff_seconds=self.settings.scoring_retry_backoff_seconds,
+                )
 
             all_records, summaries = _collect_score_batches(
                 payloads, send, max_concurrency=self.settings.scoring_batch_concurrency
@@ -345,6 +355,49 @@ def _collect_score_batches(
         if isinstance(summary, dict):
             summaries.append(summary)
     return all_records, summaries
+
+
+def _post_json_with_429_retry(
+    client: httpx.Client,
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    retry_count: int,
+    base_backoff_seconds: float,
+) -> dict[str, Any]:
+    for attempt in range(retry_count + 1):
+        response = client.post(endpoint, json=payload)
+        if response.status_code != 429 or attempt >= retry_count:
+            response.raise_for_status()
+            return response.json()
+        time.sleep(_retry_sleep_seconds(response, attempt, base_backoff_seconds))
+    raise AssertionError("unreachable")
+
+
+def _retry_sleep_seconds(
+    response: httpx.Response,
+    attempt: int,
+    base_backoff_seconds: float,
+) -> float:
+    retry_after = _retry_after_seconds(response.headers.get("retry-after"))
+    backoff = base_backoff_seconds * (2**attempt) * random.uniform(0.8, 1.2)
+    return max(retry_after, backoff)
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 def _merge_summaries(

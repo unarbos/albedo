@@ -1,8 +1,8 @@
 import pytest
 
-from albedo_eval_service.sampling import BUCKETS, multi_source_manifest_sample_ids
+from albedo_eval_service.sampling import BUCKETS, _scaled_buckets, multi_source_manifest_sample_ids
 
-_BUCKET_TOTAL = sum(count for _, count in BUCKETS)  # 64
+_BUCKET_TOTAL = sum(count for _, count in BUCKETS)
 
 
 def _shard(source: str, rows: int, *, asst: int = 12):
@@ -41,9 +41,15 @@ def test_requires_rows_meta():
         multi_source_manifest_sample_ids(no_meta, block_hash="0xabc", sample_count=_BUCKET_TOTAL)
 
 
-def test_sample_count_must_match_buckets():
-    with pytest.raises(ValueError, match="BUCKETS"):
-        multi_source_manifest_sample_ids(_manifest(), block_hash="0xabc", sample_count=128)
+def test_sample_count_scales_buckets():
+    ids = multi_source_manifest_sample_ids(_manifest(), block_hash="0xabc", sample_count=128)
+    assert len(ids) == 128 == len(set(ids))
+    assert _scaled_buckets(128) == [(prefix, count * 2) for prefix, count in BUCKETS]
+
+
+def test_rejects_nonpositive_sample_count():
+    with pytest.raises(ValueError, match="positive"):
+        multi_source_manifest_sample_ids(_manifest(), block_hash="0xabc", sample_count=0)
 
 
 def test_stable_and_seed_sensitive():
@@ -73,7 +79,7 @@ def test_bucket_turn_distribution_and_feasibility():
     from collections import Counter
 
     hist = Counter(int(i.rsplit(":", 1)[1]) for i in ids)
-    assert dict(hist) == {(Y - 1) // 2: count for Y, count in BUCKETS}
+    assert dict(hist) == {(Y - 1) // 2: count for Y, count in _scaled_buckets(_BUCKET_TOTAL)}
 
     meta = {
         (shard["name"], row): entry["asst"]

@@ -246,3 +246,62 @@ def test_sample_unscored_if_a_judge_never_parses():
     records = asyncio.run(_score_samples(client=fake, request=request, settings=settings, prep_store=store))
     # one judge never parsed -> sample invalid (all 3 judges required per side)
     assert records[0]["scored"] is False
+
+
+def test_scoring_regenerates_questions_when_async_prep_failed():
+    class PrepFailsOnceClient(FakeClient):
+        def __init__(self):
+            super().__init__(n_questions=3)
+            self.complete_calls = 0
+
+        async def complete(self, **kwargs):
+            self.complete_calls += 1
+            if self.complete_calls == 1:
+                raise RuntimeError("prep broke")
+            return await super().complete(**kwargs)
+
+    settings = JudgeSettings(num_questions=3)
+    fake = PrepFailsOnceClient()
+    store = QuestionPrepStore(settings, QuestionService(settings, fake))
+
+    async def run():
+        prep_id = store.start(
+            type(
+                "Req",
+                (),
+                {
+                    "eval_run_id": "run",
+                    "samples": [
+                        JudgeSample(
+                            sample_id="s1",
+                            prompt="task",
+                            previous_king_output="",
+                            challenger_output="",
+                        )
+                    ],
+                },
+            )()
+        )
+        request = ScoreBatchRequest(
+            eval_run_id="run",
+            batch_id="score-0001",
+            total_sample_count=1,
+            category_prep_id=prep_id,
+            judge_models=list(JUDGE_MODELS[:1]),
+            samples=[
+                JudgeSample(
+                    sample_id="s1",
+                    prompt="task",
+                    previous_king_output="KING",
+                    challenger_output="CHAL",
+                )
+            ],
+        )
+        return await _score_samples(
+            client=fake, request=request, settings=settings, prep_store=store
+        )
+
+    records = asyncio.run(run())
+
+    assert records[0]["scored"] is True
+    assert fake.complete_calls == 2

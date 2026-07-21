@@ -21,6 +21,8 @@ from typing import Any
 # Crown iff (challenger_mean - king_mean) >= this, on the 0-1 absolute scale (margin-only, no LCB).
 CHALLENGER_WIN_MARGIN = 0.02
 QUESTION_FLOOR_FRACTION = 0.22
+TERMINAL_GATE_FLOOR_FRACTION = 0.20
+TERMINAL_GATE_FLOOR_MIN_N = 20
 GENERIC_HYGIENE_QUESTION_LIMIT = 3
 NEGATIVE_QUESTION_LIMIT = 8
 
@@ -48,7 +50,7 @@ conversation as the agent saw it before the candidate outputs), consider the SEV
 multi-step trajectories that would each be strong from here — \
 different capable agents legitimately choose different good workflows (inspecting any relevant \
 file, searching, running tests, editing) — then write UP TO {n} yes/no questions that test whether \
-the candidate outputs form a good next trajectory — a single flat list, NO categories. Most \
+the candidate outputs form a good next trajectory — a single flat list. Most \
 tasks support only ~20-35 GENUINELY different \
 checks: a list of {floor}+ distinct questions is a good outcome; padding toward {n} with \
 disguised repeats is a failure.
@@ -71,6 +73,16 @@ submit" unless the same output also takes a valid grounded action that improves,
 correctly finishes the current repository state. A candidate that keeps probing after enough \
 evidence, rewrites unrelated files, runs failed edits, or never submits after success should not win \
 credit for being busy or passive.
+- Use the right scoring shape. Most questions must test REAL WORK: correct task understanding, \
+grounded files/symbols, valid commands/edits, reaction to observations, progress across turns, and \
+meaningful verification. FINAL-STATE / TERMINAL-GATE checks are required, roughly a quarter of the \
+list, but they must not be the main source of positive credit. A model that only verifies/submits \
+cleanly without doing the right work should fail most non-terminal questions.
+- This is a BOUNDED-HORIZON trajectory score, not an eventual-solve score. Do not punish a \
+trajectory for not finishing within the fixed turn budget unless the observations already show \
+success, verification, or a satisfied requirement. Submit/finalize questions must be phrased like \
+"Does the trajectory submit after observations show the task is solved or verified?", never like \
+"Does the trajectory submit?".
 - Include many FINAL-STATE / TERMINAL-GATE checks, roughly a quarter of the list. A trajectory \
 that makes useful intermediate progress but \
 ends with an unresolved failed command/test, an unverified edit, a debug print left in source, \
@@ -189,6 +201,11 @@ data, or stops without a sane final verification/submit state should fail multip
 if it made more visible progress than a passive candidate.
 Make this mechanically true in the checklist: include enough broad terminal-gate questions that \
 such trajectories cannot score well by passing many narrow "did some work" checks.
+
+CRITICAL — do not award high scores to clean finishers with weak work. Passing final-state or \
+submit checks only proves the trajectory ended cleanly; it does not prove the fix was correct. \
+Always include enough substantive non-terminal checks that a candidate which merely runs `cat`, \
+`git diff`, and the submit command without grounded progress scores poorly.
 
 CRITICAL — do NOT lock the checklist onto ONE imagined action. A response that takes a DIFFERENT \
 but equally reasonable next step must still be able to pass most questions. To achieve that:
@@ -493,6 +510,17 @@ _DUP_CHAR_MIN_LEN = 20
 _TEMPLATE_KEY_TOKENS = 5
 _TEMPLATE_MAX_PER_KEY = 2
 _CONDITIONAL_RE = re.compile(r"^\s*if\b", re.IGNORECASE)
+_UNCONDITIONAL_SUBMIT_RE = re.compile(
+    r"\b(?:submit|submits|submitting|finali[sz]e|finali[sz]es|finish(?:es)?)\b",
+    re.IGNORECASE,
+)
+_BOUNDED_SUBMIT_RE = re.compile(
+    r"\b(?:after success|stop after success|submit after success|after verification|"
+    r"after (?:the )?(?:observations?|verification|tests?|checks?|diff|requirement)[^?]{0,80}"
+    r"(?:show|shows|pass|passes|succeed|succeeds|verified|satisfied|solved)|"
+    r"(?:once|when)[^?]{0,100}(?:success|verified|satisfied|solved|passes|succeeds))\b",
+    re.IGNORECASE,
+)
 _NEGATIVE_QUESTION_RE = re.compile(
     r"\b(avoid|avoids|avoided|not|never|does\s+not|do\s+not|without|refrains?)\b",
     re.IGNORECASE,
@@ -529,6 +557,48 @@ _TERMINAL_GATE_RE = re.compile(
     r"\brequired submit\b"
     r")",
     re.IGNORECASE,
+)
+_QUESTION_CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "system_prompt",
+        re.compile(
+            r"\b(?:context system|system prompt|forbidden|interpreter|build tool|test runner|"
+            r"exactly one|bash block|response shape|protocol)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "progress",
+        re.compile(
+            r"\b(?:progress|advance|turn-to-turn|adjacent|later output|previous observation|"
+            r"immediately prior|react|reaction|respond|loop|repeat|redundan)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "grounding",
+        re.compile(
+            r"\b(?:ground|invent|fabricat|real file|real path|observed|shown|existing|"
+            r"path|symbol|parameter|id|flag)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "verification",
+        re.compile(
+            r"\b(?:verify|verification|confirm|test|build|diff|re-read|read back|inspect"
+            r"|cat|grep|sed -n)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "work_correctness",
+        re.compile(
+            r"\b(?:correct|right|edit|command|fix|target|syntax|workflow|lifecycle|"
+            r"do-no-harm|damage|corrupt|lockfile|checksum|go\.sum|package-lock)\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 
@@ -587,6 +657,29 @@ def is_terminal_gate_question(text: str) -> bool:
     return bool(_TERMINAL_GATE_RE.search(text))
 
 
+def is_unbounded_submit_question(text: str) -> bool:
+    return (
+        bool(_UNCONDITIONAL_SUBMIT_RE.search(text))
+        and not _is_negative_question(text)
+        and not bool(_BOUNDED_SUBMIT_RE.search(text))
+    )
+
+
+def classify_question_category(text: str) -> str:
+    if is_terminal_gate_question(text):
+        return "terminal_gate"
+    for category, pattern in _QUESTION_CATEGORY_PATTERNS:
+        if pattern.search(text):
+            return category
+    return "other"
+
+
+def terminal_gate_floor(question_count: int, n: int) -> int:
+    if n < TERMINAL_GATE_FLOOR_MIN_N:
+        return 0
+    return max(1, round(question_count * TERMINAL_GATE_FLOOR_FRACTION))
+
+
 def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
     """Return ([{id,category,text,example_bad}], ok). ok iff >= question_floor(n) DISTINCT
     questions parsed.
@@ -609,6 +702,8 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
                 continue
             text = str(item["text"]).strip()
             if _CONDITIONAL_RE.match(text):
+                continue
+            if is_unbounded_submit_question(text):
                 continue
             key = " ".join(text.casefold().split())
             if key in seen:
@@ -644,13 +739,14 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
             out.append({
                 "text": text,
                 "example_bad": str(item.get("example_bad", "")).strip(),
-                "category": "terminal_gate" if is_terminal_gate_question(text) else "overall",
+                "category": classify_question_category(text),
             })
     out = out[:n]
     for position, question in enumerate(out, start=1):
         question["id"] = f"q_{position:02d}"
     # Accept a slightly-short set (model sometimes emits an empty item); the eval-level gate covers the rest.
-    return out, len(out) >= question_floor(n)
+    gate_count = sum(q["category"] == "terminal_gate" for q in out)
+    return out, len(out) >= question_floor(n) and gate_count >= terminal_gate_floor(len(out), n)
 
 
 _ANSWER_TO_BIT: dict[str, float] = {"1": 1.0, "0": 0.0}
@@ -681,7 +777,11 @@ def parse_answers(
 def terminal_gate_question_ids(questions: list[dict[str, str]] | None) -> list[str]:
     if not questions:
         return []
-    return [q["id"] for q in questions if is_terminal_gate_question(q.get("text", ""))]
+    return [
+        q["id"]
+        for q in questions
+        if q.get("category") == "terminal_gate" or is_terminal_gate_question(q.get("text", ""))
+    ]
 
 
 def terminal_gate_failed(
@@ -694,10 +794,17 @@ def terminal_gate_failed(
 def judge_yes_rate(
     answers: dict[str, str | None], questions: list[dict[str, str]] | None = None
 ) -> float | None:
-    """Mean of the 1/0 answers for one judge. None if nothing was answered."""
+    """Mean of substantive 1/0 answers. Terminal gates can zero a side, but passing them does not
+    add positive credit."""
     if terminal_gate_failed(answers, questions):
         return 0.0
-    bits = [_ANSWER_TO_BIT[v] for v in answers.values() if v in _ANSWER_TO_BIT]
+    score_ids = [
+        q["id"]
+        for q in (questions or [])
+        if q.get("category") != "terminal_gate" and not is_terminal_gate_question(q.get("text", ""))
+    ]
+    values = [answers.get(qid) for qid in score_ids] if score_ids else list(answers.values())
+    bits = [_ANSWER_TO_BIT[v] for v in values if v in _ANSWER_TO_BIT]
     return round(mean(bits), 6) if bits else None
 
 

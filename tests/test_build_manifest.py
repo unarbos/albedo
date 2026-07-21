@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 
 from albedo_eval_service.sampling import BUCKETS, multi_source_manifest_sample_ids
 
-_BUCKET_TOTAL = sum(count for _, count in BUCKETS)  # 128
+_BUCKET_TOTAL = sum(count for _, count in BUCKETS)
 
 
 def _load_build_manifest():
@@ -69,7 +69,7 @@ def test_built_manifest_is_sampler_compatible(tmp_path):
     ]
     manifest = {"version": "t", "sources": sources, "total_rows": 300}
 
-    ids = multi_source_manifest_sample_ids(manifest, block_hash="0xabc", sample_count=_BUCKET_TOTAL)
-    assert len(ids) == _BUCKET_TOTAL
-    assert sum(1 for i in ids if i.startswith("swe-zero/")) == 90
-    assert sum(1 for i in ids if i.startswith("mini-coder/")) == 38
+    ids = multi_source_manifest_sample_ids(manifest, block_hash="0xabc", sample_count=128)
+    assert len(ids) == 128
+    assert sum(1 for i in ids if i.startswith("swe-zero/")) == 91
+    assert sum(1 for i in ids if i.startswith("mini-coder/")) == 37

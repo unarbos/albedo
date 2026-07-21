@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-
-import pytest
 from uuid import uuid4
 
-from albedo_eval_service.models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
+import pytest
+
+from albedo_eval_service.models import (
+    Challenger,
+    DatasetConfig,
+    EvalRequest,
+    PreviousKing,
+    ScoringConfig,
+)
 from albedo_eval_service.remote_config import RemoteSettings
 from albedo_eval_service.remote_dataset import EvalSample
 from albedo_eval_service.remote_scoring import build_scorer

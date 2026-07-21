@@ -8,11 +8,14 @@ from albedo_eval_service.judge_core import (
     JUDGE_MODELS,
     JUDGE_PROVIDER_PINS,
     NEGATIVE_QUESTION_LIMIT,
+    TERMINAL_GATE_FLOOR_FRACTION,
     aggregate_scores,
     build_judge_messages,
     build_question_messages,
     challenger_beats_king,
+    classify_question_category,
     is_terminal_gate_question,
+    is_unbounded_submit_question,
     judge_yes_rate,
     parse_answers,
     parse_questions,
@@ -73,6 +76,12 @@ def test_question_prompt_prioritizes_observed_failure_modes():
     assert "Lockfile/checksum safety" in prompt
     assert "broken active trajectories" in prompt
     assert "cannot score well by passing many narrow" in prompt
+    assert "clean finishers with weak work" in prompt
+    assert "without grounded progress scores poorly" in prompt
+    assert "BOUNDED-HORIZON trajectory score" in prompt
+    assert "not finishing within the fixed turn budget" in prompt
+    assert "Does the trajectory submit after observations show the task is solved or verified?" in prompt
+    assert "never like" in prompt and "Does the trajectory submit?" in prompt
 
 
 def test_question_prompt_limits_easy_hygiene_checks():
@@ -124,7 +133,7 @@ def test_parse_questions_assigns_ids_and_category():
     questions, ok = parse_questions(raw, 3)
     assert ok is True
     assert [q["id"] for q in questions] == ["q_01", "q_02", "q_03"]
-    assert all(q["category"] == "overall" for q in questions)
+    assert all(q["category"] == "other" for q in questions)
     # below the floor -> not ok
     _, ok2 = parse_questions(json.dumps({"questions": []}), 3)
     assert ok2 is False
@@ -179,8 +188,28 @@ def test_terminal_gate_pass_allows_normal_side_score():
     answers = {"q_01": "1", "q_02": "1", "q_03": "0"}
 
     assert terminal_gate_failed(answers, questions) is False
-    assert judge_yes_rate(answers, questions) == round(2 / 3, 6)
-    assert response_score({"j1": answers}, questions) == round(2 / 3, 6)
+    assert judge_yes_rate(answers, questions) == 0.5
+    assert response_score({"j1": answers}, questions) == 0.5
+
+
+def test_terminal_gate_pass_does_not_reward_finish_only():
+    questions = [
+        {"id": "q_01", "category": "terminal_gate", "text": "Does it submit after success?"},
+        {"id": "q_02", "category": "work_correctness", "text": "Does it make the correct edit?"},
+        {"id": "q_03", "category": "grounding", "text": "Does it use grounded file paths?"},
+        {"id": "q_04", "category": "progress", "text": "Does it react to observations?"},
+    ]
+    finish_only = {"q_01": "1", "q_02": "0", "q_03": "0", "q_04": "0"}
+
+    assert terminal_gate_failed(finish_only, questions) is False
+    assert judge_yes_rate(finish_only, questions) == 0.0
+
+
+def test_classify_question_category():
+    assert classify_question_category("Does the final state leave no unresolved failure?") == "terminal_gate"
+    assert classify_question_category("Does it use the previous observation to advance?") == "progress"
+    assert classify_question_category("Does every path come from observed repository files?") == "grounding"
+    assert classify_question_category("Does it verify the edit with git diff?") == "verification"
 
 
 def test_terminal_gate_detection_avoids_broad_topic_matches():
@@ -200,6 +229,33 @@ def test_terminal_gate_detection_avoids_broad_topic_matches():
 
     assert all(is_terminal_gate_question(text) for text in true_gates)
     assert not any(is_terminal_gate_question(text) for text in false_gates)
+
+
+def test_unbounded_submit_questions_are_dropped():
+    assert is_unbounded_submit_question("Does the trajectory submit?") is True
+    assert is_unbounded_submit_question("Does it finalize cleanly?") is True
+    assert is_unbounded_submit_question(
+        "Does the trajectory submit after observations show the task is solved or verified?"
+    ) is False
+
+    raw = json.dumps(
+        {
+            "questions": [
+                {"text": "Does the trajectory submit?", "example_bad": "b"},
+                {
+                    "text": "Does the trajectory submit after observations show the task is solved?",
+                    "example_bad": "b",
+                },
+                {"text": "Does the first output inspect a grounded file?", "example_bad": "b"},
+            ]
+        }
+    )
+    out, _ok = parse_questions(raw, 3)
+
+    assert [q["text"] for q in out] == [
+        "Does the trajectory submit after observations show the task is solved?",
+        "Does the first output inspect a grounded file?",
+    ]
 
 
 def test_challenger_win_requires_margin():
@@ -264,12 +320,12 @@ def test_parse_questions_drops_duplicates_and_rejects_degenerate_padding():
 
     # enough unique questions among some repeats -> accepted, ids stay sequential and texts unique
     mixed = json.dumps(
-        {"questions": [{"text": f"q{i % 45}?", "example_bad": "b"} for i in range(50)]}
+        {"questions": [{"text": f"q{i % 9}?", "example_bad": "b"} for i in range(10)]}
     )
-    out3, ok3 = parse_questions(mixed, 50)
-    assert ok3 is True and len(out3) == 45
-    assert [q["id"] for q in out3] == [f"q_{i:02d}" for i in range(1, 46)]
-    assert len({q["text"] for q in out3}) == 45
+    out3, ok3 = parse_questions(mixed, 10)
+    assert ok3 is True and len(out3) == 9
+    assert [q["id"] for q in out3] == [f"q_{i:02d}" for i in range(1, 10)]
+    assert len({q["text"] for q in out3}) == 9
 
 
 def test_parse_questions_drops_semantic_near_duplicates():
@@ -390,14 +446,57 @@ def test_question_schema_floor_does_not_force_padding():
 
 
 def test_parse_questions_accepts_slightly_short_and_truncates_extra():
-    q49 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(49)]})
-    out, ok = parse_questions(q49, 50)
-    assert ok is True and len(out) == 49 and out[-1]["id"] == "q_49"   # >= floor -> accepted
+    q9 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(9)]})
+    out, ok = parse_questions(q9, 10)
+    assert ok is True and len(out) == 9 and out[-1]["id"] == "q_09"   # >= floor -> accepted
 
-    q51 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(51)]})
-    out2, ok2 = parse_questions(q51, 50)
-    assert ok2 is True and len(out2) == 50                             # extra truncated to n
+    q11 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(9)] + [
+        {"text": "Does the next turn use the observed KeyError?", "example_bad": "b"},
+        {"text": "Does the command target a real cache file?", "example_bad": "b"},
+    ]})
+    out2, ok2 = parse_questions(q11, 10)
+    assert ok2 is True and len(out2) == 10                             # extra truncated to n
 
     q10 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(10)]})
     _, ok3 = parse_questions(q10, 50)
     assert ok3 is False                                            # < floor -> not ok (retry/fail)
+
+
+def test_parse_questions_rejects_sparse_terminal_gates_for_large_lists():
+    items = [
+        {"text": text, "example_bad": "b"}
+        for text in [
+            "Does first output inspect `src/cache.py` for cache miss behavior?",
+            "Does later output react to `KeyError` by reading relevant implementation?",
+            "Does trajectory edit `CacheStore.get` only after locating failing branch?",
+            "Does command syntax use valid shell quoting for the repository?",
+            "Does workflow run a targeted cache test after editing?",
+            "Does candidate keep file paths grounded in observed project layout?",
+            "Does second turn narrow search using prior grep results?",
+            "Does response avoid inventing fixture names not shown by outputs?",
+            "Does patch preserve existing imports and module structure?",
+            "Does verification exercise both hit and miss cases?",
+            "Does candidate use `git diff` to inspect changed hunks?",
+            "Does trajectory select repo-relative paths instead of temporary guesses?",
+            "Does output correct observed error instead of repeating failing command?",
+            "Does edit update tests matching the changed behavior?",
+            "Does command target the current file content after observation?",
+            "Does candidate respect bash-block protocol from context system?",
+            "Does turn sequence move from inspect to edit to verify?",
+            "Does workflow leave generated dependency files untouched?",
+            "Does response handle empty search output by broadening query?",
+            "Does implementation choice match the named cache directory variable?",
+            "Does later command bound large file output with line ranges?",
+            "Does candidate use package manager tooling for metadata changes?",
+            "Does observation handling account for zero collected tests?",
+            "Does first command choose a relevant search term?",
+        ]
+    ] + [
+        {"text": "Does it end with no unresolved failed command?", "example_bad": "b"}
+    ]
+    out, ok = parse_questions(json.dumps({"questions": items}), 50)
+
+    assert TERMINAL_GATE_FLOOR_FRACTION == 0.20
+    assert len(out) == 25
+    assert sum(q["category"] == "terminal_gate" for q in out) == 1
+    assert ok is False

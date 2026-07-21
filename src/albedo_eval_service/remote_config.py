@@ -73,7 +73,9 @@ class RemoteSettings(BaseSettings):
     scoring_base_url: str | None = None
     scoring_auth_token: str = ""
     scoring_timeout_seconds: float = 1800.0
-    scoring_batch_concurrency: int = 4
+    scoring_batch_concurrency: int = 128
+    scoring_retry_count: int = 5
+    scoring_retry_backoff_seconds: float = 1.5
     scoring_min_valid_fraction: float = 0.8
 
     upload_artifacts: bool = True

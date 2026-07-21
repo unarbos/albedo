@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import email.utils
 import json
 import os
 import sys
@@ -58,6 +59,45 @@ def chunks(items: list, size: int) -> list[list]:
 def default_base_url() -> str:
     port = os.environ.get("ALBEDO_JUDGE_API_PORT", "8091")
     return os.environ.get("ALBEDO_JUDGE_BASE_URL", f"http://127.0.0.1:{port}")
+
+
+def post_json_with_429_retry(
+    client: httpx.Client,
+    endpoint: str,
+    payload: dict,
+    *,
+    retry_count: int = 5,
+    base_backoff_seconds: float = 1.5,
+) -> dict:
+    for attempt in range(retry_count + 1):
+        response = client.post(endpoint, json=payload)
+        if response.status_code != 429 or attempt >= retry_count:
+            response.raise_for_status()
+            return response.json()
+        time.sleep(retry_sleep_seconds(response, attempt, base_backoff_seconds))
+    raise AssertionError("unreachable")
+
+
+def retry_sleep_seconds(response: httpx.Response, attempt: int, base_backoff_seconds: float) -> float:
+    retry_after = retry_after_seconds(response.headers.get("retry-after"))
+    backoff = base_backoff_seconds * (2**attempt)
+    return max(retry_after, backoff)
+
+
+def retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 def main() -> None:
@@ -126,9 +166,8 @@ def main() -> None:
                 for sample in samples
             ],
         }
-        prep = client.post("/category-prep", json=prep_payload)
-        prep.raise_for_status()
-        prep_id = prep.json().get("category_prep_id")
+        prep_body = post_json_with_429_retry(client, "/category-prep", prep_payload)
+        prep_id = prep_body.get("category_prep_id")
         log(f"question prep accepted prep_id={prep_id} elapsed_s={time.monotonic() - prep_started:.1f}")
         append_progress(
             progress_path,
@@ -157,9 +196,7 @@ def main() -> None:
                 "category_prep_id": prep_id,
                 "samples": batch,
             }
-            response = client.post("/score-batch", json=payload)
-            response.raise_for_status()
-            body = response.json()
+            body = post_json_with_429_retry(client, "/score-batch", payload)
             batch_records = body.get("scoring_records", [])
             if not isinstance(batch_records, list):
                 raise ValueError("judge API returned non-list scoring_records")
