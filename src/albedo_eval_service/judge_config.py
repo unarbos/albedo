@@ -29,7 +29,7 @@ class JudgeSettings(BaseSettings):
     evaluator_providers: str = "z-ai,novita,siliconflow,streamlake"
     sota_models: str = "z-ai/glm-5.2"
     sota_max_tokens: int = 4096
-    sota_trajectory_turns: int = 2
+    sota_trajectory_turns: int = 4
     num_questions: int = 50
     question_max_tokens: int = 16000
     simulation_max_tokens: int = 4096

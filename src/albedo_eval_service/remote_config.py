@@ -36,7 +36,7 @@ class RemoteSettings(BaseSettings):
     challenger_gpu_ids: str = "4,5,6,7"
     max_new_tokens: int = 32768
     generation_result_timeout_seconds: float = 900.0
-    trajectory_assistant_turns: int = 2
+    trajectory_assistant_turns: int = 4
     temperature: float = 0.0
     top_p: float = 1.0
     max_model_len: int | None = None
