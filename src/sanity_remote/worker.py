@@ -28,6 +28,7 @@ from sanity_service.checks import (
 )
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_BASH_BLOCK_RE = re.compile(r"```(?:bash|sh|shell)\s*\n.*?```", re.IGNORECASE | re.DOTALL)
 _FORBIDDEN_CONFIG_KEYS = frozenset({"auto_map", "quantization_config"})
 _QWEN3_IM_END_TOKEN_ID = 248046
 
@@ -64,6 +65,10 @@ def _strip_thinking(text: str) -> str:
     if "</think>" not in text:
         return ""
     return _THINK_RE.sub("", text).strip()
+
+
+def _has_bash_command(text: str) -> bool:
+    return bool(_BASH_BLOCK_RE.search(text or ""))
 
 
 def _strip_model_config(model_dir: str) -> None:
@@ -518,24 +523,18 @@ def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict
             max_repetition=req.max_repetition,
             min_vocab_ratio=req.min_vocab_ratio,
         )
+        if not r.passed and r.reason.startswith("too short") and _has_bash_command(resp):
+            r = type(r)(True)
         if not r.passed:
             logger.warning("[sanity-remote] per-response heuristic failed i={} reason={!r}", i, r.reason)
         out.append({"passed": r.passed, "reason": r.reason})
     if any(not item["passed"] for item in out):
         return out
 
-    set_fail = next(
-        (
-            c
-            for c in (
-                check_collapsed(responses),
-                check_uniform_length(responses),
-                check_code_present(responses),
-            )
-            if not c.passed
-        ),
-        None,
-    )
+    set_checks = [check_collapsed(responses), check_code_present(responses)]
+    if not all(_has_bash_command(r) for r in responses):
+        set_checks.insert(1, check_uniform_length(responses))
+    set_fail = next((c for c in set_checks if not c.passed), None)
     if set_fail is not None:
         logger.warning("[sanity-remote] set-level heuristic failed reason={!r}", set_fail.reason)
         return [{"passed": False, "reason": set_fail.reason} for _ in responses]

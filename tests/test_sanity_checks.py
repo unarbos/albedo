@@ -106,6 +106,25 @@ def test_heuristics_reports_empty_before_set_collapse():
     assert all(v["reason"] == "empty response" for v in out)
 
 
+def test_heuristics_allows_short_bash_commands():
+    out = _heuristics(
+        [
+            "```bash\nls -la\n```",
+            "```bash\ncat utils.py\n```",
+            "```bash\ngrep -r \"def double\" .\n```",
+        ],
+        _req(),
+    )
+
+    assert all(v["passed"] for v in out), out
+
+
+def test_heuristics_still_rejects_short_non_command():
+    out = _heuristics(["one two"], _req())
+
+    assert out == [{"passed": False, "reason": "too short (2 tokens, min=5)"}]
+
+
 def test_fallback_prompts_carry_messages_for_worker_template():
     sample = sample_prompts(seed="seed", n=1)[0]
 

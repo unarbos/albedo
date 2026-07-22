@@ -175,6 +175,7 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path, monkey
         upload_artifacts=False,
         artifact_spool_dir=str(tmp_path / "artifacts"),
         scoring_backend="mock",
+        trajectory_assistant_turns=2,
     )
 
     RemoteEvalWorker(settings, generator_factory=factory).execute(run)
