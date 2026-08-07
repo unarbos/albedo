@@ -1,0 +1,99 @@
+# KubeTEE PoC ConfigMap for the albedo evaluation pod.
+#
+# Applied OUT-OF-BAND on the na-us-oakland-56 cluster (NOT Fleet-managed):
+#
+#   kubectl --context na-us-oakland-56-direct apply -f \
+#     kubetee/deploy/configmap-poc-env.yaml
+#
+# Contains ONLY non-secret env vars. Anything that should not be in git (API
+# keys, S3 creds, HF tokens) goes in the sibling Secret — see
+# kubetee/deploy/secret-template.yaml for the shape and apply procedure.
+#
+# Both the eval container and the judge-api sidecar read this ConfigMap via
+# envFrom so ALBEDO_JUDGE_* and other shared settings are visible to both
+# processes without any in-pod plumbing.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: albedo-poc-config
+  namespace: albedo-poc
+  labels:
+    app.kubernetes.io/name: albedo-poc
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+data:
+
+  # ----- Judge backend: point albedo's judge_api at the KubeTEE LiteLLM gateway.
+  # The gateway serves an OpenAI-compatible /v1/chat/completions endpoint with
+  # the same shape albedo's OpenRouterJudgeClient expects, so this is a pure
+  # env override (no code change to albedo).
+  ALBEDO_JUDGE_OPENROUTER_BASE_URL: "http://litellm.litellm.svc.cluster.local:4000"
+
+  # Evaluator model (the model that asks/answers the per-sample questions).
+  # `z-ai/glm-5.2` is already the upstream default and is served by our gateway.
+  ALBEDO_JUDGE_EVALUATOR_MODEL: "z-ai/glm-5.2"
+
+  # SOTA reference pool: the models used to generate the reference trajectory
+  # that the king and challenger are scored against. Only models the gateway
+  # actually serves (verified via /v1/models: glm-5.2, kimi-k3, deepseek-v4-flash-0731).
+  # deepseek/deepseek-v4-pro is NOT served → excluded.
+  ALBEDO_JUDGE_SOTA_MODELS: "z-ai/glm-5.2,deepseek/deepseek-v4-flash-0731"
+
+  # Judge tuning — keep upstream defaults for temperature / max_tokens etc.
+  ALBEDO_JUDGE_TEMPERATURE: "0.0"
+  ALBEDO_JUDGE_MAX_TOKENS: "768"
+  ALBEDO_JUDGE_REQUEST_TIMEOUT_SECONDS: "300"
+  ALBEDO_JUDGE_RETRY_COUNT: "5"
+  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "128"
+
+  # ----- Remote eval worker settings (consumed by run_eval.py).
+  ALBEDO_REMOTE_ACCELERATOR_TYPE: "H200"
+  ALBEDO_REMOTE_GPU_COUNT: "8"
+  ALBEDO_REMOTE_FREE_GPU_COUNT: "8"
+  ALBEDO_REMOTE_PREVIOUS_KING_GPU_IDS: "0,1,2,3"
+  ALBEDO_REMOTE_CHALLENGER_GPU_IDS: "4,5,6,7"
+  ALBEDO_REMOTE_GENERATION_BACKEND: "vllm"
+  ALBEDO_REMOTE_MODEL_CACHE_DIR: "/cache/models"
+  ALBEDO_REMOTE_ARTIFACT_SPOOL_DIR: "/app/artifacts/spool"
+  ALBEDO_REMOTE_REMOTE_STATE_DIR: "/app/artifacts/state"
+  # Dataset root — the mount path of the dataset-root PVC. RemoteEvalWorker reads
+  # manifest.json + parquet shards from here (remote_worker.py:258). The init
+  # container writes to this path; the eval container reads from it.
+  ALBEDO_REMOTE_DATASET_ROOT: "/app/dataset"
+
+  # ----- Dataset. Active corpora (SWE-ZERO is retired — see albedo/docs/DATASETS.md:42).
+  # The 4 sources are public HF datasets, downloaded by the init container via
+  # scripts/prepare_datasets.py. dataset_version + sampling_algo match the
+  # current albedo defaults (build_manifest.py:23 DEFAULT_VERSION + sampling.py:11 SAMPLING_ALGO).
+  # manifest_hash must match the manifest.json the init container builds — set
+  # after the first init-container run (the script prints the sha256). The value
+  # below is a placeholder; the worker validates this hash at load_manifest_file.
+  ALBEDO_EVAL_DATASET_VERSION: "mini-coder+open-swe+smith-rs+hero-v1"
+  ALBEDO_EVAL_DATASET_MANIFEST_URI: "s3://sn97-albedo/datasets/manifest.json"
+  ALBEDO_EVAL_DATASET_MANIFEST_HASH: "e3cff61772b0096811d4c5d8bbc8dee8dacbd9a069bc4557608adf1c1c2ddf40"
+
+  # PoC sizing: 3 samples x 8 turns keeps a full run well under 90 min on H200.
+  # Bump to albedo's production defaults (100 samples x 10 turns) only when we
+  # know the pipeline is green end-to-end.
+  ALBEDO_EVAL_SAMPLE_COUNT: "3"
+  ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE: "8"
+  ALBEDO_EVAL_SAMPLING_ALGO: "multi-source-manifest-sample-v1"
+  ALBEDO_EVAL_SAMPLE_SEED: "kubetee-poc"
+  ALBEDO_EVAL_JUDGE_CONFIG_HASH: "sha256:replace-with-real-hash"
+  ALBEDO_EVAL_JUDGE_COUNT: "3"
+
+  # S3 artifact layout. The PoC writes under s3://<bucket>/kubetee-poc/<eval_run_id>/.
+  # Bucket `sn97-albedo` on Hippius (https://s3.hippius.com). The uploader is generic
+  # S3-API-compatible (boto3); creds come from the Secret (AWS_*), endpoint here.
+  ALBEDO_EVAL_ARTIFACT_BUCKET: "sn97-albedo"
+  ALBEDO_EVAL_ARTIFACT_PREFIX: "s3://sn97-albedo/kubetee-poc"
+
+  # Hippius S3 endpoint for the artifact uploader (run_eval.py:212 reads it;
+  # S3ArtifactUploader passes it to boto3 as endpoint_url). Also used by the S3
+  # model resolver if a king/challenger URI is s3://...
+  ALBEDO_REMOTE_S3_ENDPOINT_URL: "https://s3.hippius.com"
+
+  # Self-drive runner (run_eval.py) tuning.
+  SELFDRIVE_SCORING_AUTH_TOKEN: "poc"
+  SELFDRIVE_SCORING_TIMEOUT_SECONDS: "300"
+  SELFDRIVE_JUDGE_BASE_URL: "http://127.0.0.1:8091"

@@ -21,7 +21,7 @@ def question_floor(n: int) -> int:
 JUDGE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.2",
     "qwen/qwen3.5-397b-a17b",
-    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v4-flash-0731",
 )
 
 JUDGE_PROVIDER_PINS: dict[str, dict[str, object]] = {

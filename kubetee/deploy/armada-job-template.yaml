@@ -1,0 +1,107 @@
+# Armada JobSubmitRequest template for ONE king-of-the-hill evaluation.
+#
+# Denrite's external dispatcher fills in the four per-job fields
+# (KING_MODEL_URI, KING_MODEL_HASH, CHALLENGER_MODEL_URI, CHALLENGER_MODEL_HASH,
+# EVAL_RUN_ID, SUBMISSION_ID) and submits via `armadactl submit` to the Armada
+# Server on the KubeTEE stagingrancher management cluster.
+#
+# For the PoC, submission is via an SSH tunnel from the dispatcher's host into
+# stagingrancher (see kubetee/PLAN.md §"Submission path"). A follow-up
+# productionizes this with a Traefik IngressRoute at armada-api.kubetee.ai.
+#
+# Per Armada's jobspec: requests MUST equal limits for every resource
+# (Guaranteed QoS), and the podSpec is a standard Kubernetes podSpec.
+
+queue: "albedo-poc"           # Armada queue name — one queue for all albedo evals
+jobSetId: "REPLACE_PER_JOB"   # e.g. "miner-<hotkey>-block-<n>" — Denrite sets this
+
+jobs:
+  - priority: 0
+    namespace: albedo-poc
+    podSpec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 14400   # 4h hard cap
+
+      containers:
+        - name: eval
+          image: ghcr.io/kubetee-ai/albedo-poc:latest
+          imagePullPolicy: IfNotPresent
+          # The PoC image's ENTRYPOINT is `python /app/kubetee/app/run_eval.py`.
+          # We do not override it; all per-job input is via env.
+          resources:
+            limits:
+              nvidia.com/gpu: 8
+              cpu: "32"
+              memory: "128Gi"
+            requests:
+              nvidia.com/gpu: 8
+              cpu: "32"
+              memory: "128Gi"
+
+          env:
+            # ----- Per-job inputs (set by Denrite's dispatcher per submission) -----
+            - name: KING_MODEL_URI
+              value: "REPLACE_PER_JOB"        # e.g. "hf://org/king-rev" or "s3://bucket/path"
+            - name: KING_MODEL_HASH
+              value: "REPLACE_PER_JOB"        # sha256 of the model artifact
+            - name: CHALLENGER_MODEL_URI
+              value: "REPLACE_PER_JOB"
+            - name: CHALLENGER_MODEL_HASH
+              value: "REPLACE_PER_JOB"
+            - name: EVAL_RUN_ID
+              value: "REPLACE_PER_JOB"        # stable UUID — used in S3 artifact path
+            - name: SUBMISSION_ID
+              value: "REPLACE_PER_JOB"
+            - name: SELFDRIVE_JUDGE_BASE_URL
+              value: "http://127.0.0.1:8091"
+
+          envFrom:
+            - configMapRef:
+                name: albedo-poc-config
+            - secretRef:
+                name: albedo-poc-secrets
+
+          volumeMounts:
+            - name: artifacts
+              mountPath: /app/artifacts
+            - name: dataset-root
+              mountPath: /app/dataset
+            - name: model-cache
+              mountPath: /cache/models
+
+        - name: judge-api
+          image: ghcr.io/kubetee-ai/albedo-poc:latest
+          imagePullPolicy: IfNotPresent
+          command: ["albedo-judge-api"]
+          resources:
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+            requests:
+              cpu: "4"
+              memory: "8Gi"
+          envFrom:
+            - configMapRef:
+                name: albedo-poc-config
+            - secretRef:
+                name: albedo-poc-secrets
+          env:
+            - name: SELFDRIVE_JUDGE_BASE_URL
+              value: "http://127.0.0.1:8091"
+          ports:
+            - name: judge-http
+              containerPort: 8091
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8091
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+      volumes:
+        - name: artifacts
+          emptyDir: {}
+        - name: dataset-root
+          emptyDir: {}
+        - name: model-cache
+          emptyDir: {}
