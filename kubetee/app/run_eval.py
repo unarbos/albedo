@@ -270,6 +270,63 @@ def _fetch_eval_cost(judge_base_url: str) -> dict[str, Any]:
         return {"error": f"sidecar /eval-cost fetch failed: {exc}"}
 
 
+def _make_artifacts_public(*, settings: RemoteSettings, artifacts: dict[str, str]) -> None:
+    """Set per-object ACL to `public-read` on each uploaded S3 artifact so they
+    are fetchable by URL without credentials (matching albedo's production S3
+    behavior). The Hippius bucket-level ACL can't be changed by our app key,
+    but per-object put-object-acl works.
+
+    Best-effort: individual failures are logged and skipped so one bad object
+    doesn't block the rest. Never raises.
+    """
+    import re
+
+    # Parse s3://bucket/key URIs into (bucket, key) pairs.
+    s3_uris: list[tuple[str, str]] = []
+    for uri in artifacts.values():
+        if not isinstance(uri, str):
+            continue
+        m = re.match(r"s3://([^/]+)/(.+)", uri)
+        if not m:
+            continue
+        s3_uris.append((m.group(1), m.group(2)))
+    if not s3_uris:
+        return
+
+    try:
+        import boto3
+
+        session_kwargs: dict[str, str] = {}
+        if settings.s3_access_key_id:
+            session_kwargs["aws_access_key_id"] = settings.s3_access_key_id
+        if settings.s3_secret_access_key:
+            session_kwargs["aws_secret_access_key"] = settings.s3_secret_access_key
+        if settings.s3_session_token:
+            session_kwargs["aws_session_token"] = settings.s3_session_token
+        if settings.s3_region:
+            session_kwargs["region_name"] = settings.s3_region
+        client_kwargs: dict[str, str] = {}
+        if settings.s3_endpoint_url:
+            client_kwargs["endpoint_url"] = settings.s3_endpoint_url
+        client = boto3.session.Session(**session_kwargs).client("s3", **client_kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("make-artifacts-public: boto3 init failed (non-fatal): {}", exc)
+        return
+
+    made = 0
+    for bucket, key in s3_uris:
+        try:
+            client.put_object_acl(Bucket=bucket, Key=key, ACL="public-read")
+            made += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "make-artifacts-public: put-object-acl failed for s3://{}/{} (non-fatal): {}",
+                bucket, key, exc,
+            )
+    if made:
+        logger.info("make-artifacts-public: {} of {} artifacts set to public-read", made, len(s3_uris))
+
+
 def main() -> int:
     settings = RemoteSettings()
 
@@ -375,6 +432,18 @@ def main() -> int:
         eval_elapsed_s=eval_elapsed_s,
         verdict_state=str(verdict.get("state")),
         judge_base_url=judge_base_url,
+    )
+
+    # Make all uploaded artifacts publicly readable (match albedo's production
+    # behavior — their S3 is public so Denrite's dispatcher + the dashboard can
+    # fetch verdicts by URL without creds). The bucket-level ACL on our Hippius
+    # bucket can't be changed by our app key (AccessDenied on put-bucket-acl),
+    # but per-object put-object-acl works, so we set each artifact to public-read
+    # after upload. Best-effort: logged + skipped on failure.
+    summary_uri = f"{request.artifact_prefix}/eval-summary.json"
+    _make_artifacts_public(
+        settings=settings,
+        artifacts={**artifacts, "eval_summary": summary_uri},
     )
 
     return 0 if verdict.get("state") == "succeeded" else 1
