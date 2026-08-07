@@ -200,12 +200,23 @@ class OpenRouterJudgeClient:
         usage = body.get("usage") or {}
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
         reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+        # LiteLLM exposes the computed cost only in the x-litellm-response-cost
+        # response header for non-streaming requests (it is NOT placed in the
+        # JSON usage body). OpenRouter puts it in usage.cost. Prefer the header
+        # when present so the same code works against both gateways.
+        cost_str = response.headers.get("x-litellm-response-cost")
+        if cost_str is None or cost_str == "":
+            cost_str = usage.get("cost")
+        try:
+            cost = float(cost_str) if cost_str is not None else 0.0
+        except (TypeError, ValueError):
+            cost = 0.0
         logger.debug(
             f"[judge-openrouter] usage purpose={purpose} model={model} "
             f"prompt_tokens={usage.get('prompt_tokens')} cached_tokens={cached} "
             f"completion_tokens={usage.get('completion_tokens')} "
             f"reasoning_tokens={reasoning} "
-            f"cost={float(usage.get('cost') or 0.0):.8f}"
+            f"cost={cost:.8f}"
         )
         raw = _message_content(body.get("choices", []))
         provider = _provider_name(model)
