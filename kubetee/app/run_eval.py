@@ -397,6 +397,17 @@ def _write_and_upload_eval_summary(
     verdict. Best-effort — never raises."""
     cost = _fetch_eval_cost(judge_base_url)
 
+    # GPU infrastructure cost for the eval window. The node has 8 GPUs at
+    # $2.50/hr/Gpu = $20/hr/node (HGX H200 market rate). Priced by the eval
+    # wall-clock (worker.execute only — excludes dataset prep + sidecar
+    # readiness, which is the window the GPUs are actually doing eval work).
+    # Override via env if the rate changes; defaults are the PoC rates.
+    gpu_count = int(_env("ALBEDO_REMOTE_GPU_COUNT", "8"))
+    gpu_rate_per_hour = float(_env("KUBETEE_GPU_RATE_PER_HOUR", "2.50"))
+    elapsed_hours = eval_elapsed_s / 3600.0
+    gpu_cost = round(gpu_count * gpu_rate_per_hour * elapsed_hours, 8)
+    judge_cost_total = float(cost.get("total_cost") or 0.0) if isinstance(cost, dict) else 0.0
+
     summary = {
         "type": "eval_summary",
         "eval_run_id": str(request.eval_run_id),
@@ -410,6 +421,14 @@ def _write_and_upload_eval_summary(
         "timing_scope": "worker.execute only (generation + scoring + upload); "
         "excludes dataset prep + sidecar readiness",
         "judge_cost": cost,
+        "gpu_cost": {
+            "gpu_count": gpu_count,
+            "rate_per_gpu_per_hour": gpu_rate_per_hour,
+            "rate_per_node_per_hour": round(gpu_count * gpu_rate_per_hour, 2),
+            "elapsed_hours": round(elapsed_hours, 6),
+            "total_gpu_cost": gpu_cost,
+        },
+        "total_eval_cost": round(judge_cost_total + gpu_cost, 8),
     }
     try:
         # Write to the same spool dir the upstream artifacts use, then upload.
@@ -427,9 +446,11 @@ def _write_and_upload_eval_summary(
             files=files,
         )
         logger.info(
-            "eval-summary uploaded: elapsed_s={} cost={}",
+            "eval-summary uploaded: elapsed_s={} judge_cost={} gpu_cost={} total={}",
             eval_elapsed_s,
             cost.get("total_cost", "n/a"),
+            summary.get("gpu_cost", {}).get("total_gpu_cost", "n/a"),
+            summary.get("total_eval_cost", "n/a"),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("eval-summary upload failed (non-fatal): {}", exc)
