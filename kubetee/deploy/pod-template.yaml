@@ -84,40 +84,20 @@ spec:
 
       initContainers:
         # ----- Code injection -------------------------------------------------
-        # The old PoC image has all the albedo code + pip-installed deps but the
-        # wrong vLLM (0.22.1-dev). This init container copies the code + deps
-        # from it into a shared emptyDir. The eval + judge containers use the
-        # correct vllm/vllm-openai:v0.23.0 base but mount the injected code.
+        # Clone the albedo fork (KubeTEE-AI-Blueprints/albedo, kubetee-poc branch)
+        # which has the JUDGE_MODELS patch + the kubetee/ PoC directory. Install
+        # the albedo deps on top of the v0.23.0 base (which has vLLM + torch).
         - name: inject-code
-          image: ghcr.io/kubetee-ai/albedo-poc:latest
+          image: vllm/vllm-openai:v0.23.0
           imagePullPolicy: Always
           command:
             - bash
             - -c
             - |
-              echo "injecting albedo code + deps from old PoC image..."
-              cp -a /app/src /app/shared/
-              cp -a /app/scripts /app/shared/
-              cp -a /app/assets /app/shared/
-              cp -a /app/chain.toml /app/shared/
-              cp -a /app/kubetee /app/shared/
-              cp -a /app/pyproject.toml /app/shared/
-              # Copy the pip-installed site-packages (albedo deps like fastapi,
-              # boto3, huggingface-hub, hippius-hub, etc.) so the v0.23.0 image
-              # doesn't need to re-install them. The vLLM + torch from v0.23.0
-              # take precedence (they're in the base image's site-packages, which
-              # is on PYTHONPATH before the injected site-packages).
-              # Instead of copying all site-packages (too large + conflicts with
-              # v0.23.0's torch/vllm), just install the albedo deps fresh:
-              pip install --no-cache-dir --no-deps -e /app/shared/
-              pip install --no-cache-dir \
-                "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" \
-                "boto3>=1.35" "asyncpg>=0.29" "psycopg[binary]>=3.2" \
-                "loguru>=0.7" "datasets" "transformers" \
-                "huggingface-hub==1.19.0" "hf_transfer>=0.1" \
-                "hippius-hub==0.6.0" "opensearch-py>=2,<3" \
-                "prompt_toolkit>=3" "pydantic>=2.8" "pydantic-settings>=2.4" \
-                "pyarrow>=16" "safetensors" "numpy"
+              echo "cloning albedo fork (kubetee-poc branch)..."
+              apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1
+              cd /app/shared
+              git clone --depth 1 --branch kubetee-poc https://github.com/KubeTEE-AI-Blueprints/albedo.git albedo
               echo "code injection complete"
           volumeMounts:
             - name: shared
@@ -125,12 +105,13 @@ spec:
 
         # ----- Dataset staging ------------------------------------------------
         - name: prepare-dataset
-          image: ghcr.io/kubetee-ai/albedo-poc:latest
+          image: vllm/vllm-openai:v0.23.0
           imagePullPolicy: Always
           command:
             - bash
             - -c
             - |
+              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:$PYTHONPATH
               KING_DIR="dendriteholdings__albedo-qwen3.6-35b-king-genesis"
               if [ -d /cache/models/hf ]; then
                 for d in /cache/models/hf/*/; do
@@ -148,7 +129,7 @@ spec:
                 echo "manifest.json exists — skipping dataset preparation (PVC retained from previous run)"
               else
                 echo "manifest.json not found — running prepare_datasets.py (first run on this PVC)"
-                python /app/scripts/prepare_datasets.py --dataset-root /app/dataset
+                python3 /app/shared/albedo/scripts/prepare_datasets.py --dataset-root /app/dataset
               fi
           env:
             - name: HF_HUB_ENABLE_HF_TRANSFER
@@ -160,6 +141,8 @@ spec:
               mountPath: /app/dataset
             - name: model-cache
               mountPath: /cache/models
+            - name: shared
+              mountPath: /app/shared
 
       containers:
         # ----- Main eval container --------------------------------------------
@@ -170,8 +153,18 @@ spec:
             - bash
             - -c
             - |
-              export PYTHONPATH=/app/shared/src:/app/shared:/app/shared/scripts:$PYTHONPATH
-              python /app/shared/kubetee/app/run_eval.py; EXIT=$?
+              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:/app/shared/albedo/kubetee/app:$PYTHONPATH
+              cd /app/shared/albedo
+              pip install --no-cache-dir --no-deps -e . && \
+              pip install --no-cache-dir \
+                "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" \
+                "boto3>=1.35" "asyncpg>=0.29" "psycopg[binary]>=3.2" \
+                "loguru>=0.7" "datasets" "transformers" \
+                "huggingface-hub==1.19.0" "hf_transfer>=0.1" \
+                "hippius-hub==0.6.0" "opensearch-py>=2,<3" \
+                "prompt_toolkit>=3" "pydantic>=2.8" "pydantic-settings>=2.4" \
+                "pyarrow>=16" "safetensors" "numpy"
+              python3 /app/shared/albedo/kubetee/app/run_eval.py; EXIT=$?
               touch /shared/eval-done
               exit $EXIT
           resources:
@@ -184,18 +177,24 @@ spec:
               cpu: "32"
               memory: "512Gi"
           env:
+            # Replicating Albedo production eval b2f66cfa-6583-43d2-8570-d8a005fae7a6
+            # (king v96, 100/100 scored, 0 errors, finished 2026-07-29).
+            # King = wearetop/albedo-qwen3.6-35b-719 (king v96, UID 31) — public on HF.
             - name: KING_MODEL_URI
-              value: "hf://dendriteholdings/albedo-qwen3.6-35b-king-genesis@d7934c55d650e3a73de3081c11ad2c864009f4b7"
+              value: "hf://wearetop/albedo-qwen3.6-35b-719@662d6efee9245b8e6a3b4c50c01130781178baec"
             - name: KING_MODEL_HASH
-              value: "d7934c55d650e3a73de3081c11ad2c864009f4b7"
+              value: "662d6efee9245b8e6a3b4c50c01130781178baec"
+            # Challenger = doublerabbits/albedo-qwen3.6-35b-319192 (UID 156) — public on HF.
+            # Lost to king with score 0.468 vs 0.528 (margin -0.059).
             - name: CHALLENGER_MODEL_URI
-              value: "hf://Qwen/Qwen3.6-35B-A3B@995ad96eacd98c81ed38be0c5b274b04031597b0"
+              value: "hf://doublerabbits/albedo-qwen3.6-35b-319192@28c27de4cc93d0c70934ba7c53b9b8076c688def"
             - name: CHALLENGER_MODEL_HASH
-              value: "995ad96eacd98c81ed38be0c5b274b04031597b0"
+              value: "28c27de4cc93d0c70934ba7c53b9b8076c688def"
+            # Use the exact production eval_run_id + submission_id for apple-to-apple comparison.
             - name: EVAL_RUN_ID
-              value: "00000000-0000-0000-0000-000000000002"
+              value: "b2f66cfa-6583-43d2-8570-d8a005fae7a6"
             - name: SUBMISSION_ID
-              value: "00000000-0000-0000-0000-000000000002"
+              value: "b6ef1319-cde5-4d35-8fc4-0b175ffb3753"
             - name: SELFDRIVE_JUDGE_BASE_URL
               value: "http://127.0.0.1:8091"
           envFrom:
@@ -214,9 +213,8 @@ spec:
               mountPath: /dev/shm
             - name: shared
               mountPath: /shared
-            - name: injected-code
+            - name: shared
               mountPath: /app/shared
-              readOnly: true
 
         # ----- Judge-api sidecar ----------------------------------------------
         - name: judge-api
@@ -226,7 +224,17 @@ spec:
             - bash
             - -c
             - |
-              export PYTHONPATH=/app/shared/src:/app/shared:/app/shared/scripts:$PYTHONPATH
+              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:/app/shared/albedo/kubetee/app:$PYTHONPATH
+              cd /app/shared/albedo
+              pip install --no-cache-dir --no-deps -e . && \
+              pip install --no-cache-dir \
+                "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" \
+                "boto3>=1.35" "asyncpg>=0.29" "psycopg[binary]>=3.2" \
+                "loguru>=0.7" "datasets" "transformers" \
+                "huggingface-hub==1.19.0" "hf_transfer>=0.1" \
+                "hippius-hub==0.6.0" "opensearch-py>=2,<3" \
+                "prompt_toolkit>=3" "pydantic>=2.8" "pydantic-settings>=2.4" \
+                "pyarrow>=16" "safetensors" "numpy"
               albedo-judge-api &
               JUDGE_PID=$!
               while [ ! -f /shared/eval-done ]; do
@@ -265,9 +273,8 @@ spec:
           volumeMounts:
             - name: shared
               mountPath: /shared
-            - name: injected-code
+            - name: shared
               mountPath: /app/shared
-              readOnly: true
 
       volumes:
         - name: dshm
@@ -275,8 +282,6 @@ spec:
             medium: Memory
             sizeLimit: 64Gi
         - name: shared
-          emptyDir: {}
-        - name: injected-code
           emptyDir: {}
         - name: model-cache
           persistentVolumeClaim:

@@ -34,17 +34,28 @@ data:
   ALBEDO_JUDGE_EVALUATOR_MODEL: "z-ai/glm-5.2"
 
   # SOTA reference pool: the models used to generate the reference trajectory
-  # that the king and challenger are scored against. Only models the gateway
-  # actually serves (verified via /v1/models: glm-5.2, kimi-k3, deepseek-v4-flash-0731).
-  # deepseek/deepseek-v4-pro is NOT served → excluded.
-  ALBEDO_JUDGE_SOTA_MODELS: "z-ai/glm-5.2,deepseek/deepseek-v4-flash-0731"
+  # that the king and challenger are scored against. Albedo's current pipeline
+  # uses the code default (judge_config.py:30) — a single model, z-ai/glm-5.2.
+  # The gateway serves it; no other model is needed in this pool.
+  ALBEDO_JUDGE_SOTA_MODELS: "z-ai/glm-5.2"
 
   # Judge tuning — keep upstream defaults for temperature / max_tokens etc.
   ALBEDO_JUDGE_TEMPERATURE: "0.0"
   ALBEDO_JUDGE_MAX_TOKENS: "768"
   ALBEDO_JUDGE_REQUEST_TIMEOUT_SECONDS: "300"
   ALBEDO_JUDGE_RETRY_COUNT: "5"
-  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "128"
+  # Concurrency: 32 keeps GLM (max-running-requests=16) at 2x depth — enough
+  # to saturate the model without an 80-deep queue that makes scoring drag.
+  # Previous run with 128 caused scoring to take 919s and exceed the 300s
+  # SELFDRIVE_SCORING_TIMEOUT_SECONDS, yielding PROVIDER_FAULT.
+  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "32"
+  # Aligned to albedo's current pipeline (.env.example:125 — they use 0.5,
+  # the code default is 0.8). Lower threshold = more tolerant of judge errors.
+  ALBEDO_JUDGE_MIN_VALID_FRACTION: "0.5"
+  # Bind judge-api to 0.0.0.0 so the kubelet readiness probe (which uses the
+  # pod IP, not 127.0.0.1) can reach /ready. The eval container still calls
+  # 127.0.0.1:8091 (same pod network namespace).
+  ALBEDO_JUDGE_API_HOST: "0.0.0.0"
 
   # ----- Remote eval worker settings (consumed by run_eval.py).
   ALBEDO_REMOTE_ACCELERATOR_TYPE: "H200"
@@ -72,10 +83,10 @@ data:
   ALBEDO_EVAL_DATASET_MANIFEST_URI: "s3://sn97-albedo/datasets/manifest.json"
   ALBEDO_EVAL_DATASET_MANIFEST_HASH: "e3cff61772b0096811d4c5d8bbc8dee8dacbd9a069bc4557608adf1c1c2ddf40"
 
-  # PoC sizing: 3 samples x 8 turns keeps a full run well under 90 min on H200.
-  # Bump to albedo's production defaults (100 samples x 10 turns) only when we
-  # know the pipeline is green end-to-end.
-  ALBEDO_EVAL_SAMPLE_COUNT: "3"
+  # PoC sizing: 100 samples matches albedo production scale. The pipeline is green
+  # end-to-end (3 judges, cost tracking, GPU cost) — run the real king-vs-challenger
+  # comparison at production scale to get a meaningful verdict.
+  ALBEDO_EVAL_SAMPLE_COUNT: "100"
   ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE: "8"
   ALBEDO_EVAL_SAMPLING_ALGO: "multi-source-manifest-sample-v1"
   ALBEDO_EVAL_SAMPLE_SEED: "kubetee-poc"
@@ -95,5 +106,5 @@ data:
 
   # Self-drive runner (run_eval.py) tuning.
   SELFDRIVE_SCORING_AUTH_TOKEN: "poc"
-  SELFDRIVE_SCORING_TIMEOUT_SECONDS: "300"
+  SELFDRIVE_SCORING_TIMEOUT_SECONDS: "1800"
   SELFDRIVE_JUDGE_BASE_URL: "http://127.0.0.1:8091"
