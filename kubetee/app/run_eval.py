@@ -15,8 +15,13 @@ This file implements *zero* forked business logic. It only:
   1. builds a single EvalRequest from per-job env vars
   2. wires RemoteSettings toward the in-pod judge-api via an HTTP scorer
   3. waits for the judge-api sidecar to be ready
-  4 situazione. calls upstream `albedo_eval_service.remote_worker.RemoteEvalWorker.execute()`
+  4. calls upstream `albedo_eval_service.remote_worker.RemoteEvalWorker.execute()`
   5. writes the final verdict JSON to stdout (and exits 0 on success)
+  6. AFTER the upstream verdict is built + uploaded, writes a companion
+     `eval-summary.json` (total LiteLLM spend + eval wall-clock seconds,
+     excluding dataset prep which ran in the init container) and uploads
+     it to S3 next to the verdict. Does NOT modify `verdict.json` — that
+     file is upstream-owned.
 
 Everything heavy — model resolution (HF/Hippius/S3/local), two tensor-parallel
 vLLM processes (king on GPUs 0-3, challenger on GPUs 4-7), multi-turn trajectory
@@ -32,6 +37,7 @@ import os
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -240,6 +246,30 @@ def _wait_sidecar_ready(url: str, timeout_s: int = 600) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Post-eval: fetch accumulated cost from the judge-api sidecar
+# ---------------------------------------------------------------------------
+
+
+def _fetch_eval_cost(judge_base_url: str) -> dict[str, Any]:
+    """Fetch the accumulated judge cost from the in-pod judge-api sidecar's
+    `/eval-cost` endpoint. The sidecar accumulates the `x-litellm-response-cost`
+    header value of every judge request it makes (in `judge_openrouter.py`'s
+    module-level counter, exposed via this endpoint).
+
+    Returns the JSON dict from the sidecar on success, or `{"error": ...}` on
+    any failure. Never raises — the cost is a diagnostic add-on, not a gate.
+    """
+    url = judge_base_url.rstrip("/") + "/eval-cost"
+    try:
+        r = httpx.get(url, timeout=10.0)
+        if r.status_code != 200:
+            return {"error": f"sidecar /eval-cost returned HTTP {r.status_code}"}
+        return r.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"sidecar /eval-cost fetch failed: {exc}"}
+
+
 def main() -> int:
     settings = RemoteSettings()
 
@@ -295,7 +325,16 @@ def main() -> int:
         # settings.scoring_base_url set above.
         worker = RemoteEvalWorker(settings, artifact_uploader=artifact_uploader)
 
+    # Eval wall-clock starts HERE — after dataset prep (init container) and
+    # sidecar readiness, just before the upstream worker begins the real
+    # generation + scoring lifecycle.
+    eval_start_wall = time.monotonic()
+    eval_start_clock = datetime.now(timezone.utc)
+
     worker.execute(run)
+
+    eval_elapsed_s = round(time.monotonic() - eval_start_wall, 3)
+    eval_end_clock = datetime.now(timezone.utc)
 
     # Extract the final verdict from run events.
     verdict: dict[str, Any] | None = next(
@@ -323,7 +362,79 @@ def main() -> int:
         for name, uri in artifacts.items():
             print(f"  {name}: {uri}", file=sys.stderr)
 
+    # Companion eval-summary.json — total LiteLLM spend + wall-clock elapsed.
+    # Written to S3 next to the verdict; does NOT modify verdict.json (that
+    # file is upstream-owned). Best-effort: any error here is logged and
+    # skipped so the eval's exit code reflects only the upstream verdict.
+    _write_and_upload_eval_summary(
+        request=request,
+        artifact_uploader=artifact_uploader,
+        spool_dir=artifact_spool_dir,
+        eval_start_clock=eval_start_clock,
+        eval_end_clock=eval_end_clock,
+        eval_elapsed_s=eval_elapsed_s,
+        verdict_state=str(verdict.get("state")),
+        judge_base_url=judge_base_url,
+    )
+
     return 0 if verdict.get("state") == "succeeded" else 1
+
+
+def _write_and_upload_eval_summary(
+    *,
+    request: EvalRequest,
+    artifact_uploader: Any,
+    spool_dir: str,
+    eval_start_clock: datetime,
+    eval_end_clock: datetime,
+    eval_elapsed_s: float,
+    verdict_state: str,
+    judge_base_url: str,
+) -> None:
+    """Fetch the accumulated judge cost from the in-pod judge-api sidecar
+    (`/eval-cost` endpoint, backed by `judge_openrouter.py`'s module-level
+    cost counter) and upload `eval-summary.json` (cost + timing) next to the
+    verdict. Best-effort — never raises."""
+    cost = _fetch_eval_cost(judge_base_url)
+
+    summary = {
+        "type": "eval_summary",
+        "eval_run_id": str(request.eval_run_id),
+        "submission_id": str(request.submission_id),
+        "verdict_state": verdict_state,
+        "eval_start_utc": eval_start_clock.isoformat(),
+        "eval_end_utc": eval_end_clock.isoformat(),
+        "eval_elapsed_seconds": eval_elapsed_s,
+        # Excludes dataset prep (ran in the init container before this
+        # process started) and sidecar readiness wait (preceded the timer).
+        "timing_scope": "worker.execute only (generation + scoring + upload); "
+        "excludes dataset prep + sidecar readiness",
+        "judge_cost": cost,
+    }
+    try:
+        # Write to the same spool dir the upstream artifacts use, then upload.
+        import pathlib
+
+        spool_path = pathlib.Path(spool_dir) / str(request.eval_run_id)
+        spool_path.mkdir(parents=True, exist_ok=True)
+        summary_file = spool_path / "eval-summary.json"
+        summary_file.write_text(json.dumps(summary, indent=2))
+        files = {"eval_summary": summary_file}  # Path, not str
+        # Reuse the upstream uploader — it already knows the bucket + prefix.
+        artifact_uploader.upload_run_artifacts(
+            eval_run_id=request.eval_run_id,
+            artifact_prefix=request.artifact_prefix,
+            files=files,
+        )
+        logger.info(
+            "eval-summary uploaded: elapsed_s={} cost={}",
+            eval_elapsed_s,
+            cost.get("total_cost", "n/a"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("eval-summary upload failed (non-fatal): {}", exc)
+        # Still print the summary to stdout so it's captured in pod logs.
+        print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

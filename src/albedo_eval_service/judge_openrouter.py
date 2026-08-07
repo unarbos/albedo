@@ -14,6 +14,26 @@ from .judge_config import JudgeSettings
 from .judge_core import JUDGE_MODELS, JUDGE_PROVIDER_PINS
 
 
+# Module-level per-eval cost accumulator. `_score_once` adds the
+# `x-litellm-response-cost` header value (or `usage.cost` for real OpenRouter)
+# to this counter on every judge request. Exposed via the judge-api sidecar's
+# `/eval-cost` endpoint so `run_eval.py` can read the running total at the end
+# of the eval without querying LiteLLM. Reset only on process restart (i.e. on
+# a new eval pod), so it is naturally scoped to a single eval run.
+EVAL_COST_TOTAL: float = 0.0
+EVAL_COST_REQUEST_COUNT: int = 0
+EVAL_COST_PER_MODEL: dict[str, float] = {}
+
+
+def get_eval_cost_snapshot() -> dict[str, object]:
+    """Return the current accumulated cost. Called by the /eval-cost endpoint."""
+    return {
+        "total_cost": round(EVAL_COST_TOTAL, 8),
+        "request_count": EVAL_COST_REQUEST_COUNT,
+        "per_model": {k: round(v, 8) for k, v in sorted(EVAL_COST_PER_MODEL.items())},
+    }
+
+
 @dataclass(frozen=True)
 class JudgeRawResponse:
     model: str
@@ -211,6 +231,13 @@ class OpenRouterJudgeClient:
             cost = float(cost_str) if cost_str is not None else 0.0
         except (TypeError, ValueError):
             cost = 0.0
+        # Accumulate into the module-level per-eval counter (exposed via the
+        # judge-api /eval-cost endpoint). `global` is required because we
+        # rebind the names; the per_model dict is mutated in place.
+        global EVAL_COST_TOTAL, EVAL_COST_REQUEST_COUNT  # noqa: PLW0603
+        EVAL_COST_TOTAL += cost
+        EVAL_COST_REQUEST_COUNT += 1
+        EVAL_COST_PER_MODEL[model] = round(EVAL_COST_PER_MODEL.get(model, 0.0) + cost, 8)
         logger.debug(
             f"[judge-openrouter] usage purpose={purpose} model={model} "
             f"prompt_tokens={usage.get('prompt_tokens')} cached_tokens={cached} "

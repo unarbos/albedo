@@ -837,6 +837,17 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
             "num_questions": settings.num_questions,
         }
 
+    @app.get("/eval-cost")
+    async def eval_cost(_: None = Depends(require_auth)) -> dict[str, object]:
+        """Accumulated judge cost for the current eval run (PoC add-on).
+        Backed by the module-level counter in judge_openrouter.py — every
+        judge request adds its x-litellm-response-cost header value (or
+        usage.cost for real OpenRouter) to it. Scoped to this pod's
+        lifetime, which is exactly one eval run."""
+        from .judge_openrouter import get_eval_cost_snapshot
+
+        return get_eval_cost_snapshot()
+
     @app.post("/category-prep", response_model=QuestionPrepResponse)
     async def category_prep(
         request: QuestionPrepRequest, _: None = Depends(require_auth)
