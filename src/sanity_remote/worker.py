@@ -16,7 +16,7 @@ import httpx
 from loguru import logger
 
 from albedo_eval_service.canonical_model_config import canonical_max_model_len
-from albedo_eval_service.observation_format import truncation_notice
+from albedo_eval_service.observation_format import truncation_notice, unclosed_think_block_notice
 from albedo_eval_service.remote_dataset import format_messages
 from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.state import SanityRun
@@ -61,7 +61,8 @@ def _strip_thinking(text: str) -> str:
     if "</think>" in text:
         return text.rsplit("</think>", 1)[1].strip()
     if "<think>" in text:
-        return ""
+        return unclosed_think_block_notice()
+
     return text
 
 

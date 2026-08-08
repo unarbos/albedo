@@ -51,6 +51,7 @@ def test_score_bridge_client_reconnects_after_disconnect(monkeypatch):
 
     assert attempts == [{"Authorization": "Bearer remote-token"}]
 
+
 def _eval_request() -> EvalRequest:
     return EvalRequest(
         eval_run_id=uuid4(),

@@ -45,6 +45,15 @@ export function fmtDateTime(iso) {
   } catch { return "—"; }
 }
 
+export function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const m = Math.round(ms / 60000);
+  if (m < 60) return `${Math.max(1, m)}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
 export const fmtCount = n => {
   if (n == null) return "—";
   const u = ["", "K", "M", "B"];

@@ -10,7 +10,6 @@ from sanity_remote.models import SanityRunRequest
 from sanity_remote.worker import VllmEngine, WorkerFault, _format_prompt_messages, _heuristics
 from sanity_service import dispatcher as sanity_dispatcher
 from sanity_service.checks import (
-    check_all,
     check_code_present,
     check_collapsed,
     check_encoding,
@@ -21,7 +20,12 @@ from sanity_service.checks import (
 )
 from sanity_service.dataset import sample_prompts
 from sanity_service.dispatcher import _format_scored_trajectory
-
+from albedo_eval_service.observation_format import (
+    MISSING_COMMAND_MESSAGE,
+    detect_format,
+    unclosed_think_block_notice,
+    wrap,
+)
 
 
 def test_check_one_passes_clean_code_answer():
@@ -65,14 +69,6 @@ def test_check_uniform_length_flags_identical_token_counts():
 def test_check_code_present_requires_a_keyword_somewhere():
     assert check_code_present(["prose here", "def f(): return 1"]).passed
     assert not check_code_present(["just prose", "more prose"]).passed
-
-
-def test_check_all_reports_first_failure_with_prompt_index():
-    result = check_all(["def f(): return 1 ok now", "", "def g(): return 2 ok now"])
-    assert not result.passed
-    assert result.reason.startswith("prompt 2/3:")
-
-
 
 
 def _req() -> SanityRunRequest:
@@ -215,11 +211,12 @@ def test_trajectory_no_command_gets_observation_without_simulator(monkeypatch):
         turns=[{"role": "assistant", "content": "Here is the answer.", "score_target": True}],
     )
 
+    expected_fmt = detect_format(state.sample_id, state.messages)
     asyncio.run(sanity_dispatcher._append_observations([state], "run", 1))
 
     assert state.messages[-1] == {
         "role": "user",
-        "content": "Observation: No bash command found in assistant message.",
+        "content": wrap(MISSING_COMMAND_MESSAGE, expected_fmt, returncode=2),
     }
     assert not state.stopped
 
@@ -341,7 +338,7 @@ def test_run_prompts_does_not_leak_unclosed_think(monkeypatch):
     )()
 
     out = asyncio.run(engine._run_prompts("model-name", ["prompt"], 77))
-    assert out == [""]
+    assert out == [unclosed_think_block_notice()]
 
 
 def test_run_prompts_strips_qwen_thinking_tail(monkeypatch):

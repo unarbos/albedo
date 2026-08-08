@@ -1,6 +1,7 @@
 import { el, mount } from "../dom.js";
-import { pct, fmtDateTime, fmtRelative } from "../format.js";
+import { pct, fmtDateTime, fmtRelative, fmtDuration } from "../format.js";
 import { modelRepo, kingTitleName } from "../model.js";
+import { PREDS_TOTAL_FALLBACK, PREDS_STALE_MS } from "../config.js";
 
 const MODEL_SCORE_SUITE = "model_score";
 
@@ -162,6 +163,49 @@ export function mergeModelScores(data, rows) {
   };
 }
 
+export function modelScoreRunId(model) {
+  if (!model) return null;
+  if (isGenesis(model)) return "king-genesis";
+  const numeral = modelLabel(model).split("-").pop();
+  return /^[IVXLCDM]+$/.test(numeral) ? `king-${numeral}` : null;
+}
+
+function panelModels(data) {
+  const activeProgress = activeProgressByModelSuite(data);
+  const models = (data?.models || []).filter(model => completedRuns(model).length || hasActiveProgress(model, activeProgress));
+  const sorted = sortModels(models).filter(hasPanelScores);
+  return { models, sorted, selected: sorted.find(model => !isGenesis(model)) || sorted[0] || null };
+}
+
+export function liveScoreRunId(data, modelScores) {
+  const { selected } = panelModels(mergeModelScores(data, modelScores));
+  if (!selected || suiteScores(selected)[MODEL_SCORE_SUITE]?.score != null) return null;
+  return modelScoreRunId(selected);
+}
+
+function scoreTotal(modelScores) {
+  const totals = (modelScores || []).map(row => Number(row?.total)).filter(n => Number.isFinite(n) && n > 0);
+  return totals.length ? Math.max(...totals) : PREDS_TOTAL_FALLBACK;
+}
+
+function livePreds(live, modelScores) {
+  if (!live?.count) return null;
+  const total = scoreTotal(modelScores);
+  const left = Math.max(0, total - live.count);
+  const updated = live.updatedAt ? new Date(live.updatedAt).getTime() : NaN;
+  const ratio = Math.min(1, live.count / total);
+  const fresh = Number.isFinite(updated) ? Date.now() - updated < PREDS_STALE_MS : true;
+  return {
+    count: live.count,
+    total,
+    ratio,
+    fresh,
+    scoring: !fresh && ratio >= 0.95,
+    eta: live.rate && left ? fmtDuration(left / live.rate) : null,
+    updatedAt: live.updatedAt,
+  };
+}
+
 function detailHref(model, runId = null) {
   const qs = new URLSearchParams();
   if (model?.id) qs.set("model_id", model.id);
@@ -282,9 +326,28 @@ function renderSpark(sorted, suite, width = 360) {
   return svg;
 }
 
-function renderTile(model, suite, sorted, baseline, activity) {
+function progressLabel(preds) {
+  if (preds.fresh) return "running";
+  return preds.scoring ? "scoring" : "stalled";
+}
+
+function renderProgress(preds, label) {
+  const percent = (preds.ratio * 100).toFixed(1);
+  const state = preds.fresh
+    ? [`${percent}%`, preds.eta ? `eta ${preds.eta}` : "generating"]
+    : preds.scoring
+      ? [`${percent}%`, "awaiting score"]
+      : [`${percent}%`, `idle ${fmtRelative(preds.updatedAt)}`];
+  return el("div", { class: "bench-tile-progress" },
+    el("div", { class: preds.fresh ? "bench-tile-progress-bar live" : "bench-tile-progress-bar" },
+      el("i", { style: `width:${percent}%` })),
+    el("div", { class: "bench-tile-progress-note" }, [label, ...state].filter(Boolean).join(" · ")));
+}
+
+function renderTile(model, suite, sorted, baseline, activity, preds) {
   const entry = suiteScores(model)[suite];
   const scored = entry?.score != null;
+  const progress = scored ? null : preds;
   const genesis = baselineComparison(entry, baseline);
   const previous = previousComparison(entry, sorted, model, suite);
   const running = activity?.running;
@@ -293,6 +356,7 @@ function renderTile(model, suite, sorted, baseline, activity) {
   const runNote = running
     ? [runningLabel(running, activity.labelByRepo), progressNote(running)].filter(Boolean).join(" · ")
     : queued.length ? `${queued.length} pending` : "";
+  const live = Boolean(running) || Boolean(progress?.fresh);
 
   const chartSvgElement = el("div", { class: "bench-tile-chart" }, renderSpark(sorted, suite));
   let chartWidth = 0;
@@ -306,17 +370,22 @@ function renderTile(model, suite, sorted, baseline, activity) {
 
   return el("article", {
     class: "bench-tile",
-    "data-status": scored ? "completed" : "missing",
-    "data-activity": running ? "running" : "idle",
+    "data-status": scored ? "completed" : progress ? "progress" : "missing",
+    "data-activity": live ? "running" : "idle",
   },
     el("div", { class: "bench-tile-head" },
       el("div", { class: "bench-tile-name" }, benchmarkLabel(suite)),
-      el("span", { class: running ? "bench-tile-activity live" : "bench-tile-activity" }, running ? "running" : "idle")),
+      el("span", { class: live ? "bench-tile-activity live" : "bench-tile-activity" }, live ? "running" : "idle")),
     el("div", { class: "bench-tile-main" },
       el("div", { class: "bench-tile-score-wrap" },
-        el(href ? "a" : "span", { class: "bench-tile-score", href }, scored ? panelScore(entry.score) : "missing"),
-        scored ? el("span", { class: "bench-tile-pass-count" },
-          entry.score_meta || `avg · ${entry.pass_count || 1} ${entry.pass_count === 1 ? "pass" : "passes"}`) : null),
+        el(href ? "a" : "span", { class: "bench-tile-score", href },
+          scored ? panelScore(entry.score) : progress ? progressLabel(progress) : "missing"),
+        scored
+          ? el("span", { class: "bench-tile-pass-count" },
+              entry.score_meta || `avg · ${entry.pass_count || 1} ${entry.pass_count === 1 ? "pass" : "passes"}`)
+          : progress
+            ? el("span", { class: "bench-tile-pass-count" }, `${progress.count} / ${progress.total} predictions`)
+            : null),
       el("div", { class: `bench-tile-change ${previous.cls}` },
         el("strong", {}, previous.delta),
         el("span", {}, "since last"))),
@@ -324,7 +393,7 @@ function renderTile(model, suite, sorted, baseline, activity) {
     el("div", { class: "bench-tile-status" },
       el("span", {}, genesis.label),
       el("span", { class: `bench-delta ${genesis.cls}`, title: "delta vs genesis" }, genesis.delta)),
-    runNote ? el("div", { class: "bench-tile-run-note" }, runNote) : null);
+    progress ? renderProgress(progress, modelLabel(model)) : runNote ? el("div", { class: "bench-tile-run-note" }, runNote) : null);
 }
 
 function runningLabel(item, labelByRepo) {
@@ -416,25 +485,23 @@ function renderHistoryPanel(sorted, selectedModel, rerender) {
       : el("div", { class: "bench-history-empty" }, "no benchmark history yet"));
 }
 
-export function renderBenchmarks(container, metaNode, data, modelScores = null) {
+export function renderBenchmarks(container, metaNode, data, modelScores = null, live = null) {
   data = mergeModelScores(data, modelScores);
-  const activeProgress = activeProgressByModelSuite(data);
-  const models = (data?.models || []).filter(model => completedRuns(model).length || hasActiveProgress(model, activeProgress));
+  const { models, sorted, selected } = panelModels(data);
   if (!models.length) {
     mount(container, el("div", { class: "empty" }, "no benchmark data yet."));
     if (metaNode) metaNode.textContent = "no data";
     return;
   }
-  const sorted = sortModels(models).filter(hasPanelScores);
   if (!sorted.length) {
     mount(container, el("div", { class: "empty" }, "no benchmark scores yet."));
     if (metaNode) metaNode.textContent = "no data";
     return;
   }
-  const selected = sorted.find(model => !isGenesis(model)) || sorted[0];
   const baselineScores = suiteScores((data?.models || []).find(isGenesis));
   const activity = suiteActivity(data);
-  const rerender = () => renderBenchmarks(container, metaNode, data, modelScores);
+  const preds = live?.runId === modelScoreRunId(selected) ? livePreds(live, modelScores) : null;
+  const rerender = () => renderBenchmarks(container, metaNode, data, modelScores, live);
   const scores = suiteScores(selected);
   const done = BENCHMARK_ORDER.filter(suite => scores[suite]?.score != null).length;
 
@@ -451,7 +518,8 @@ export function renderBenchmarks(container, metaNode, data, modelScores = null) 
           el("span", { class: "bench-panel-meta" },
             `${done}/${BENCHMARK_ORDER.length} scores · ${modelLabel(selected)}`))),
       el("div", { class: "bench-tile-grid" }, BENCHMARK_ORDER.map(suite =>
-        renderTile(selected, suite, sorted, baselineScores[suite], activity.get(suite)))),
+        renderTile(selected, suite, sorted, baselineScores[suite], activity.get(suite),
+          suite === MODEL_SCORE_SUITE ? preds : null))),
       historyOpen ? renderHistoryPanel(sorted, selected, rerender) : null));
   if (metaNode) metaNode.textContent = `${models.length} models · ${data.counts?.runs ?? 0} benchmark runs · updated ${fmtRelative(data.generated_at)}`;
 }

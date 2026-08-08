@@ -7,13 +7,9 @@ from loguru import logger
 
 from sanity_service.rubricisity import PROBE_SYSTEM, VIABILITY_SYSTEM
 
-
 INJECTION_SYSTEM: str = PROBE_SYSTEM
 
-
 VIABILITY_SYSTEM: str = VIABILITY_SYSTEM
-
-
 
 def _context_and_reply(prompt: str, reply: str) -> str:
     return (
@@ -37,7 +33,6 @@ def build_injection_user(prompt: str, reply: str) -> str:
 
 def build_viability_user(prompt: str, reply: str) -> str:
     return f"{_context_and_reply(prompt, reply)}\n\nReview the CANDIDATE REPLY and answer with the strict JSON from the system prompt."
-
 
 
 def _extract_obj(raw: str, key: str | None = None) -> dict | None:

@@ -1,11 +1,11 @@
-import { POLL_MS } from "../config.js";
-import { fetchDashboard, fetchState, fetchBenchmarks, fetchModelScores, fetchManifest, fetchLlmsText, fetchRegistrationHistory } from "../fetch.js";
+import { POLL_MS, PREDS_POLL_MS } from "../config.js";
+import { fetchDashboard, fetchState, fetchBenchmarks, fetchModelScores, fetchManifest, fetchLlmsText, fetchRegistrationHistory, fetchPredsProgress } from "../fetch.js";
 import { normalize } from "../data.js";
 import { el, mount } from "../dom.js";
 import { fmtRelative } from "../format.js";
 import { kingTitleName, hubRepoUrl, modelRepo } from "../model.js";
 import { renderReign } from "../render/reign.js";
-import { renderBenchmarks } from "../render/benchmarks.js";
+import { renderBenchmarks, liveScoreRunId } from "../render/benchmarks.js";
 import { renderPipeline } from "../render/pipeline.js";
 import { renderHistory, renderFails } from "../render/history.js";
 import { renderDatasets } from "../render/datasets.js";
@@ -75,13 +75,40 @@ async function tick() {
   render(state);
 }
 
+let benchmarkData = null;
+let benchmarkScores = null;
+let predsProgress = null;
+
+function paintBenchmarks() {
+  if (!benchmarkData) return;
+  renderBenchmarks($("benchmarks-wrap"), $("benchmarks-meta"), benchmarkData, benchmarkScores, predsProgress);
+}
+
 async function tickBenchmarks() {
   const [data, modelScores] = await Promise.all([fetchBenchmarks(), fetchModelScores()]);
   if (!data) return;
   const sig = JSON.stringify([data, modelScores]);
   if (sig === benchmarkSig) return;
   benchmarkSig = sig;
-  renderBenchmarks($("benchmarks-wrap"), $("benchmarks-meta"), data, modelScores);
+  benchmarkData = data;
+  benchmarkScores = modelScores;
+  paintBenchmarks();
+}
+
+async function tickPreds() {
+  const runId = benchmarkData && liveScoreRunId(benchmarkData, benchmarkScores);
+  if (!runId) {
+    if (!predsProgress) return;
+    predsProgress = null;
+    paintBenchmarks();
+    return;
+  }
+  const next = await fetchPredsProgress(runId);
+  const changed = next?.runId !== predsProgress?.runId
+    || next?.count !== predsProgress?.count
+    || next?.updatedAt !== predsProgress?.updatedAt;
+  predsProgress = next;
+  if (changed) paintBenchmarks();
 }
 
 async function loadDatasets() {
@@ -174,9 +201,10 @@ wireFilter();
 $("hero-llms-btn")?.addEventListener("click", copyLlmsTxt);
 tick();
 tickPipeline();
-tickBenchmarks();
+tickBenchmarks().then(tickPreds);
 loadDatasets();
 loadRegistrations();
 setInterval(tick, POLL_MS);
 setInterval(tickPipeline, POLL_MS);
 setInterval(tickBenchmarks, POLL_MS);
+setInterval(tickPreds, PREDS_POLL_MS);

@@ -210,9 +210,16 @@ class SanityDispatcher:
         kept_warm = False
         try:
             for turn_index in range(turn_count):
-                active = [state for state in states if not state.stopped and not state.error]
+                active = [
+                    state for state in states 
+                    if  not state.stopped and
+                        not state.error and 
+                        not state.heuristic_reason
+                ]
+
                 if not active:
                     break
+
                 turn_request = request.model_copy(
                     update={
                         "run_id": f"{claimed.attempt_id}:turn-{turn_index + 1}",

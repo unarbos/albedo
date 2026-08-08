@@ -185,8 +185,6 @@ async def _judge_sample(
     models: tuple[str, ...] = SANITY_DEFAULT_JUDGE_MODELS,
 ) -> SampleVerdict:
     excerpt = (s.prompt or "")[:60]
-    if not s.heuristic_passed:
-        return SampleVerdict(excerpt, passed=False, reason=f"heuristic: {s.heuristic_reason}")
 
     gate_response = _response_for_gate(s.response)
     suspected, votes = await _injection_probe(client, s.prompt, gate_response, models)
@@ -273,7 +271,15 @@ async def run_gate(samples: list[SampleInput], client, *, consensus: bool = Fals
     resolved = _resolve_models(models)
     if not samples:
         return GateResult(False, "no samples", infra_fault=True, llm_gate=LLMGate.SKIPPED, decision_mode=mode)
-    verdicts = list(await asyncio.gather(*[_judge_sample(s, client, consensus, skip_viability, resolved) for s in samples]))
+
+    heuristic_failed = next((s for s in samples if not s.heuristic_passed), None)
+    if heuristic_failed is not None:
+        excerpt = (heuristic_failed.prompt or "")[:60]
+        reason = f"heuristic: {heuristic_failed.heuristic_reason}"
+        verdicts = [SampleVerdict(excerpt, passed=False, reason=reason)]
+    else:
+        verdicts = list(await asyncio.gather(*[_judge_sample(s, client, consensus, skip_viability, resolved) for s in samples]))
+
     result = _aggregate(verdicts, mode)
     (logger.info if result.passed else logger.warning)(
         "[sanity/gate] passed={} gate={} mode={} reason={!r}",

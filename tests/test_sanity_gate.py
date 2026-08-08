@@ -19,14 +19,11 @@ from sanity_service.rubric import parse_injection, parse_viability
 from sanity_service.settings import SanitySettings
 
 
-
 def test_parse_injection_and_viability():
     assert parse_injection('{"injection": false, "evidence": "none"}') == (False, "none")
     assert parse_injection('{"injection": true, "evidence": "x"}')[0] is True
     assert parse_viability('{"viable": true, "reason": "ok"}') == (True, "ok")
     assert parse_viability("not json")[0] is None
-
-
 
 
 class _FakeJudge:
@@ -143,8 +140,6 @@ def test_gate_injection_ignores_trajectory_wrapper():
     assert gate.passed
 
 
-
-
 class _FakeRepo:
     def __init__(self) -> None:
         self.calls: list = []
@@ -164,22 +159,27 @@ class _DummyJudge:
 def _complete(gate: GateResult, result: dict) -> list:
     repo = _FakeRepo()
     disp = D.SanityDispatcher(settings=SanitySettings(), repository=repo)
-    D.make_client = lambda: _DummyJudge()
 
     async def _fake_gate(samples, client, *, consensus=False, skip_viability=False, models=None):
         return gate
 
-    D.run_gate = _fake_gate
-    asyncio.run(
-        disp._complete(
-            submission_id=uuid4(),
-            attempt_id=uuid4(),
-            repo="r",
-            digest="d",
-            prompts=["p", "p", "p"],
-            result=result,
+    with (
+        patch.object(D, "make_client", lambda: _DummyJudge()),
+        patch.object(D, "run_gate", _fake_gate),
+        patch.object(D, "put_sanity_fault", lambda *args, **kwargs: None),
+    ):
+
+        asyncio.run(
+            disp._complete(
+                submission_id=uuid4(),
+                attempt_id=uuid4(),
+                repo="r",
+                digest="d",
+                prompts=["p", "p", "p"],
+                result=result,
+            )
         )
-    )
+
     return repo.calls
 
 
@@ -267,15 +267,11 @@ def test_multiturn_keeps_prompt_messages_on_first_turn(monkeypatch):
     assert seen[1].prompt_messages is None
 
 
-
-
 def test_dispatcher_binds_canonical_repository():
     import sanity_service.db as canonical
 
     assert D.PreEvalRepository is canonical.PreEvalRepository
     assert D.ClaimedPreEval is canonical.ClaimedPreEval
-
-
 
 
 def test_model_ref_parts_accepts_chain_model_uri():
@@ -294,7 +290,6 @@ def test_worker_store_lifecycle():
     run.succeed(responses=["x"], heuristics=[{"passed": True, "reason": "ok"}])
     assert run.as_status()["state"] == "succeeded"
     assert store.list_active() == []
-
 
 
 from sanity_remote.config import SanityRemoteSettings

@@ -173,8 +173,9 @@ def _reign(conn, *, version_map: dict[int, int]) -> dict[str, Any]:
         ORDER BY rm.slot ASC
         """
     ).fetchall()
-    members = [
-        {
+    members: list[dict[str, Any]] = []
+    for row in rows:
+        entry = {
             "king_version": version_map.get(row["king_version"]),
             "model_uri": row["model_uri"],
             "model_hash": row["model_hash"],
@@ -184,9 +185,41 @@ def _reign(conn, *, version_map: dict[int, int]) -> dict[str, Any]:
             "score_challenger": _num(row["score_challenger"]),
             "score_king": _num(row["score_king"]),
             "eval_run_id": str(row["eval_run_id"]) if row["eval_run_id"] else None,
+            "is_king": row["slot"] == 1,
         }
-        for row in rows
-    ]
+        if entry["king_version"] == 0:
+            payee = conn.execute(
+                """
+                SELECT kv.version AS king_version, kv.model_hash, ms.model_uri,
+                       er.score_challenger, er.score_king, er.id AS eval_run_id
+                FROM king_versions kv
+                JOIN model_submissions ms ON ms.id = kv.submission_id
+                LEFT JOIN eval_runs er ON er.id = kv.eval_run_id
+                WHERE ms.hotkey = %s
+                ORDER BY kv.version DESC
+                LIMIT 1
+                """,
+                (row["hotkey"],),
+            ).fetchone()
+            if payee is None:
+                members.append(entry)
+                continue
+            if row["slot"] == 1:
+                members.append({**entry, "hotkey": None, "uid": None, "weight_bps": 0})
+            members.append(
+                {
+                    **entry,
+                    "king_version": version_map.get(payee["king_version"]),
+                    "model_uri": payee["model_uri"],
+                    "model_hash": payee["model_hash"],
+                    "score_challenger": _num(payee["score_challenger"]),
+                    "score_king": _num(payee["score_king"]),
+                    "eval_run_id": str(payee["eval_run_id"]) if payee["eval_run_id"] else None,
+                    "is_king": False,
+                }
+            )
+            continue
+        members.append(entry)
     return {"members": members}
 
 

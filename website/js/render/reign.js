@@ -11,12 +11,15 @@ export function renderReign(container, reign, netuid) {
 
   const orderedMembers = [...members].sort((a, b) => (Number(b.king_version) || 0) - (Number(a.king_version) || 0));
 
-  // Mark the most recently coronated king (highest king_version), not just slot 0.
-  let glowIdx = 0, bestVersion = -Infinity;
-  orderedMembers.forEach((m, i) => {
-    const v = Number(m.king_version);
-    if (Number.isFinite(v) && v > bestVersion) { bestVersion = v; glowIdx = i; }
-  });
+  let glowIdx = orderedMembers.findIndex(m => m.is_king);
+  if (glowIdx < 0) {
+    let bestVersion = -Infinity;
+    glowIdx = 0;
+    orderedMembers.forEach((m, i) => {
+      const v = Number(m.king_version);
+      if (Number.isFinite(v) && v > bestVersion) { bestVersion = v; glowIdx = i; }
+    });
+  }
 
   const rows = orderedMembers.map((m, i) => {
     const repo = modelRepo(m.model_uri);

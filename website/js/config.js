@@ -16,6 +16,13 @@ export const MODEL_SCORE_ENDPOINTS = [
   "./data/model-scores.json",
 ];
 
+export const PREDS_ENDPOINTS = [
+  "./research/bench_results_verified",
+];
+export const PREDS_POLL_MS = 15000;
+export const PREDS_TOTAL_FALLBACK = 500;
+export const PREDS_STALE_MS = 15 * 60 * 1000;
+
 export const MANIFEST_ENDPOINTS = [
   "./datasets/manifest.meta.json",
 ];

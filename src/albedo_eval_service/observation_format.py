@@ -9,6 +9,7 @@ SWE_AGENT = "swe_agent"
 OPENHANDS = "openhands"
 
 TRUNCATION_SENTINEL = "MODEL_RESPONSE_TOKEN_LIMIT_EXCEEDED"
+UNCLOSED_THINK_BLOCK_SENTINEL = "MODEL_UNCLOSED_THINK_BLOCK"
 
 FORMAT_MINI_CODER = """OUTPUT FORMAT:
 - Your reply MUST have exactly this shape, with no text before or after:
@@ -127,10 +128,17 @@ def truncation_notice(token_limit: int) -> str:
         "stopping conversation."
     )
 
-
 def is_truncated(text: str) -> bool:
     return TRUNCATION_SENTINEL in (text or "")
 
+def unclosed_think_block_notice() -> str:
+    return (
+        f"{UNCLOSED_THINK_BLOCK_SENTINEL}: Model returned an unclosed think block, "
+        "stopping conversation."
+    )
+
+def has_unclosed_think_block(text: str) -> bool:
+    return UNCLOSED_THINK_BLOCK_SENTINEL in (text or "")
 
 MISSING_COMMAND_MESSAGE = "No bash command found in assistant message."
 

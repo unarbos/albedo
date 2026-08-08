@@ -786,10 +786,38 @@ a.bench-tile-score:hover { color: var(--color-accent); }
 .bench-tile-change.up { color: #35c77d; }
 .bench-tile-change.down { color: var(--color-bad); }
 .bench-tile-change.flat { color: var(--color-fg-3); }
-.bench-tile[data-status="missing"] .bench-tile-score {
+.bench-tile[data-status="missing"] .bench-tile-score,
+.bench-tile[data-status="progress"] .bench-tile-score {
   color: var(--color-fg-3);
   font-size: clamp(14px, 2vw, 20px);
   text-transform: uppercase;
+}
+.bench-tile[data-status="progress"][data-activity="running"] .bench-tile-score { color: var(--color-activity); }
+.bench-tile-progress {
+  min-height: 15px;
+  margin-top: 5px;
+}
+.bench-tile-progress-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-border-hover);
+  overflow: hidden;
+}
+.bench-tile-progress-bar i {
+  display: block;
+  height: 100%;
+  background: var(--color-fg-3);
+  transition: width 0.4s ease;
+}
+.bench-tile-progress-bar.live i { background: var(--color-activity); }
+.bench-tile-progress-note {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-fg-3);
+  overflow-wrap: anywhere;
 }
 .bench-tile-chart {
   color: var(--color-fg-2);

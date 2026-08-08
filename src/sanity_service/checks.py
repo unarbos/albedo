@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from albedo_eval_service.observation_format import is_truncated
+from albedo_eval_service.observation_format import is_truncated, has_unclosed_think_block
 
 _CODE_KEYWORDS = {
     "def","class","import","from","return","if","elif","else","for","while","try","except","finally","with","as","lambda",
@@ -30,6 +30,10 @@ class CheckResult:
     reason: str = ""
 
 
+def check_unclosed_think_block(text: str) -> CheckResult:
+    if has_unclosed_think_block(text):
+        return CheckResult(False, "response contains an unclosed think block")
+    return CheckResult(True)
 
 
 def check_truncated(text: str) -> CheckResult:
@@ -77,9 +81,9 @@ def check_vocabulary(text: str, min_ratio: float = 0.3) -> CheckResult:
         return CheckResult(False, f"low vocabulary diversity ({ratio:.2f}, min={min_ratio})")
     return CheckResult(True)
 
-
 def check_one(text: str, min_tokens: int = 5, max_repetition: float = 0.85, min_vocab_ratio: float = 0.3,) -> CheckResult:
     for result in [
+        check_unclosed_think_block(text),
         check_truncated(text),
         check_empty(text),
         check_length(text, min_tokens),
@@ -90,8 +94,6 @@ def check_one(text: str, min_tokens: int = 5, max_repetition: float = 0.85, min_
         if not result.passed:
             return result
     return CheckResult(True)
-
-
 
 
 def check_collapsed(responses: list[str]) -> CheckResult:
@@ -116,28 +118,3 @@ def check_code_present(responses: list[str]) -> CheckResult:
         if set(resp.lower().split()) & _CODE_KEYWORDS:
             return CheckResult(True)
     return CheckResult(False, "no code keywords in any response (def/return/import/etc)")
-
-
-
-
-def check_all(responses: list[str], min_tokens: int = 5, max_repetition: float = 0.95, min_vocab_ratio: float = 0.1,) -> CheckResult:
-    for i, resp in enumerate(responses):
-        result = check_one(
-            resp,
-            min_tokens=min_tokens,
-            max_repetition=max_repetition,
-            min_vocab_ratio=min_vocab_ratio,
-        )
-        if not result.passed:
-            return CheckResult(False, f"prompt {i + 1}/{len(responses)}: {result.reason}")
-
-    for fn in [check_collapsed, check_uniform_length, check_code_present]:
-        result = fn(responses)
-        if not result.passed:
-            return result
-
-    return CheckResult(True)
-
-
-
-
