@@ -24,13 +24,6 @@ spec:
         app.kubernetes.io/name: albedo-judge-api
         app.kubernetes.io/part-of: kubetee-sn97-poc
     spec:
-      # Package defaults to org-internal on first push; make public in GitHub UI
-      # (https://github.com/orgs/KubeTEE-AI/packages/container/package/albedo-judge-api)
-      # or keep this pull secret. Create with:
-      #   kubectl -n albedo-poc create secret docker-registry ghcr-kubetee \
-      #     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>
-      imagePullSecrets:
-        - name: ghcr-kubetee
       containers:
         - name: judge-api
           image: ghcr.io/kubetee-ai/albedo-judge-api:latest
