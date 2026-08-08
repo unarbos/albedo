@@ -51,6 +51,9 @@ data:
   # end-to-end (3 judges, cost tracking, GPU cost) — run the real king-vs-challenger
   # comparison at production scale to get a meaningful verdict.
   ALBEDO_EVAL_SAMPLE_COUNT: "100"
+  # Smaller scoring HTTP batches so a judge restart / disconnect cannot wipe
+  # an entire 100-sample score-batch in one shot (default was sample_count).
+  ALBEDO_EVAL_SCORING_BATCH_SIZE: "16"
   ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE: "8"
   ALBEDO_EVAL_SAMPLING_ALGO: "multi-source-manifest-sample-v1"
   ALBEDO_EVAL_SAMPLE_SEED: "kubetee-poc"

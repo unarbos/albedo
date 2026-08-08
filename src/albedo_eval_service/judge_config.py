@@ -24,6 +24,10 @@ class JudgeSettings(BaseSettings):
     temperature: float = 0.0
     max_tokens: int = 768
     max_concurrency_per_model: int = 128
+    # Cap how many samples /score-batch scores in parallel. Unbounded gather of
+    # a full eval (e.g. 100) + per-model LiteLLM fan-out can stall the event
+    # loop long enough for kubelet liveness to SIGKILL the pod (exit 137).
+    max_score_sample_concurrency: int = 8
     min_valid_fraction: float = 0.8
     evaluator_model: str = "z-ai/glm-5.2"
     evaluator_providers: str = "z-ai,novita,siliconflow,streamlake"

@@ -25,8 +25,10 @@ data:
   ALBEDO_JUDGE_MAX_TOKENS: "768"
   ALBEDO_JUDGE_REQUEST_TIMEOUT_SECONDS: "300"
   ALBEDO_JUDGE_RETRY_COUNT: "5"
-  # Shared throttle across concurrent eval Jobs.
-  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "32"
+  # Shared throttle across concurrent eval Jobs. Keep modest so /score-batch
+  # cannot starve uvicorn enough for kubelet liveness to SIGKILL the pod.
+  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "8"
+  ALBEDO_JUDGE_MAX_SCORE_SAMPLE_CONCURRENCY: "8"
   ALBEDO_JUDGE_MIN_VALID_FRACTION: "0.5"
   ALBEDO_JUDGE_API_HOST: "0.0.0.0"
   ALBEDO_JUDGE_API_PORT: "8091"

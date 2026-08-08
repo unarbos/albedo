@@ -1210,28 +1210,40 @@ async def _score_samples(
         len(request.judge_models), request.category_prep_id or "",
     )
 
+    sample_limit = max(1, int(settings.max_score_sample_concurrency))
+    sample_sem = asyncio.Semaphore(sample_limit)
+    logger.info(
+        "score_batch_concurrency eval_run_id={} batch_id={} sample_concurrency={} "
+        "per_model_concurrency={}",
+        request.eval_run_id,
+        request.batch_id,
+        sample_limit,
+        settings.max_concurrency_per_model,
+    )
+
     async def _score_one(sample: JudgeSample) -> dict[str, Any]:
         nonlocal completed
-        try:
-            return await _score_one_inner(sample)
-        except Exception as exc:
-            async with progress_lock:
-                completed += 1
-            logger.warning(
-                "score_batch_sample_failed eval_run_id={} batch_id={} completed={}/{} sample_id={} error={}",
-                request.eval_run_id, request.batch_id, completed, len(request.samples),
-                sample.sample_id, f"{type(exc).__name__}: {exc}",
-            )
-            return {
-                "sample_id": sample.sample_id,
-                "questions": [],
-                "king_score": None,
-                "challenger_score": None,
-                "judge_results": [],
-                "scored": False,
-                "scoring_mode": "binary",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+        async with sample_sem:
+            try:
+                return await _score_one_inner(sample)
+            except Exception as exc:
+                async with progress_lock:
+                    completed += 1
+                logger.warning(
+                    "score_batch_sample_failed eval_run_id={} batch_id={} completed={}/{} sample_id={} error={}",
+                    request.eval_run_id, request.batch_id, completed, len(request.samples),
+                    sample.sample_id, f"{type(exc).__name__}: {exc}",
+                )
+                return {
+                    "sample_id": sample.sample_id,
+                    "questions": [],
+                    "king_score": None,
+                    "challenger_score": None,
+                    "judge_results": [],
+                    "scored": False,
+                    "scoring_mode": "binary",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
 
     async def _score_one_inner(sample: JudgeSample) -> dict[str, Any]:
         nonlocal completed

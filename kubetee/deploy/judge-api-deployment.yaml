@@ -39,20 +39,23 @@ spec:
           resources:
             limits:
               cpu: "4"
-              memory: "8Gi"
+              memory: "16Gi"
             requests:
               cpu: "4"
-              memory: "8Gi"
+              memory: "16Gi"
           # /health and /ready are unauthenticated so kubelet probes work
           # behind NetworkPolicy (host→pod probe traffic is not ns-sourced).
+          # Liveness is intentionally loose: a full /score-batch can keep the
+          # event loop busy for minutes; a tight probe SIGKILLs mid-score
+          # (PROVIDER_FAULT / judge_provider_exhausted on the eval Job).
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
+            timeoutSeconds: 10
+            failureThreshold: 12
           readinessProbe:
             httpGet:
               path: /ready
@@ -60,4 +63,4 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 6
