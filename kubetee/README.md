@@ -22,10 +22,8 @@ See [PLAN.md](PLAN.md) for architecture, apply order, auth, NetworkPolicy,
 | `app/run_eval.py` | Per-job self-drive entrypoint. |
 | `Dockerfile` | Reference eval image (live Job uses `vllm/vllm-openai` + git clone). |
 | `Dockerfile.judge-api` | Slim shared judge image → `ghcr.io/kubetee-ai/albedo-judge-api`. |
-| `deploy/pod-template.yaml` | Eval Job (no judge sidecar). |
-| `deploy/judge-api-*.yaml` | Shared judge Deployment, Service, NetworkPolicy. |
-| `deploy/configmap-judge-env.yaml` | Judge `ALBEDO_JUDGE_*` ConfigMap. |
-| `deploy/configmap-poc-env.yaml` | Eval Job ConfigMap (`SELFDRIVE_JUDGE_BASE_URL`, etc.). |
+| `deploy/eval.yaml` | Eval ConfigMap + Job + PVCs (no judge sidecar). |
+| `deploy/judge-api.yaml` | Shared judge stack (ConfigMap + Deployment + Service + NetworkPolicy). |
 | `deploy/secret-template.yaml` | Secret template (LiteLLM key + auth token + S3/HF). |
 | `deploy/armada-job-template.yaml` | Future Armada submit shape (not used in PoC). |
 
@@ -37,14 +35,11 @@ See [PLAN.md](PLAN.md) for architecture, apply order, auth, NetworkPolicy,
      -f kubetee/Dockerfile.judge-api \
      -t ghcr.io/kubetee-ai/albedo-judge-api:latest --push .
    ```
-2. Apply judge + eval ConfigMaps and judge workloads:
+2. Apply judge + eval manifests:
    ```bash
    kubectl --context na-us-oakland-56-direct apply -f \
-     kubetee/deploy/configmap-judge-env.yaml \
-     kubetee/deploy/judge-api-deployment.yaml \
-     kubetee/deploy/judge-api-service.yaml \
-     kubetee/deploy/judge-api-networkpolicy.yaml \
-     kubetee/deploy/configmap-poc-env.yaml
+     kubetee/deploy/judge-api.yaml \
+     kubetee/deploy/eval.yaml
    ```
 3. Apply the Secret out-of-band (`ALBEDO_JUDGE_API_AUTH_TOKEN` must match
    `SELFDRIVE_SCORING_AUTH_TOKEN`):
@@ -54,8 +49,8 @@ See [PLAN.md](PLAN.md) for architecture, apply order, auth, NetworkPolicy,
    kubectl --context na-us-oakland-56-direct apply -f \
      ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    ```
-4. Submit an eval Job:
+4. Re-submit an eval Job (delete first — Jobs are immutable):
    ```bash
    kubectl --context na-us-oakland-56-direct -n albedo-poc delete job albedo-poc-eval --ignore-not-found
-   kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/pod-template.yaml
+   kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/eval.yaml
    ```

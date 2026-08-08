@@ -64,9 +64,9 @@ trajectories.jsonl + verdict.json + logs"]
 ## Why no Armada (PoC) — and what replaces it
 
 Armada integration is **deferred** (follow-up #1 below). The PoC submits
-the Job directly with `kubectl apply -f kubetee/deploy/pod-template.yaml`
-from the KubeTEE side. The `pod-template.yaml` is a standalone `batch/v1`
-`Job` (not embedded in an Armada `JobSubmitRequest`) — applied to the
+the Job directly with `kubectl apply -f kubetee/deploy/eval.yaml`
+from the KubeTEE side. The `eval.yaml` is a standalone `batch/v1`
+`Job` (+ ConfigMap + PVCs; not embedded in an Armada `JobSubmitRequest`) — applied to the
 `albedo-poc` namespace on `na-us-oakland-56-direct`. When Denrite
 integration lands, they will edit the per-job env in a copy of this
 manifest and `kubectl apply` it themselves (no SSH tunnel, no `armadactl`)
@@ -104,18 +104,14 @@ used in the PoC flow.
 | `app/__init__.py` | Package marker so `PYTHONPATH=/app/shared/albedo/kubetee/app` works. |
 | `Dockerfile` | NOT used in the live eval Job — the pod runs `vllm/vllm-openai:v0.23.0` and `inject-code` clones the albedo fork. Kept as a reference for a future custom eval image. |
 | `Dockerfile.judge-api` | Slim Python image for the shared judge Deployment (`ghcr.io/kubetee-ai/albedo-judge-api`). |
-| `deploy/pod-template.yaml` | The `batch/v1 Job` + PVCs applied to `albedo-poc`. Two init containers + one `eval` container (no judge sidecar). |
-| `deploy/judge-api-deployment.yaml` | Shared judge Deployment (`replicas: 1`). |
-| `deploy/judge-api-service.yaml` | ClusterIP `albedo-judge-api:8091`. |
-| `deploy/judge-api-networkpolicy.yaml` | Ingress TCP/8091 only from namespace `albedo-poc`. |
-| `deploy/configmap-judge-env.yaml` | Judge-only non-secret env (`ALBEDO_JUDGE_*`). |
+| `deploy/eval.yaml` | Eval ConfigMap + `batch/v1 Job` + PVCs applied to `albedo-poc`. Two init containers + one `eval` container (no judge sidecar). |
+| `deploy/judge-api.yaml` | Shared judge stack: ConfigMap (`ALBEDO_JUDGE_*`) + Deployment (`replicas: 1`) + Service `:8091` + NetworkPolicy (ingress from `albedo-poc` only). |
 | `deploy/armada-job-template.yaml` | Reference shape for a future Armada `JobSubmitRequest` — **not used in the PoC**. |
-| `deploy/configmap-poc-env.yaml` | Eval Job non-secret env (sample count, GPU split, S3 layout, `SELFDRIVE_JUDGE_BASE_URL`). |
 | `deploy/secret-template.yaml` | Template for the out-of-band Secret (LiteLLM key, `ALBEDO_JUDGE_API_AUTH_TOKEN`, HF, S3). |
 | `.env` | Local non-committed copy of the Secret values (gitignored). |
 | `.env.example` | Upstream albedo env reference — not used by the PoC pod (the pod reads from the ConfigMap + Secret). |
 
-## Per-job inputs (set in `pod-template.yaml` per run)
+## Per-job inputs (set in `eval.yaml` per run)
 
 | Env var | Meaning |
 |---------|---------|
@@ -174,7 +170,7 @@ NetworkPolicy allows ingress TCP/8091 only from `albedo-poc`. Auth:
 
 The shared judge Deployment calls the in-cluster LiteLLM gateway at
 `http://litellm.litellm.svc.cluster.local:4000` (set via
-`ALBEDO_JUDGE_OPENROUTER_BASE_URL` in `configmap-judge-env.yaml`). The gateway serves
+`ALBEDO_JUDGE_OPENROUTER_BASE_URL` in `judge-api.yaml`). The gateway serves
 the same OpenAI-compatible `/v1/chat/completions` endpoint that albedo's
 `OpenRouterJudgeClient` expects — pure env override, no albedo code change
 for routing.
@@ -239,15 +235,11 @@ would mix concurrent Jobs).
      -t ghcr.io/kubetee-ai/albedo-judge-api:latest --push .
    ```
 
-1. **Apply judge ConfigMap + Deployment + Service + NetworkPolicy**, then
-   the eval ConfigMap:
+1. **Apply judge + eval manifests**:
    ```bash
    kubectl --context na-us-oakland-56-direct apply -f \
-     albedo/kubetee/deploy/configmap-judge-env.yaml \
-     albedo/kubetee/deploy/judge-api-deployment.yaml \
-     albedo/kubetee/deploy/judge-api-service.yaml \
-     albedo/kubetee/deploy/judge-api-networkpolicy.yaml \
-     albedo/kubetee/deploy/configmap-poc-env.yaml
+     albedo/kubetee/deploy/judge-api.yaml \
+     albedo/kubetee/deploy/eval.yaml
    ```
    Confirm the judge pod stays `Ready` after the NetworkPolicy apply
    (kubelet probes are host-sourced; if Ready flips False, add a narrow
@@ -277,8 +269,8 @@ would mix concurrent Jobs).
    ```bash
    kubectl --context na-us-oakland-56-direct -n albedo-poc delete job \
      albedo-poc-eval --ignore-not-found=true
-   kubectl --context na-us-oakland-56-direct -n albedo-poc apply -f \
-     albedo/kubetee/deploy/pod-template.yaml
+   kubectl --context na-us-oakland-56-direct apply -f \
+     albedo/kubetee/deploy/eval.yaml
    ```
 
 5. **Watch the pod**:
@@ -288,7 +280,7 @@ would mix concurrent Jobs).
    kubectl --context na-us-oakland-56-direct -n albedo-poc logs -f \
      <pod-name> -c eval
    kubectl --context na-us-oakland-56-direct -n albedo-poc logs -f \
-     <pod-name> -c judge-api
+     deploy/albedo-judge-api
    ```
    Expected log sequence:
    - `inject-code`: "code injection complete"
