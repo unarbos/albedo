@@ -1,13 +1,19 @@
 # KubeTEE PoC — challenger eval ConfigMap + Job + PVCs (non-CC).
 #
-# Applied OUT-OF-BAND on na-us-oakland-56 (NOT Fleet-managed):
+# Applied OUT-OF-BAND on na-us-oakland-56 (NOT Fleet-managed).
+#
+# Apply ORDER (required — king must own its 4 GPUs first):
+#   1. kubectl apply -f kubetee/deploy/king.yaml
+#   2. kubectl -n albedo-poc rollout status deploy/albedo-king --timeout=45m
+#   3. curl/check GET http://albedo-king...:8000/ready → status ready
+#   4. THEN delete+apply this eval Job
 #
 #   kubectl --context na-us-oakland-56-direct -n albedo-poc delete job albedo-poc-eval --ignore-not-found
 #   kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/eval.yaml
 #
 # Challenger-only Job (4 GPU / TP=4). Previous-king generation goes to the
-# always-on albedo-king Service (see king.yaml). Schedule on any non-CC H200
-# with free GPUs — do not hard-pin to am-h200-25 (king is pinned there).
+# always-on albedo-king Service (see king.yaml). The wait-for-king initContainer
+# blocks until /ready succeeds so we never start local vLLM against a cold king.
 #
 # For concurrent challengers: join a second H200 (JOIN-SECOND-H200.md) and
 # submit a second Job with a distinct EVAL_RUN_ID.
@@ -51,7 +57,8 @@ data:
   ALBEDO_EVAL_DATASET_MANIFEST_HASH: "e3cff61772b0096811d4c5d8bbc8dee8dacbd9a069bc4557608adf1c1c2ddf40"
 
   ALBEDO_EVAL_SAMPLE_COUNT: "100"
-  ALBEDO_EVAL_SCORING_BATCH_SIZE: "16"
+  # Keep ≤ judge MAX_SCORE_SAMPLE_CONCURRENCY (8) so one wave finishes a batch.
+  ALBEDO_EVAL_SCORING_BATCH_SIZE: "8"
   ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE: "8"
   ALBEDO_EVAL_SAMPLING_ALGO: "multi-source-manifest-sample-v1"
   ALBEDO_EVAL_SAMPLE_SEED: "kubetee-poc"
@@ -63,7 +70,8 @@ data:
   ALBEDO_REMOTE_S3_ENDPOINT_URL: "https://s3.hippius.com"
 
   SELFDRIVE_SCORING_AUTH_TOKEN: "poc"
-  SELFDRIVE_SCORING_TIMEOUT_SECONDS: "1800"
+  # Per /score-batch HTTP read timeout. Qwen-397B batches were ~28–30m at size 16.
+  SELFDRIVE_SCORING_TIMEOUT_SECONDS: "5400"
   SELFDRIVE_JUDGE_BASE_URL: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
 ---
 apiVersion: v1
@@ -199,6 +207,39 @@ spec:
             - name: shared
               mountPath: /app/shared
 
+        # Block until always-on king is serving. Run last so inject/dataset
+        # prep can overlap king weight load when both schedule together.
+        - name: wait-for-king
+          image: curlimages/curl:8.11.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              URL="${ALBEDO_REMOTE_KING_BASE_URL:-http://albedo-king.albedo-poc.svc.cluster.local:8000}/ready"
+              echo "waiting for king ready at ${URL}"
+              for i in $(seq 1 900); do
+                code=$(curl -sS -o /tmp/king-ready.json -w '%{http_code}' --connect-timeout 2 --max-time 5 "$URL" || true)
+                if [ "$code" = "200" ]; then
+                  status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/king-ready.json | head -1)
+                  if [ "$status" = "ready" ] || [ -z "$status" ]; then
+                    echo "king ready (HTTP 200): $(cat /tmp/king-ready.json)"
+                    exit 0
+                  fi
+                fi
+                echo "king not ready yet (http=${code:-err}) attempt=${i}/900"
+                sleep 2
+              done
+              echo "timed out waiting for king /ready" >&2
+              exit 1
+          env:
+            - name: ALBEDO_REMOTE_KING_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: albedo-poc-config
+                  key: ALBEDO_REMOTE_KING_BASE_URL
+
       containers:
         - name: eval
           image: vllm/vllm-openai:v0.23.0
@@ -237,10 +278,13 @@ spec:
               value: "hf://doublerabbits/albedo-qwen3.6-35b-319192@28c27de4cc93d0c70934ba7c53b9b8076c688def"
             - name: CHALLENGER_MODEL_HASH
               value: "28c27de4cc93d0c70934ba7c53b9b8076c688def"
+            # New split-king run (compare vs old co-located 8-GPU baseline):
+            # baseline EVAL_RUN_ID=b2f66cfa-6583-43d2-8570-d8a005fae7a6
+            # baseline SUBMISSION_ID=b6ef1319-cde5-4d35-8fc4-0b175ffb3753
             - name: EVAL_RUN_ID
-              value: "b2f66cfa-6583-43d2-8570-d8a005fae7a6"
+              value: "5de41185-4d72-482c-9491-28664329ad6b"
             - name: SUBMISSION_ID
-              value: "b6ef1319-cde5-4d35-8fc4-0b175ffb3753"
+              value: "8d8793b3-317b-4950-aa77-fe26cfdec470"
             - name: SELFDRIVE_JUDGE_BASE_URL
               value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
           envFrom:

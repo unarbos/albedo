@@ -49,9 +49,17 @@ See [PLAN.md](PLAN.md) for architecture. Smoke / second-node / 8-GPU parity:
    kubectl --context na-us-oakland-56-direct apply -f \
      ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    ```
-3. Wait for king Ready, then submit a challenger Job (delete first — Jobs are immutable):
+3. **Wait until king is Ready** (weights loaded, `/ready` = 200) — do **not**
+   apply the challenger Job while the king pod is Pending/loading, or it can
+   race for the remaining GPUs on `am-h200-25`:
    ```bash
    kubectl --context na-us-oakland-56-direct -n albedo-poc rollout status deploy/albedo-king --timeout=45m
+   kubectl --context na-us-oakland-56-direct -n albedo-poc exec deploy/albedo-king -c king-api -- \
+     wget -qO- http://127.0.0.1:8000/ready
+   ```
+4. Then submit the challenger Job (delete first — Jobs are immutable). The Job
+   also has a `wait-for-king` initContainer as a safety gate:
+   ```bash
    kubectl --context na-us-oakland-56-direct -n albedo-poc delete job albedo-poc-eval --ignore-not-found
    kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/eval.yaml
    ```

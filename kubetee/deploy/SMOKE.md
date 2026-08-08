@@ -2,16 +2,21 @@
 
 Run after `kubetee-poc` has the remote-king code and `king.yaml` is Ready.
 
-## 0. Preflight
+## 0. Preflight — king must be Ready before challenger
+
+Do **not** apply `eval.yaml` until the king Deployment is Available and
+`GET /ready` returns 200. The current 8-GPU co-located Job holds all GPUs on
+`am-h200-25`; `albedo-king` stays Pending until that Job finishes and frees
+at least 4 GPUs.
 
 ```bash
 kubectl --context na-us-oakland-56-direct label node am-h200-25 \
   kubetee.ai/albedo-king=true --overwrite
 kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/king.yaml
 kubectl --context na-us-oakland-56-direct -n albedo-poc rollout status deploy/albedo-king --timeout=45m
-kubectl --context na-us-oakland-56-direct -n albedo-poc get svc albedo-king
-# From a throwaway pod:
-#   curl -sf http://albedo-king.albedo-poc.svc.cluster.local:8000/ready
+# Confirm Ready (not Pending / not king_changing):
+kubectl --context na-us-oakland-56-direct -n albedo-poc exec deploy/albedo-king -c king-api -- \
+  wget -qO- http://127.0.0.1:8000/ready
 ```
 
 Unit tests (local, no GPUs):

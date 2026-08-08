@@ -221,11 +221,19 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+          # king-api waits for local vLLM (weight load can take 10–30+ min) before
+          # binding :8000. Without a long startupProbe, liveness SIGKILLs it (exit 137).
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 360
           readinessProbe:
             httpGet:
               path: /ready
               port: http
-            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
@@ -233,7 +241,6 @@ spec:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 6
