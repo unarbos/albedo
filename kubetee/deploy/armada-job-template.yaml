@@ -9,6 +9,9 @@
 # stagingrancher (see kubetee/PLAN.md §"Submission path"). A follow-up
 # productionizes this with a Traefik IngressRoute at armada-api.kubetee.ai.
 #
+# Judge scoring uses the shared albedo-judge-api Service in albedo-poc
+# (not an in-pod sidecar). Keep replicas=1 on that Deployment.
+#
 # Per Armada's jobspec: requests MUST equal limits for every resource
 # (Guaranteed QoS), and the podSpec is a standard Kubernetes podSpec.
 
@@ -53,7 +56,7 @@ jobs:
             - name: SUBMISSION_ID
               value: "REPLACE_PER_JOB"
             - name: SELFDRIVE_JUDGE_BASE_URL
-              value: "http://127.0.0.1:8091"
+              value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
 
           envFrom:
             - configMapRef:
@@ -68,35 +71,6 @@ jobs:
               mountPath: /app/dataset
             - name: model-cache
               mountPath: /cache/models
-
-        - name: judge-api
-          image: ghcr.io/kubetee-ai/albedo-poc:latest
-          imagePullPolicy: IfNotPresent
-          command: ["albedo-judge-api"]
-          resources:
-            limits:
-              cpu: "4"
-              memory: "8Gi"
-            requests:
-              cpu: "4"
-              memory: "8Gi"
-          envFrom:
-            - configMapRef:
-                name: albedo-poc-config
-            - secretRef:
-                name: albedo-poc-secrets
-          env:
-            - name: SELFDRIVE_JUDGE_BASE_URL
-              value: "http://127.0.0.1:8091"
-          ports:
-            - name: judge-http
-              containerPort: 8091
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8091
-            initialDelaySeconds: 10
-            periodSeconds: 10
 
       volumes:
         - name: artifacts

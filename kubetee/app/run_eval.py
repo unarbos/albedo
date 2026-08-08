@@ -5,23 +5,22 @@ One Armada job submission = one 8-GPU Kubernetes pod = one evaluation of a
 single challenger model against the current king. The pod runs the eval,
 uploads artifacts to S3, prints the verdict JSON to stdout, and exits.
 
-The pod runs:
-  - this entrypoint (main container): drives the whole evaluation lifecycle
-  - judge-api sidecar container in the SAME pod on 127.0.0.1:8091 which calls
-    https://llm.kubetee.ai (OpenAI-compatible /v1/chat/completions) with
-    ALBEDO_JUDGE_OPENROUTER_API_KEY (a LiteLLM virtual key)
+The pod runs this entrypoint (main container): drives the whole evaluation
+lifecycle and talks HTTP to the shared `albedo-judge-api` Service in
+`albedo-poc` (`SELFDRIVE_JUDGE_BASE_URL`), which calls LiteLLM
+(`litellm.litellm.svc:4000`) with `ALBEDO_JUDGE_OPENROUTER_API_KEY`.
 
 This file implements *zero* forked business logic. It only:
   1. builds a single EvalRequest from per-job env vars
-  2. wires RemoteSettings toward the in-pod judge-api via an HTTP scorer
-  3. waits for the judge-api sidecar to be ready
+  2. wires RemoteSettings toward the shared judge-api via an HTTP scorer
+  3. waits for the judge-api Service to be ready
   4. calls upstream `albedo_eval_service.remote_worker.RemoteEvalWorker.execute()`
   5. writes the final verdict JSON to stdout (and exits 0 on success)
   6. AFTER the upstream verdict is built + uploaded, writes a companion
-     `eval-summary.json` (total LiteLLM spend + eval wall-clock seconds,
-     excluding dataset prep which ran in the init container) and uploads
-     it to S3 next to the verdict. Does NOT modify `verdict.json` — that
-     file is upstream-owned.
+     `eval-summary.json` (total LiteLLM spend for this eval_run_id + eval
+     wall-clock seconds, excluding dataset prep which ran in the init
+     container) and uploads it to S3 next to the verdict. Does NOT modify
+     `verdict.json` — that file is upstream-owned.
 
 Everything heavy — model resolution (HF/Hippius/S3/local), two tensor-parallel
 vLLM processes (king on GPUs 0-3, challenger on GPUs 4-7), multi-turn trajectory
@@ -57,13 +56,14 @@ from albedo_eval_service.remote_scoring import MockScoringClient
 from albedo_eval_service.remote_state import RemoteRun
 from albedo_eval_service.remote_worker import RemoteEvalWorker
 
-# Set SELFDRIVE_MOCK_SCORING=1 to skip both the in-pod judge-api and
-# llm.kubetee.ai entirely (infra smoke testing only, not a real eval).
+# Set SELFDRIVE_MOCK_SCORING=1 to skip both the shared judge-api and
+# LiteLLM entirely (infra smoke testing only, not a real eval).
 _MOCK_SCORING = os.environ.get("SELFDRIVE_MOCK_SCORING", "").lower() in ("1", "true", "yes")
 
-# Default judge-api base URL — same pod, port 8091 (matches the Pod spec where
-# the sidecar is wired to listen on 0.0.0.0 in the pod network namespace).
-_DEFAULT_JUDGE_BASE_URL = "http://127.0.0.1:8091"
+# Default judge-api base URL — shared Service in albedo-poc (not an in-pod sidecar).
+_DEFAULT_JUDGE_BASE_URL = (
+    "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ def _configure_remote_settings(
     settings.remote_state_dir = _env("ALBEDO_REMOTE_REMOTE_STATE_DIR", "/app/artifacts/state")
     settings.model_cache_dir = _env("ALBEDO_REMOTE_MODEL_CACHE_DIR", "/cache/models")
 
-    # HTTP scorer against the in-pod judge-api sidecar.
+    # HTTP scorer against the shared albedo-judge-api Service.
     settings.scoring_backend = "http"
     settings.scoring_base_url = judge_base_url
     settings.scoring_auth_token = _env("SELFDRIVE_SCORING_AUTH_TOKEN", "poc")
@@ -226,18 +226,28 @@ def _configure_remote_settings(
 
 
 # ---------------------------------------------------------------------------
-# Sidecar readiness + main loop
+# Shared judge readiness + cost fetch
 # ---------------------------------------------------------------------------
 
 
-def _wait_sidecar_ready(url: str, timeout_s: int = 600) -> bool:
-    """The judge-api sidecar is started in the SAME pod as this process (see
-    the Pod spec in kubetee/deploy/pod-template.yaml). Poll /ready until it
-    serves before vLLM is started (tenshy the timing gap)."""
+def _auth_headers() -> dict[str, str]:
+    """Bearer header for judge-api when SELFDRIVE_SCORING_AUTH_TOKEN is set.
+    Must match ALBEDO_JUDGE_API_AUTH_TOKEN on the judge Deployment."""
+    token = _env("SELFDRIVE_SCORING_AUTH_TOKEN")
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _wait_judge_ready(url: str, timeout_s: int = 600) -> bool:
+    """Poll the shared judge-api Service /ready until it serves.
+    /ready is unauthenticated for kubelet probes; still send Bearer when set."""
     deadline = time.time() + timeout_s
+    ready_url = url.rstrip("/") + "/ready"
+    headers = _auth_headers()
     while time.time() < deadline:
         try:
-            r = httpx.get(url.rstrip("//") + "/ready", timeout=5.0)
+            r = httpx.get(ready_url, headers=headers, timeout=5.0)
             if r.status_code == 200:
                 return True
         except Exception:  # noqa: BLE001
@@ -246,28 +256,21 @@ def _wait_sidecar_ready(url: str, timeout_s: int = 600) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Post-eval: fetch accumulated cost from the judge-api sidecar
-# ---------------------------------------------------------------------------
+def _fetch_eval_cost(judge_base_url: str, eval_run_id: str) -> dict[str, Any]:
+    """Fetch accumulated judge cost for this eval_run_id from the shared
+    judge-api (`GET /eval-cost/{eval_run_id}`). Concurrent Jobs stay isolated.
 
-
-def _fetch_eval_cost(judge_base_url: str) -> dict[str, Any]:
-    """Fetch the accumulated judge cost from the in-pod judge-api sidecar's
-    `/eval-cost` endpoint. The sidecar accumulates the `x-litellm-response-cost`
-    header value of every judge request it makes (in `judge_openrouter.py`'s
-    module-level counter, exposed via this endpoint).
-
-    Returns the JSON dict from the sidecar on success, or `{"error": ...}` on
-    any failure. Never raises — the cost is a diagnostic add-on, not a gate.
+    Returns the JSON dict on success, or `{"error": ...}` on any failure.
+    Never raises — the cost is a diagnostic add-on, not a gate.
     """
-    url = judge_base_url.rstrip("/") + "/eval-cost"
+    url = f"{judge_base_url.rstrip('/')}/eval-cost/{eval_run_id}"
     try:
-        r = httpx.get(url, timeout=10.0)
+        r = httpx.get(url, headers=_auth_headers(), timeout=10.0)
         if r.status_code != 200:
-            return {"error": f"sidecar /eval-cost returned HTTP {r.status_code}"}
+            return {"error": f"judge /eval-cost returned HTTP {r.status_code}"}
         return r.json()
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"sidecar /eval-cost fetch failed: {exc}"}
+        return {"error": f"judge /eval-cost fetch failed: {exc}"}
 
 
 def _make_artifacts_public(*, settings: RemoteSettings, artifacts: dict[str, str]) -> None:
@@ -361,10 +364,10 @@ def main() -> int:
             scorer=MockScoringClient(settings),
         )
     else:
-        if not _wait_sidecar_ready(judge_base_url, timeout_s=600):
+        if not _wait_judge_ready(judge_base_url, timeout_s=600):
             logger.error(
-                "in-pod judge-api at {} did not become ready in time. "
-                "Check ALBEDO_JUDGE_OPENROUTER_API_KEY + llm.kubetee.ai connectivity.",
+                "shared judge-api at {} did not become ready in time. "
+                "Check albedo-judge-api Deployment + LiteLLM connectivity.",
                 judge_base_url,
             )
             print(
@@ -377,13 +380,13 @@ def main() -> int:
                 )
             )
             return 1
-        # With the sidecar ready, RemoteEvalWorker.__init__(settings) builds
+        # With the shared judge ready, RemoteEvalWorker.__init__(settings) builds
         # the built-in HttpScoringClient pointed at <judge_base_url> via
         # settings.scoring_base_url set above.
         worker = RemoteEvalWorker(settings, artifact_uploader=artifact_uploader)
 
     # Eval wall-clock starts HERE — after dataset prep (init container) and
-    # sidecar readiness, just before the upstream worker begins the real
+    # judge readiness, just before the upstream worker begins the real
     # generation + scoring lifecycle.
     eval_start_wall = time.monotonic()
     eval_start_clock = datetime.now(timezone.utc)
@@ -460,15 +463,14 @@ def _write_and_upload_eval_summary(
     verdict_state: str,
     judge_base_url: str,
 ) -> None:
-    """Fetch the accumulated judge cost from the in-pod judge-api sidecar
-    (`/eval-cost` endpoint, backed by `judge_openrouter.py`'s module-level
-    cost counter) and upload `eval-summary.json` (cost + timing) next to the
-    verdict. Best-effort — never raises."""
-    cost = _fetch_eval_cost(judge_base_url)
+    """Fetch accumulated judge cost for this eval_run_id from the shared
+    judge-api (`GET /eval-cost/{eval_run_id}`) and upload `eval-summary.json`
+    (cost + timing) next to the verdict. Best-effort — never raises."""
+    cost = _fetch_eval_cost(judge_base_url, str(request.eval_run_id))
 
     # GPU infrastructure cost for the eval window. The node has 8 GPUs at
     # $2.50/hr/Gpu = $20/hr/node (HGX H200 market rate). Priced by the eval
-    # wall-clock (worker.execute only — excludes dataset prep + sidecar
+    # wall-clock (worker.execute only — excludes dataset prep + judge
     # readiness, which is the window the GPUs are actually doing eval work).
     # Override via env if the rate changes; defaults are the PoC rates.
     gpu_count = int(_env("ALBEDO_REMOTE_GPU_COUNT", "8"))
@@ -486,9 +488,9 @@ def _write_and_upload_eval_summary(
         "eval_end_utc": eval_end_clock.isoformat(),
         "eval_elapsed_seconds": eval_elapsed_s,
         # Excludes dataset prep (ran in the init container before this
-        # process started) and sidecar readiness wait (preceded the timer).
+        # process started) and judge readiness wait (preceded the timer).
         "timing_scope": "worker.execute only (generation + scoring + upload); "
-        "excludes dataset prep + sidecar readiness",
+        "excludes dataset prep + judge readiness",
         "judge_cost": cost,
         "gpu_cost": {
             "gpu_count": gpu_count,

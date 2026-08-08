@@ -3,9 +3,13 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import random
-from dataclasses import dataclass
+import threading
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import httpx
 from loguru import logger
@@ -14,24 +18,103 @@ from .judge_config import JudgeSettings
 from .judge_core import JUDGE_MODELS, JUDGE_PROVIDER_PINS
 
 
-# Module-level per-eval cost accumulator. `_score_once` adds the
-# `x-litellm-response-cost` header value (or `usage.cost` for real OpenRouter)
-# to this counter on every judge request. Exposed via the judge-api sidecar's
-# `/eval-cost` endpoint so `run_eval.py` can read the running total at the end
-# of the eval without querying LiteLLM. Reset only on process restart (i.e. on
-# a new eval pod), so it is naturally scoped to a single eval run.
-EVAL_COST_TOTAL: float = 0.0
-EVAL_COST_REQUEST_COUNT: int = 0
-EVAL_COST_PER_MODEL: dict[str, float] = {}
+# Per-eval cost isolation for the shared judge-api microservice.
+# Request handlers set `_current_eval_run_id` so nested client.score/complete
+# calls attribute LiteLLM spend to the correct eval without plumbing the id
+# through every call site. Buckets are keyed by eval_run_id and TTL-pruned.
+_current_eval_run_id: ContextVar[str] = ContextVar("albedo_eval_run_id", default="")
+_COST_TTL_SECONDS = 24 * 60 * 60
 
 
-def get_eval_cost_snapshot() -> dict[str, object]:
-    """Return the current accumulated cost. Called by the /eval-cost endpoint."""
-    return {
-        "total_cost": round(EVAL_COST_TOTAL, 8),
-        "request_count": EVAL_COST_REQUEST_COUNT,
-        "per_model": {k: round(v, 8) for k, v in sorted(EVAL_COST_PER_MODEL.items())},
-    }
+@dataclass
+class _CostBucket:
+    total_cost: float = 0.0
+    request_count: int = 0
+    per_model: dict[str, float] = field(default_factory=dict)
+    updated_at: float = field(default_factory=time.monotonic)
+
+
+class _CostStore:
+    def __init__(self, ttl_seconds: float = _COST_TTL_SECONDS) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._buckets: dict[str, _CostBucket] = {}
+        self._lock = threading.Lock()
+
+    def record(self, eval_run_id: str, model: str, cost: float) -> None:
+        if not eval_run_id:
+            logger.warning(
+                "[judge-openrouter] cost not attributed (empty eval_run_id) "
+                f"model={model} cost={cost:.8f}"
+            )
+            return
+        with self._lock:
+            self._sweep_locked()
+            bucket = self._buckets.setdefault(eval_run_id, _CostBucket())
+            bucket.total_cost += cost
+            bucket.request_count += 1
+            bucket.per_model[model] = round(bucket.per_model.get(model, 0.0) + cost, 8)
+            bucket.updated_at = time.monotonic()
+
+    def snapshot(self, eval_run_id: str) -> dict[str, object]:
+        with self._lock:
+            self._sweep_locked()
+            bucket = self._buckets.get(eval_run_id)
+            if bucket is None:
+                return {
+                    "eval_run_id": eval_run_id,
+                    "total_cost": 0.0,
+                    "request_count": 0,
+                    "per_model": {},
+                }
+            return {
+                "eval_run_id": eval_run_id,
+                "total_cost": round(bucket.total_cost, 8),
+                "request_count": bucket.request_count,
+                "per_model": {
+                    k: round(v, 8) for k, v in sorted(bucket.per_model.items())
+                },
+            }
+
+    def reset(self, eval_run_id: str) -> None:
+        with self._lock:
+            self._buckets.pop(eval_run_id, None)
+
+    def _sweep_locked(self) -> None:
+        now = time.monotonic()
+        expired = [
+            eid
+            for eid, bucket in self._buckets.items()
+            if now - bucket.updated_at > self._ttl_seconds
+        ]
+        for eid in expired:
+            self._buckets.pop(eid, None)
+
+
+_COST_STORE = _CostStore()
+
+
+def get_eval_cost_snapshot(eval_run_id: str) -> dict[str, object]:
+    """Return accumulated judge cost for one eval_run_id."""
+    return _COST_STORE.snapshot(eval_run_id)
+
+
+def reset_eval_cost(eval_run_id: str) -> None:
+    """Drop a cost bucket after the eval Job has fetched its snapshot."""
+    _COST_STORE.reset(eval_run_id)
+
+
+@contextmanager
+def eval_run_id_scope(eval_run_id: str) -> Iterator[None]:
+    """Bind cost attribution to eval_run_id for the current async/task context."""
+    token = _current_eval_run_id.set(eval_run_id or "")
+    try:
+        yield
+    finally:
+        _current_eval_run_id.reset(token)
+
+
+def current_eval_run_id() -> str:
+    return _current_eval_run_id.get()
 
 
 @dataclass(frozen=True)
@@ -231,15 +314,13 @@ class OpenRouterJudgeClient:
             cost = float(cost_str) if cost_str is not None else 0.0
         except (TypeError, ValueError):
             cost = 0.0
-        # Accumulate into the module-level per-eval counter (exposed via the
-        # judge-api /eval-cost endpoint). `global` is required because we
-        # rebind the names; the per_model dict is mutated in place.
-        global EVAL_COST_TOTAL, EVAL_COST_REQUEST_COUNT  # noqa: PLW0603
-        EVAL_COST_TOTAL += cost
-        EVAL_COST_REQUEST_COUNT += 1
-        EVAL_COST_PER_MODEL[model] = round(EVAL_COST_PER_MODEL.get(model, 0.0) + cost, 8)
+        # Attribute spend to the current eval_run_id (set by judge-api handlers
+        # via eval_run_id_scope). Empty id is logged and skipped — never dumped
+        # into a shared "default" bucket on the multi-tenant judge service.
+        _COST_STORE.record(current_eval_run_id(), model, cost)
         logger.debug(
             f"[judge-openrouter] usage purpose={purpose} model={model} "
+            f"eval_run_id={current_eval_run_id() or '-'} "
             f"prompt_tokens={usage.get('prompt_tokens')} cached_tokens={cached} "
             f"completion_tokens={usage.get('completion_tokens')} "
             f"reasoning_tokens={reasoning} "

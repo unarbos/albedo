@@ -31,13 +31,14 @@ HF -> manifest.json"]
       VKing["vLLM king (GPUs 0-3)"]
       VChal["vLLM challenger (GPUs 4-7)"]
       Worker["run_eval.py (drives RemoteEvalWorker)"]
-      Judge["judge-api sidecar (0.0.0.0:8091)"]
-      Init --> Prep --> VKing & VChal & Worker & Judge
+      Init --> Prep --> VKing & VChal & Worker
       VKing <--> Worker
       VChal <--> Worker
-      Worker <-->|"HTTP /score-batch"| Judge
     end
 
+    Judge["albedo-judge-api Deployment
+replicas=1 :8091"]
+    Worker -->|"HTTP score-batch + /eval-cost/{id}"| Judge
     LiteLLM["LiteLLM (litellm.litellm.svc:4000)"]
     Judge -->|"OpenAI /v1/chat/completions"| LiteLLM
   end
@@ -99,13 +100,18 @@ used in the PoC flow.
 
 | File | Purpose |
 |------|---------|
-| `app/run_eval.py` | Per-job self-drive entrypoint. Builds an `EvalRequest` from env, wires `RemoteSettings` toward the in-pod judge-api sidecar, runs upstream `RemoteEvalWorker.execute()`, prints the verdict JSON to stdout. |
+| `app/run_eval.py` | Per-job self-drive entrypoint. Builds an `EvalRequest` from env, wires `RemoteSettings` toward the shared `albedo-judge-api` Service, runs upstream `RemoteEvalWorker.execute()`, prints the verdict JSON to stdout. |
 | `app/__init__.py` | Package marker so `PYTHONPATH=/app/shared/albedo/kubetee/app` works. |
-| `Dockerfile` | NOT used in the live flow — the pod runs `vllm/vllm-openai:v0.23.0` directly and `inject-code` clones the albedo fork into a shared emptyDir. Kept as a reference for a future custom image build (e.g. when we want to drop the git clone init step). |
-| `deploy/pod-template.yaml` | The `batch/v1 Job` + 3 PVCs (`dataset-root`, `artifacts`, `model-cache`) applied directly to `albedo-poc`. Two init containers (`inject-code`, `prepare-dataset`) + two main containers (`eval`, `judge-api` sidecar). |
+| `Dockerfile` | NOT used in the live eval Job — the pod runs `vllm/vllm-openai:v0.23.0` and `inject-code` clones the albedo fork. Kept as a reference for a future custom eval image. |
+| `Dockerfile.judge-api` | Slim Python image for the shared judge Deployment (`ghcr.io/kubetee-ai/albedo-judge-api`). |
+| `deploy/pod-template.yaml` | The `batch/v1 Job` + PVCs applied to `albedo-poc`. Two init containers + one `eval` container (no judge sidecar). |
+| `deploy/judge-api-deployment.yaml` | Shared judge Deployment (`replicas: 1`). |
+| `deploy/judge-api-service.yaml` | ClusterIP `albedo-judge-api:8091`. |
+| `deploy/judge-api-networkpolicy.yaml` | Ingress TCP/8091 only from namespace `albedo-poc`. |
+| `deploy/configmap-judge-env.yaml` | Judge-only non-secret env (`ALBEDO_JUDGE_*`). |
 | `deploy/armada-job-template.yaml` | Reference shape for a future Armada `JobSubmitRequest` — **not used in the PoC**. |
-| `deploy/configmap-poc-env.yaml` | Non-secret env (judge URL, judge models, sample count, GPU split, S3 layout, LiteLLM gateway URL). Applied out-of-band on `na-us-oakland-56-direct`. |
-| `deploy/secret-template.yaml` | Template for the out-of-band Secret (LiteLLM virtual key, HF token, Hippius S3 creds). |
+| `deploy/configmap-poc-env.yaml` | Eval Job non-secret env (sample count, GPU split, S3 layout, `SELFDRIVE_JUDGE_BASE_URL`). |
+| `deploy/secret-template.yaml` | Template for the out-of-band Secret (LiteLLM key, `ALBEDO_JUDGE_API_AUTH_TOKEN`, HF, S3). |
 | `.env` | Local non-committed copy of the Secret values (gitignored). |
 | `.env.example` | Upstream albedo env reference — not used by the PoC pod (the pod reads from the ConfigMap + Secret). |
 
@@ -125,22 +131,25 @@ Everything else has a KubeTEE-side default in the ConfigMap.
 ## Pod architecture
 
 The Job runs **one pod** on `am-h200-25` (non-CC, `runtimeClassName: nvidia`,
-8x H200). It uses **no custom Docker image** — the base is
-`vllm/vllm-openai:v0.23.0` for all containers, and an init container clones
-the `kubetee-poc` branch of `KubeTEE-AI-Blueprints/albedo` into a shared
-emptyDir so the eval + judge-api containers get the albedo code + deps on
-top of the v0.23.0 vLLM base.
+8x H200). It uses **no custom Docker image for eval** — the base is
+`vllm/vllm-openai:v0.23.0`, and an init container clones the `kubetee-poc`
+branch of `KubeTEE-AI-Blueprints/albedo` into a shared emptyDir.
+
+Scoring goes to the **shared** `albedo-judge-api` Deployment+Service in
+`albedo-poc` (`SELFDRIVE_JUDGE_BASE_URL=http://albedo-judge-api.albedo-poc.svc.cluster.local:8091`).
+Keep **`replicas: 1`** — `QuestionPrepStore` is in-memory. Cost is keyed by
+`eval_run_id` (`GET /eval-cost/{eval_run_id}`) so concurrent Jobs stay isolated.
+NetworkPolicy allows ingress TCP/8091 only from `albedo-poc`. Auth:
+`ALBEDO_JUDGE_API_AUTH_TOKEN` (judge) must match `SELFDRIVE_SCORING_AUTH_TOKEN`
+(eval); `/health` and `/ready` stay unauthenticated for kubelet probes.
 
 ### Init containers
 
 1. **`inject-code`** — `git clone --depth 1 --branch kubetee-poc
    https://github.com/KubeTEE-AI-Blueprints/albedo.git` into `/app/shared/albedo`.
-   This is how the albedo fork (with the cost-header patch and any other
-   PoC-specific changes) reaches the pod without a custom Docker build.
 2. **`prepare-dataset`** — runs
    `python3 /app/shared/albedo/scripts/prepare_datasets.py --dataset-root /app/dataset`
-   on first run (skipped if `manifest.json` already exists on the PVC —
-   the `dataset-root` PVC is retained across runs).
+   on first run (skipped if `manifest.json` already exists on the PVC).
 
 ### Main containers
 
@@ -148,14 +157,8 @@ top of the v0.23.0 vLLM base.
    `python3 /app/shared/albedo/kubetee/app/run_eval.py`. Drives
    `RemoteEvalWorker`: downloads king + challenger weights to the
    `model-cache` PVC, spins up two vLLM instances (TP=4 each, king on
-   GPUs 0-3, challenger on GPUs 4-7), runs the dataset, calls
-   `judge-api` on `127.0.0.1:8091` for scoring, uploads artifacts to S3,
-   touches `/shared/eval-done` and exits with the eval exit code.
-2. **`judge-api`** — `pip install -e .` + deps, then `albedo-judge-api &`.
-   Sidecar that serves `/score-batch` to the eval container. Watches
-   `/shared/eval-done` and shuts down when the eval finishes — this is the
-   mechanism that lets the Job complete (otherwise the sidecar keeps the
-   pod `Running` forever).
+   GPUs 0-3, challenger on GPUs 4-7), runs the dataset, calls the shared
+   judge Service for scoring, uploads artifacts to S3, and exits.
 
 ### Volumes
 
@@ -164,14 +167,14 @@ top of the v0.23.0 vLLM base.
 | `model-cache` | PVC (`longhorn-v2` RWX) | 256Gi | King + challenger safetensors (retained across runs) |
 | `dataset-root` | PVC (`longhorn-v2` RWX) | 512Gi | Public HF datasets + `manifest.json` (retained across runs) |
 | `artifacts` | PVC (`longhorn-v2` RWX) | 64Gi | Per-run spool files, uploaded to S3 |
-| `shared` | emptyDir | — | Code injection mount + `/shared/eval-done` marker |
+| `shared` | emptyDir | — | Code injection mount |
 | `dshm` | emptyDir (Memory) | 64Gi | vLLM/NCCL shared memory |
 
 ## Judge → LiteLLM routing
 
-The judge-api sidecar calls the in-cluster LiteLLM gateway at
+The shared judge Deployment calls the in-cluster LiteLLM gateway at
 `http://litellm.litellm.svc.cluster.local:4000` (set via
-`ALBEDO_JUDGE_OPENROUTER_BASE_URL` in the ConfigMap). The gateway serves
+`ALBEDO_JUDGE_OPENROUTER_BASE_URL` in `configmap-judge-env.yaml`). The gateway serves
 the same OpenAI-compatible `/v1/chat/completions` endpoint that albedo's
 `OpenRouterJudgeClient` expects — pure env override, no albedo code change
 for routing.
@@ -220,19 +223,38 @@ JSON `usage` body (which is where albedo's `judge_openrouter.py` reads it).
 The `kubetee-poc` branch carries a diagnostic-only patch to
 `judge_openrouter.py` that reads `x-litellm-response-cost` first, falling
 back to `usage.cost` (so the same code works against real OpenRouter too).
-Without this patch the `cost=0.00000000` in the judge-api logs is
-misleading — the gateway IS charging the virtual key, just not in the
-field albedo reads.
+
+Costs are accumulated **per `eval_run_id`** in the shared judge process
+(`CostStore`). Eval Jobs fetch `GET /eval-cost/{eval_run_id}` (Bearer auth)
+after the verdict and write `judge_cost` into `eval-summary.json`. Bare
+`GET /eval-cost` returns 400 — there is no process-wide aggregate (that
+would mix concurrent Jobs).
 
 ## Run the PoC
 
-1. **Apply the ConfigMap** (out-of-band, not Fleet-managed):
+0. **Build + push the shared judge image** (from albedo repo root):
    ```bash
-   kubectl --context na-us-oakland-56-direct apply -f \
-     albedo/kubetee/deploy/configmap-poc-env.yaml
+   docker buildx build --platform linux/amd64 \
+     -f kubetee/Dockerfile.judge-api \
+     -t ghcr.io/kubetee-ai/albedo-judge-api:latest --push .
    ```
 
-2. **Apply the Secret** (out-of-band, never committed):
+1. **Apply judge ConfigMap + Deployment + Service + NetworkPolicy**, then
+   the eval ConfigMap:
+   ```bash
+   kubectl --context na-us-oakland-56-direct apply -f \
+     albedo/kubetee/deploy/configmap-judge-env.yaml \
+     albedo/kubetee/deploy/judge-api-deployment.yaml \
+     albedo/kubetee/deploy/judge-api-service.yaml \
+     albedo/kubetee/deploy/judge-api-networkpolicy.yaml \
+     albedo/kubetee/deploy/configmap-poc-env.yaml
+   ```
+   Confirm the judge pod stays `Ready` after the NetworkPolicy apply
+   (kubelet probes are host-sourced; if Ready flips False, add a narrow
+   Calico host allow).
+
+2. **Apply the Secret** (out-of-band, never committed) — must include
+   `ALBEDO_JUDGE_API_AUTH_TOKEN` matching `SELFDRIVE_SCORING_AUTH_TOKEN`:
    ```bash
    # Fill in the template locally (outside the repo):
    cp albedo/kubetee/deploy/secret-template.yaml \

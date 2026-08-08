@@ -1,0 +1,70 @@
+# Shared albedo-judge-api Deployment (replicas=1 — in-memory QuestionPrepStore).
+#
+#   kubectl --context na-us-oakland-56-direct apply -f \
+#     kubetee/deploy/judge-api-deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: albedo-judge-api
+  namespace: albedo-poc
+  labels:
+    app.kubernetes.io/name: albedo-judge-api
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: albedo-judge-api
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: albedo-judge-api
+        app.kubernetes.io/part-of: kubetee-sn97-poc
+    spec:
+      # Package defaults to org-internal on first push; make public in GitHub UI
+      # (https://github.com/orgs/KubeTEE-AI/packages/container/package/albedo-judge-api)
+      # or keep this pull secret. Create with:
+      #   kubectl -n albedo-poc create secret docker-registry ghcr-kubetee \
+      #     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>
+      imagePullSecrets:
+        - name: ghcr-kubetee
+      containers:
+        - name: judge-api
+          image: ghcr.io/kubetee-ai/albedo-judge-api:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8091
+          envFrom:
+            - configMapRef:
+                name: albedo-judge-config
+            - secretRef:
+                name: albedo-poc-secrets
+          resources:
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+            requests:
+              cpu: "4"
+              memory: "8Gi"
+          # /health and /ready are unauthenticated so kubelet probes work
+          # behind NetworkPolicy (host→pod probe traffic is not ns-sourced).
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

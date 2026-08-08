@@ -62,7 +62,7 @@ from .judge_core import (
     RUBRIC_MAX_QUESTIONS,
     RUBRIC_TAG_REQUIRES,
 )
-from .judge_openrouter import OpenRouterJudgeClient
+from .judge_openrouter import OpenRouterJudgeClient, eval_run_id_scope, get_eval_cost_snapshot
 from .remote_generation import format_scored_trajectory
 from .notifications import EvalErrorNotification, notify_eval_error
 
@@ -755,14 +755,18 @@ class QuestionPrepStore:
     async def _prepare_sample(
         self, prep_id: str, request: QuestionPrepRequest, sample: QuestionPrepSample
     ) -> QuestionPrepResult:
-        try:
-            return await self.service.prepare(sample, eval_run_id=request.eval_run_id)
-        except Exception as exc:
-            logger.warning(
-                "question_prep_sample_failed eval_run_id={} prep_id={} sample_id={} error={}",
-                request.eval_run_id, prep_id, sample.sample_id, f"{type(exc).__name__}: {exc}",
-            )
-            raise
+        # Re-bind cost attribution inside the task — create_task copies the
+        # parent ContextVar, but explicit scope keeps prep costs attributed
+        # even if the HTTP handler returns before prep finishes.
+        with eval_run_id_scope(request.eval_run_id):
+            try:
+                return await self.service.prepare(sample, eval_run_id=request.eval_run_id)
+            except Exception as exc:
+                logger.warning(
+                    "question_prep_sample_failed eval_run_id={} prep_id={} sample_id={} error={}",
+                    request.eval_run_id, prep_id, sample.sample_id, f"{type(exc).__name__}: {exc}",
+                )
+                raise
 
     def _sweep_expired(self) -> None:
         ttl = self.settings.question_prep_ttl_seconds
@@ -829,7 +833,9 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/ready")
-    async def ready(_: None = Depends(require_auth)) -> dict[str, object]:
+    async def ready() -> dict[str, object]:
+        # Unauthenticated so kubelet readiness probes work when the judge is a
+        # shared Deployment (NetworkPolicy still scopes who can reach the port).
         return {
             "status": "ready",
             "judge_models": list(JUDGE_MODELS),
@@ -838,21 +844,25 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         }
 
     @app.get("/eval-cost")
-    async def eval_cost(_: None = Depends(require_auth)) -> dict[str, object]:
-        """Accumulated judge cost for the current eval run (PoC add-on).
-        Backed by the module-level counter in judge_openrouter.py — every
-        judge request adds its x-litellm-response-cost header value (or
-        usage.cost for real OpenRouter) to it. Scoped to this pod's
-        lifetime, which is exactly one eval run."""
-        from .judge_openrouter import get_eval_cost_snapshot
+    async def eval_cost_missing(_: None = Depends(require_auth)) -> dict[str, object]:
+        raise HTTPException(
+            status_code=400,
+            detail="eval_run_id required; use GET /eval-cost/{eval_run_id}",
+        )
 
-        return get_eval_cost_snapshot()
+    @app.get("/eval-cost/{eval_run_id}")
+    async def eval_cost(
+        eval_run_id: str, _: None = Depends(require_auth)
+    ) -> dict[str, object]:
+        """Accumulated judge cost for one eval_run_id (shared judge-api)."""
+        return get_eval_cost_snapshot(eval_run_id)
 
     @app.post("/category-prep", response_model=QuestionPrepResponse)
     async def category_prep(
         request: QuestionPrepRequest, _: None = Depends(require_auth)
     ) -> QuestionPrepResponse:
-        prep_id = prep_store().start(request)
+        with eval_run_id_scope(request.eval_run_id):
+            prep_id = prep_store().start(request)
         return QuestionPrepResponse(
             eval_run_id=request.eval_run_id,
             category_prep_id=prep_id,
@@ -864,7 +874,8 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         request: SimulateObservationRequest, _: None = Depends(require_auth)
     ) -> SimulateObservationResponse:
         service: ObservationSimulationService = app.state.observation_service
-        observation = await service.simulate(request)
+        with eval_run_id_scope(request.eval_run_id):
+            observation = await service.simulate(request)
         return SimulateObservationResponse(
             eval_run_id=request.eval_run_id,
             sample_id=request.sample_id,
@@ -880,9 +891,10 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"unsupported judge model(s): {', '.join(unknown)}")
         client: OpenRouterJudgeClient = app.state.eval_client
         try:
-            records = await _score_samples(
-                client=client, request=request, settings=settings, prep_store=prep_store()
-            )
+            with eval_run_id_scope(request.eval_run_id):
+                records = await _score_samples(
+                    client=client, request=request, settings=settings, prep_store=prep_store()
+                )
         except Exception as exc:
             _notify(
                 settings, request, severity="ERROR",

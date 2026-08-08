@@ -1,9 +1,8 @@
 # KubeTEE PoC — Job for one king-of-the-hill evaluation (non-CC on am-h200-25).
 #
 # Uses vllm/vllm-openai:v0.23.0 directly (no custom Docker image). An init
-# container copies the albedo code + deps from the old PoC image into a shared
-# volume. The eval + judge-api containers mount the code + deps on top of the
-# v0.23.0 base (which has the correct vLLM for Qwen3.6-35B-A3B).
+# container clones albedo code into a shared volume. The eval container mounts
+# the code on top of the v0.23.0 base (correct vLLM for Qwen3.6-35B-A3B).
 #
 # A Job (not StatefulSet) is the right shape for a one-shot eval. Jobs don't
 # support volumeClaimTemplates, so the 3 PVCs are created explicitly.
@@ -11,20 +10,19 @@
 # One pod == one king-of-the-hill evaluation, on one 8-GPU node (am-h200-25).
 # Non-CC: runtimeClassName: nvidia (standard NVIDIA runtime).
 #
-# Three init containers:
-#   0) inject-code — copies albedo code + pip-installed deps from the old PoC
-#      image into a shared emptyDir, so the v0.23.0 containers can use them.
+# Two init containers:
+#   0) inject-code — clones albedo kubetee-poc into a shared emptyDir.
 #   1) prepare-dataset — downloads public HF datasets + builds manifest.json.
 #
-# Two main containers:
-#   0) eval — runs run_eval.py (drives the evaluation, exits when done).
-#   1) judge-api — sidecar running albedo-judge-api, exits when eval finishes.
+# One main container:
+#   eval — runs run_eval.py; scores via shared Service albedo-judge-api:8091
+#   (SELFDRIVE_JUDGE_BASE_URL). Judge is NOT a sidecar.
 #
 # All disk volumes are longhorn-v2 PVCs (no emptyDir for disk storage):
 #   - model-cache (256Gi) — king + challenger safetensors.
 #   - dataset-root (512Gi) — public HF datasets + manifest.
 #   - artifacts (64Gi) — per-run spool files, uploaded to S3.
-# /dev/shm and /shared are emptyDir (RAM/marker — not disk volumes).
+# /dev/shm and /shared are emptyDir (RAM / code inject — not disk volumes).
 
 ---
 apiVersion: v1
@@ -112,18 +110,29 @@ spec:
             - -c
             - |
               export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:$PYTHONPATH
-              KING_DIR="dendriteholdings__albedo-qwen3.6-35b-king-genesis"
+              # Keep only models used by this Job (see KING_MODEL_URI / CHALLENGER_MODEL_URI).
+              # Previous cleanup looked for .albedo-model-cache.json at the repo dir — markers
+              # actually live under <repo>/<revision>/ — so the PVC filled to 100% and HF
+              # fastdl failed mid-shard (model-00017). Always prune unused repos on start.
+              KEEP_DIRS="wearetop__albedo-qwen3.6-35b-719 doublerabbits__albedo-qwen3.6-35b-319192"
               if [ -d /cache/models/hf ]; then
+                echo "model-cache before prune:"
+                df -h /cache/models | tail -1
+                du -sh /cache/models/hf/*/ 2>/dev/null || true
                 for d in /cache/models/hf/*/; do
                   dirname=$(basename "$d")
-                  if [ "$dirname" != "$KING_DIR" ]; then
-                    marker="$d.albedo-model-cache.json"
-                    if [ -f "$marker" ] && [ "$(find "$marker" -mmin +60 2>/dev/null)" ]; then
-                      echo "cleaning stale challenger: $dirname"
-                      rm -rf "$d"
-                    fi
+                  keep=0
+                  for k in $KEEP_DIRS; do
+                    [ "$dirname" = "$k" ] && keep=1 && break
+                  done
+                  if [ "$keep" -eq 0 ]; then
+                    echo "pruning unused model cache: $dirname"
+                    rm -rf "$d"
                   fi
                 done
+                echo "model-cache after prune:"
+                df -h /cache/models | tail -1
+                du -sh /cache/models/hf/*/ 2>/dev/null || true
               fi
               if [ -f /app/dataset/manifest.json ]; then
                 echo "manifest.json exists — skipping dataset preparation (PVC retained from previous run)"
@@ -164,9 +173,7 @@ spec:
                 "hippius-hub==0.6.0" "opensearch-py>=2,<3" \
                 "prompt_toolkit>=3" "pydantic>=2.8" "pydantic-settings>=2.4" \
                 "pyarrow>=16" "safetensors" "numpy"
-              python3 /app/shared/albedo/kubetee/app/run_eval.py; EXIT=$?
-              touch /shared/eval-done
-              exit $EXIT
+              exec python3 /app/shared/albedo/kubetee/app/run_eval.py
           resources:
             limits:
               nvidia.com/gpu: "8"
@@ -195,8 +202,9 @@ spec:
               value: "b2f66cfa-6583-43d2-8570-d8a005fae7a6"
             - name: SUBMISSION_ID
               value: "b6ef1319-cde5-4d35-8fc4-0b175ffb3753"
+            # Override ConfigMap if needed; default is the shared Service DNS.
             - name: SELFDRIVE_JUDGE_BASE_URL
-              value: "http://127.0.0.1:8091"
+              value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
           envFrom:
             - configMapRef:
                 name: albedo-poc-config
@@ -211,68 +219,6 @@ spec:
               mountPath: /cache/models
             - name: dshm
               mountPath: /dev/shm
-            - name: shared
-              mountPath: /shared
-            - name: shared
-              mountPath: /app/shared
-
-        # ----- Judge-api sidecar ----------------------------------------------
-        - name: judge-api
-          image: vllm/vllm-openai:v0.23.0
-          imagePullPolicy: Always
-          command:
-            - bash
-            - -c
-            - |
-              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:/app/shared/albedo/kubetee/app:$PYTHONPATH
-              cd /app/shared/albedo
-              pip install --no-cache-dir --no-deps -e . && \
-              pip install --no-cache-dir \
-                "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" \
-                "boto3>=1.35" "asyncpg>=0.29" "psycopg[binary]>=3.2" \
-                "loguru>=0.7" "datasets" "transformers" \
-                "huggingface-hub==1.19.0" "hf_transfer>=0.1" \
-                "hippius-hub==0.6.0" "opensearch-py>=2,<3" \
-                "prompt_toolkit>=3" "pydantic>=2.8" "pydantic-settings>=2.4" \
-                "pyarrow>=16" "safetensors" "numpy"
-              albedo-judge-api &
-              JUDGE_PID=$!
-              while [ ! -f /shared/eval-done ]; do
-                sleep 5
-              done
-              echo "eval container done — shutting down judge-api"
-              kill $JUDGE_PID 2>/dev/null
-              wait $JUDGE_PID 2>/dev/null
-              exit 0
-          resources:
-            limits:
-              cpu: "4"
-              memory: "8Gi"
-            requests:
-              cpu: "4"
-              memory: "8Gi"
-          envFrom:
-            - configMapRef:
-                name: albedo-poc-config
-            - secretRef:
-                name: albedo-poc-secrets
-          env:
-            - name: SELFDRIVE_JUDGE_BASE_URL
-              value: "http://127.0.0.1:8091"
-          ports:
-            - name: judge-http
-              containerPort: 8091
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8091
-            initialDelaySeconds: 10
-            periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
-          volumeMounts:
-            - name: shared
-              mountPath: /shared
             - name: shared
               mountPath: /app/shared
 

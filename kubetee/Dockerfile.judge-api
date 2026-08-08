@@ -1,0 +1,36 @@
+# Slim shared albedo-judge-api image (no vLLM / torch).
+#
+# Built from the albedo repo root on kubetee-poc:
+#   docker buildx build --platform linux/amd64 \
+#     -f kubetee/Dockerfile.judge-api \
+#     -t ghcr.io/kubetee-ai/albedo-judge-api:latest --push .
+
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PYTHONPATH=/app/src
+
+WORKDIR /app
+
+# Only the packages judge_api imports (and their local siblings).
+COPY src/albedo_eval_service ./src/albedo_eval_service
+
+# Judge-api runtime deps only — deliberately omit torch/vllm/bittensor/etc.
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115" \
+    "uvicorn[standard]>=0.30" \
+    "httpx>=0.27" \
+    "loguru>=0.7" \
+    "pydantic>=2.8" \
+    "pydantic-settings>=2.4" \
+    "pyarrow>=16"
+
+EXPOSE 8091
+
+ENV ALBEDO_JUDGE_API_HOST=0.0.0.0 \
+    ALBEDO_JUDGE_API_PORT=8091
+
+# judge_api.main() reads host/port from ALBEDO_JUDGE_* env.
+ENTRYPOINT ["python", "-m", "albedo_eval_service.judge_api"]
