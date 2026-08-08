@@ -9,6 +9,17 @@ Goal: two challenger Jobs at once against the shared `albedo-king` + `albedo-jud
 | `am-h200-25` | Pin king (`kubetee.ai/albedo-king=true`), 4 GPU |
 | Second H200 | Challenger Job(s), 4 GPU each |
 
+## Candidate second nodes (inventory)
+
+Prefer an **idle non-tenant** H200. From `ansible/inventory.yaml` (probe-dated):
+
+| Host | Notes |
+|------|--------|
+| `am-h200-160` / `161` / `166` | Lium (docker compose) when idle — verify with tenant probe before joining |
+| Do **not** steal | Active Chutes (`chutes-td`) / Targon (`tdxvm`) / in-cluster CC nodes (`am-h200-23/28`) |
+
+`am-h200-25` stays the king pin (`kubetee.ai/albedo-king=true`).
+
 ## Steps
 
 1. Pick an idle non-CC 8×H200 (not a tenant Chutes/Targon/Lium node). Confirm in `ansible/inventory.yaml`.
