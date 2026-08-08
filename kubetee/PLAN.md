@@ -4,61 +4,45 @@
 
 For the PoC, KubeTEE runs **one king-of-the-hill evaluation** as a plain
 Kubernetes `Job` (no Armada — that's a follow-up) applied directly to the
-`albedo-poc` namespace on `na-us-oakland-56-direct`. The Job lands on a
-single non-CC 8-GPU H200 node (`am-h200-25`, `runtimeClassName: nvidia`),
-runs albedo's `RemoteEvalWorker` which spins up two vLLM tensor-parallel
-instances (previous king on GPUs 0-3, challenger on GPUs 4-7), samples the
-public `mini-coder+open-swe+smith-rs+hero-v1` dataset, judges the outputs
-through the in-cluster **LiteLLM gateway**
-(`http://litellm.litellm.svc.cluster.local:4000`), uploads run artifacts
-(trajectories + verdict JSON + logs) to **S3 on Hippius** (`sn97-albedo`
-bucket) via albedo's native `S3ArtifactUploader`, and exits.
+`albedo-poc` namespace on `na-us-oakland-56-direct`.
+
+**Split topology (current):**
+- **Always-on king** — `deploy/king.yaml` Deployment on `am-h200-25`
+  (`kubetee.ai/albedo-king=true`), 4 GPU / TP=4, OpenAI-compatible HTTP
+  behind ClusterIP `albedo-king:8000` (`king_serve.py` + local vLLM).
+- **Challenger Job** — `deploy/eval.yaml`, 4 GPU / TP=4, owns dataset load
+  (`sample-ids.json` under `eval_run_id`), HTTP-generates against the king,
+  local vLLM for the challenger, scores via shared judge, uploads artifacts.
+
+King change protocol: set king state to `changing` → in-flight Jobs get
+HTTP 503 `king_changing` → `fault_code=king_changed` (no registering verdict).
+
+Concurrent challengers need a **second non-CC H200** (see
+`deploy/JOIN-SECOND-H200.md`). Gated king 8-GPU parity:
+`deploy/PARITY-KING-8GPU.md`.
 
 No Denrite docker-compose, no Postgres-backed queue, no Bittensor chain
 reads inside KubeTEE — the only dynamic inputs per job are the king and
-challenger model refs + the eval/submission IDs. Everything else (judge
-URL, judge models, sample count, GPU split, image, cluster placement) is
-baked into KubeTEE-side config.
+challenger model refs + the eval/submission IDs.
 
 ```mermaid
 graph LR
   subgraph KubeTEE["KubeTEE staging (na-us-oakland-56)"]
-    subgraph EvalPod["Job Pod (am-h200-25, 8xH200, non-CC)"]
-      Init["inject-code initContainer
-clones kubetee-poc branch"]
-      Prep["prepare-dataset initContainer
-HF -> manifest.json"]
-      VKing["vLLM king (GPUs 0-3)"]
-      VChal["vLLM challenger (GPUs 4-7)"]
-      Worker["run_eval.py (drives RemoteEvalWorker)"]
-      Init --> Prep --> VKing & VChal & Worker
-      VKing <--> Worker
-      VChal <--> Worker
+    King["albedo-king Deployment
+4 GPU TP=4 on am-h200-25"]
+    subgraph EvalPod["Challenger Job (4 GPU)"]
+      Init["inject-code + prepare-dataset"]
+      VChal["vLLM challenger TP=4"]
+      Worker["run_eval.py"]
+      Init --> VChal & Worker
     end
-
-    Judge["albedo-judge-api Deployment
-replicas=1 :8091"]
-    Worker -->|"HTTP score-batch + /eval-cost/{id}"| Judge
-    LiteLLM["LiteLLM (litellm.litellm.svc:4000)"]
-    Judge -->|"OpenAI /v1/chat/completions"| LiteLLM
+    Worker -->|"HTTP /v1/completions"| King
+    Judge["albedo-judge-api :8091"]
+    Worker -->|"score-batch + /eval-cost"| Judge
+    LiteLLM["LiteLLM :4000"]
+    Judge --> LiteLLM
   end
-
-  subgraph Backends["Backend models (nemo ns)"]
-    GLM["z-ai/glm-5.2
-(glm-5-2-nvfp4-sglang, B200)"]
-    DSV4["deepseek/deepseek-v4-flash-0731
-(2x SGLang H200)"]
-    QWEN["qwen/qwen3.5-397b-a17b
-(qwen35-397b-a17b-fp8-sglang, H200 CC)"]
-    LiteLLM --> GLM & DSV4 & QWEN
-  end
-
-  subgraph S3["S3 run artifacts (Hippius)"]
-    Art["s3://sn97-albedo/kubetee-poc/<run_id>/
-trajectories.jsonl + verdict.json + logs"]
-  end
-
-  EvalPod -- "S3ArtifactUploader" --> S3
+  EvalPod -- "S3ArtifactUploader" --> S3["s3://sn97-albedo/kubetee-poc/<run_id>/"]
 ```
 
 ## Why no Armada (PoC) — and what replaces it

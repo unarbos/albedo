@@ -33,6 +33,16 @@ class RemoteSettings(BaseSettings):
     challenger_model: str | None = None
     previous_king_gpu_ids: str = "0,1,2,3"
     challenger_gpu_ids: str = "4,5,6,7"
+    # When set, previous_king generation uses HTTP against this OpenAI-compatible
+    # base URL (always-on king Deployment) instead of a local VllmProcessGenerator.
+    king_base_url: str = ""
+    # Model id sent in /v1/completions. Empty → use the resolved previous_king URI.
+    king_openai_model: str = ""
+    king_ready_timeout_seconds: float = 600.0
+    # Global pkill of vLLM orphans — unsafe when an always-on king shares the
+    # node (or another challenger Job). Disabled automatically when king_base_url
+    # is set; can also force off via ALBEDO_REMOTE_CLEANUP_STALE_VLLM=false.
+    cleanup_stale_vllm: bool = True
     max_new_tokens: int = 8192
     generation_result_timeout_seconds: float = 900.0
     trajectory_assistant_turns: int = 8

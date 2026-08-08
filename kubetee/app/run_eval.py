@@ -1,9 +1,11 @@
 """
 Albedo king-of-the-hill GPU evaluation — self-drive entrypoint for KubeTEE.
 
-One Armada job submission = one 8-GPU Kubernetes pod = one evaluation of a
-single challenger model against the current king. The pod runs the eval,
-uploads artifacts to S3, prints the verdict JSON to stdout, and exits.
+One Job = one challenger pod (4 GPU / TP=4 by default). Previous-king
+generation goes to the always-on `albedo-king` Service when
+`ALBEDO_REMOTE_KING_BASE_URL` is set; otherwise falls back to co-located
+8-GPU king+challenger (legacy PoC). The pod runs the eval, uploads artifacts
+to S3, prints the verdict JSON to stdout, and exits.
 
 The pod runs this entrypoint (main container): drives the whole evaluation
 lifecycle and talks HTTP to the shared `albedo-judge-api` Service in
@@ -20,13 +22,12 @@ This file implements *zero* forked business logic. It only:
      `eval-summary.json` (total LiteLLM spend for this eval_run_id + eval
      wall-clock seconds, excluding dataset prep which ran in the init
      container) and uploads it to S3 next to the verdict. Does NOT modify
-     `verdict.json` — that file is upstream-owned.
+     `verdict.json` — that file is upstream-owned. Skips summary upload when
+     `fault_code=king_changed` (no registering verdict).
 
-Everything heavy — model resolution (HF/Hippius/S3/local), two tensor-parallel
-vLLM processes (king on GPUs 0-3, challenger on GPUs 4-7), multi-turn trajectory
-rollout with simulated environment observations, S3 artifact upload via
-`albedo_eval_service.remote_artifacts`, and the final verdict event — is
-upstream code, untouched.
+Heavy lifting — model resolution, local challenger vLLM, remote-king HTTP
+generate, multi-turn trajectory rollout, S3 upload — lives in
+`albedo_eval_service.remote_worker`.
 """
 
 from __future__ import annotations
@@ -163,11 +164,15 @@ def _load_eval_request() -> EvalRequest:
         ),
         gpu_request=GpuRequest(
             accelerator=_env("ALBEDO_REMOTE_ACCELERATOR_TYPE", "H200"),
-            min_gpus=8,
-            preferred_gpus=8,
-            previous_king_gpu_count=4,
-            challenger_gpu_count=4,
-            tensor_parallel_size_per_model=4,
+            min_gpus=int(_env("ALBEDO_REMOTE_MIN_GPUS", _env("ALBEDO_REMOTE_GPU_COUNT", "8"))),
+            preferred_gpus=int(
+                _env("ALBEDO_REMOTE_PREFERRED_GPUS", _env("ALBEDO_REMOTE_GPU_COUNT", "8"))
+            ),
+            previous_king_gpu_count=int(_env("ALBEDO_REMOTE_PREVIOUS_KING_GPU_COUNT", "4")),
+            challenger_gpu_count=int(_env("ALBEDO_REMOTE_CHALLENGER_GPU_COUNT", "4")),
+            tensor_parallel_size_per_model=int(
+                _env("ALBEDO_REMOTE_TENSOR_PARALLEL_SIZE_PER_MODEL", "4")
+            ),
         ),
         artifact_prefix=artifact_prefix,
     )
@@ -422,10 +427,13 @@ def main() -> int:
         for name, uri in artifacts.items():
             print(f"  {name}: {uri}", file=sys.stderr)
 
-    # Companion eval-summary.json — total LiteLLM spend + wall-clock elapsed.
-    # Written to S3 next to the verdict; does NOT modify verdict.json (that
-    # file is upstream-owned). Best-effort: any error here is logged and
-    # skipped so the eval's exit code reflects only the upstream verdict.
+    # Companion eval-summary.json — skip for king_changed (no registering verdict).
+    if str(verdict.get("fault_code") or "") == "king_changed":
+        logger.warning(
+            "king_changed — skipping eval-summary upload (no registered scored verdict)"
+        )
+        return 1
+
     _write_and_upload_eval_summary(
         request=request,
         artifact_uploader=artifact_uploader,

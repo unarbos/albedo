@@ -29,6 +29,8 @@ from .remote_dataset import EvalSample, format_messages, load_manifest_samples
 from .remote_generation import (
     GenerationResult,
     Generator,
+    HttpOpenAIGenerator,
+    KingChangedError,
     VllmProcessGenerator,
     format_scored_trajectory,
 )
@@ -91,6 +93,16 @@ class RemoteEvalWorker:
     def execute(self, run: RemoteRun) -> None:
         try:
             self._execute(run)
+        except KingChangedError as exc:
+            logger.warning(
+                f"[remote-worker] king changed mid-eval remote_run={run.remote_run_id} "
+                f"eval_run={run.request.eval_run_id}: {exc}"
+            )
+            run.fail(
+                fault_code="king_changed",
+                fault_message=str(exc),
+                retryable=True,
+            )
         except Exception as exc:
             logger.exception(
                 f"[remote-worker] eval failed remote_run={run.remote_run_id} "
@@ -104,6 +116,7 @@ class RemoteEvalWorker:
         request = run.request
         topology = self._topology(request)
         samples = self._load_samples(request, tokenizer_path=str(_CANONICAL_TOKENIZER_PATH))
+        self._freeze_sample_ids(request, samples)
         self._prefetch_repo_context(request, samples)
         category_prep_id = self._start_category_prep(run, request, samples)
         run.append_event(
@@ -113,7 +126,25 @@ class RemoteEvalWorker:
                 "models": ["challenger", "previous_king"],
             }
         )
-        king_model = self._resolve_model_for_side(run, request, side="previous_king")
+        if self._king_is_remote():
+            self._wait_king_ready()
+            king_model = ResolvedModel(
+                original_ref=self._model_for_side(request, side="previous_king"),
+                local_path="",
+                source="remote_http",
+                cache_hit=True,
+                file_count=0,
+                total_size_bytes=0,
+            )
+            run.append_event(
+                {
+                    "type": "model_resolved",
+                    "eval_run_id": str(request.eval_run_id),
+                    **king_model.as_event(side="previous_king"),
+                }
+            )
+        else:
+            king_model = self._resolve_model_for_side(run, request, side="previous_king")
         challenger_model = self._resolve_model_for_side(run, request, side="challenger")
         run.append_event(
             {
@@ -133,16 +164,23 @@ class RemoteEvalWorker:
                 "gpu_topology": topology.as_dict(),
                 "sample_count": len(samples),
                 "generation_batch_size": request.dataset.generation_batch_size,
+                "king_remote": self._king_is_remote(),
             }
         )
 
+        king_model_arg = (
+            (self.settings.king_openai_model or king_model.original_ref)
+            if self._king_is_remote()
+            else king_model.local_path
+        )
         king_generator = self._generator_factory(
-            "previous_king", topology.previous_king, king_model.local_path
+            "previous_king", topology.previous_king, king_model_arg
         )
         challenger_generator = self._generator_factory(
             "challenger", topology.challenger, challenger_model.local_path
         )
-        _cleanup_stale_vllm_resources()
+        if self._should_cleanup_stale_vllm():
+            _cleanup_stale_vllm_resources()
         king_results, challenger_results = self._generate_trajectories(
             request=request,
             samples=samples,
@@ -293,6 +331,19 @@ class RemoteEvalWorker:
         return resolved
 
     def _vllm_generator(self, side: str, gpu_ids: list[str], model: str) -> Generator:
+        if side == "previous_king" and self._king_is_remote():
+            if not model:
+                raise ValueError("missing OpenAI model id for remote king")
+            sampling_config = self._effective_sampling_config()
+            return HttpOpenAIGenerator(
+                base_url=self.settings.king_base_url,
+                model=model,
+                max_new_tokens=self.settings.max_new_tokens,
+                temperature=sampling_config["temperature"],
+                top_p=sampling_config["top_p"],
+                top_k=sampling_config["top_k"],
+                result_timeout_seconds=self.settings.generation_result_timeout_seconds,
+            )
         if self.settings.generation_backend != "vllm":
             raise ValueError(f"unsupported generation backend: {self.settings.generation_backend}")
         if not model:
@@ -311,6 +362,123 @@ class RemoteEvalWorker:
             gpu_memory_utilization=self.settings.gpu_memory_utilization,
             kv_cache_dtype=self.settings.kv_cache_dtype,
             result_timeout_seconds=self.settings.generation_result_timeout_seconds,
+        )
+
+    def _king_is_remote(self) -> bool:
+        return bool((self.settings.king_base_url or "").strip())
+
+    def _should_cleanup_stale_vllm(self) -> bool:
+        # Never pkill cluster-wide when an always-on king (or peer Jobs) may
+        # share the node — that would kill the wrong vLLM processes.
+        if self._king_is_remote():
+            return False
+        return bool(self.settings.cleanup_stale_vllm)
+
+    def _freeze_sample_ids(self, request: EvalRequest, samples: list[EvalSample]) -> None:
+        spool = RunArtifactSpool(self.settings.artifact_spool_dir, request.eval_run_id)
+        spool.write_json(
+            "sample-ids.json",
+            {
+                "eval_run_id": str(request.eval_run_id),
+                "sample_count": len(samples),
+                "sample_ids": [sample.sample_id for sample in samples],
+            },
+        )
+
+    def _wait_king_ready(self) -> None:
+        import time
+
+        base = self.settings.king_base_url.rstrip("/")
+        deadline = time.monotonic() + max(1.0, self.settings.king_ready_timeout_seconds)
+        last_error = ""
+        while time.monotonic() < deadline:
+            try:
+                response = httpx.get(f"{base}/ready", timeout=5.0)
+                if response.status_code == 200:
+                    body = {}
+                    try:
+                        body = response.json()
+                    except Exception:
+                        body = {}
+                    if str(body.get("status") or "").lower() in ("changing", "king_changing"):
+                        raise KingChangedError(
+                            "king is changing",
+                            king_generation_id=str(body.get("king_generation_id") or "") or None,
+                        )
+                    return
+                if response.status_code == 503:
+                    body = {}
+                    try:
+                        body = response.json()
+                    except Exception:
+                        body = {}
+                    detail = body.get("detail") if isinstance(body.get("detail"), dict) else body
+                    fault = ""
+                    if isinstance(detail, dict):
+                        fault = str(detail.get("fault_code") or "")
+                    if "king_changing" in fault:
+                        raise KingChangedError(
+                            "king is changing",
+                            king_generation_id=(
+                                str(detail.get("king_generation_id"))
+                                if isinstance(detail, dict) and detail.get("king_generation_id")
+                                else None
+                            ),
+                        )
+                last_error = f"HTTP {response.status_code}"
+            except KingChangedError:
+                raise
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(2.0)
+        raise RuntimeError(f"king at {base} not ready: {last_error}")
+
+    def _topology(self, request: EvalRequest) -> GpuTopology:
+        previous_king = _parse_gpu_ids(self.settings.previous_king_gpu_ids)
+        challenger = _parse_gpu_ids(self.settings.challenger_gpu_ids)
+        tp = request.gpu_request.tensor_parallel_size_per_model
+
+        if self._king_is_remote():
+            if request.gpu_request.challenger_gpu_count != len(challenger):
+                raise ValueError("challenger GPU group does not match request")
+            if len(challenger) != 4:
+                raise ValueError("remote-king mode requires challenger on exactly 4 GPUs (TP=4)")
+            if tp != 4:
+                raise ValueError("remote-king mode requires tensor_parallel_size_per_model=4")
+            if request.gpu_request.previous_king_gpu_count not in (0, len(previous_king)):
+                # Allow empty previous_king_gpu_ids when count is 0.
+                if request.gpu_request.previous_king_gpu_count != 0 or previous_king:
+                    raise ValueError(
+                        "remote-king mode expects previous_king_gpu_count=0 "
+                        "and empty ALBEDO_REMOTE_PREVIOUS_KING_GPU_IDS"
+                    )
+            if request.gpu_request.min_gpus < 4 or request.gpu_request.preferred_gpus < 4:
+                raise ValueError("remote-king mode requires at least 4 local GPUs for the challenger")
+            return GpuTopology(
+                accelerator=self.settings.accelerator_type,
+                previous_king=[],
+                challenger=challenger,
+                tensor_parallel_size_per_model=tp,
+            )
+
+        if request.gpu_request.min_gpus != 8 or request.gpu_request.preferred_gpus != 8:
+            raise ValueError("remote eval target requires an 8-GPU request")
+        if tp != 4:
+            raise ValueError("remote eval requires tensor_parallel_size_per_model=4")
+        if len(previous_king) != request.gpu_request.previous_king_gpu_count:
+            raise ValueError("previous king GPU group does not match request")
+        if len(challenger) != request.gpu_request.challenger_gpu_count:
+            raise ValueError("challenger GPU group does not match request")
+        if len(previous_king) != 4 or len(challenger) != 4:
+            raise ValueError("remote eval requires fixed 4 GPU groups for both models")
+        overlap = set(previous_king) & set(challenger)
+        if overlap:
+            raise ValueError(f"GPU groups overlap: {sorted(overlap)}")
+        return GpuTopology(
+            accelerator=self.settings.accelerator_type,
+            previous_king=previous_king,
+            challenger=challenger,
+            tensor_parallel_size_per_model=tp,
         )
 
     def _generate_trajectories(
@@ -340,7 +508,14 @@ class RemoteEvalWorker:
                         side: executor.submit(generators[side].generate, side_samples)
                         for side, side_samples in current_samples.items()
                     }
-                    turn_results = {side: future.result() for side, future in futures.items()}
+                    turn_results = {}
+                    try:
+                        for side, future in futures.items():
+                            turn_results[side] = future.result()
+                    except KingChangedError:
+                        for future in futures.values():
+                            future.cancel()
+                        raise
                 for side, results in turn_results.items():
                     all_results[side].append(results)
 
@@ -449,29 +624,6 @@ class RemoteEvalWorker:
             "top_p": float(generation_config["top_p"]),
             "top_k": int(generation_config["top_k"]),
         }
-
-    def _topology(self, request: EvalRequest) -> GpuTopology:
-        previous_king = _parse_gpu_ids(self.settings.previous_king_gpu_ids)
-        challenger = _parse_gpu_ids(self.settings.challenger_gpu_ids)
-        if request.gpu_request.min_gpus != 8 or request.gpu_request.preferred_gpus != 8:
-            raise ValueError("remote eval target requires an 8-GPU request")
-        if request.gpu_request.tensor_parallel_size_per_model != 4:
-            raise ValueError("remote eval requires tensor_parallel_size_per_model=4")
-        if len(previous_king) != request.gpu_request.previous_king_gpu_count:
-            raise ValueError("previous king GPU group does not match request")
-        if len(challenger) != request.gpu_request.challenger_gpu_count:
-            raise ValueError("challenger GPU group does not match request")
-        if len(previous_king) != 4 or len(challenger) != 4:
-            raise ValueError("remote eval requires fixed 4 GPU groups for both models")
-        overlap = set(previous_king) & set(challenger)
-        if overlap:
-            raise ValueError(f"GPU groups overlap: {sorted(overlap)}")
-        return GpuTopology(
-            accelerator=self.settings.accelerator_type,
-            previous_king=previous_king,
-            challenger=challenger,
-            tensor_parallel_size_per_model=request.gpu_request.tensor_parallel_size_per_model,
-        )
 
     def _emit_generation_batches(
         self,

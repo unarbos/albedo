@@ -14,6 +14,15 @@ from .remote_dataset import EvalSample
 _QWEN3_IM_END_TOKEN_ID = 248046
 
 
+class KingChangedError(RuntimeError):
+    """Raised when the always-on king rejects work during a king change."""
+
+    def __init__(self, message: str = "king_changing", *, king_generation_id: str | None = None):
+        super().__init__(message)
+        self.fault_code = "king_changed"
+        self.king_generation_id = king_generation_id
+
+
 @dataclass(frozen=True)
 class GenerationResult:
     sample_id: str
@@ -25,6 +34,143 @@ class GenerationResult:
 
 class Generator(Protocol):
     def generate(self, samples: list[EvalSample]) -> list[GenerationResult]: ...
+
+
+class HttpOpenAIGenerator:
+    """OpenAI-compatible HTTP generator for the always-on king Service."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int | None = None,
+        result_timeout_seconds: float = 900.0,
+        max_concurrency: int = 8,
+        auth_token: str = "",
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.result_timeout_seconds = result_timeout_seconds
+        self.max_concurrency = max(1, max_concurrency)
+        self.auth_token = auth_token
+
+    def generate(self, samples: list[EvalSample]) -> list[GenerationResult]:
+        if not samples:
+            return []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        results: dict[str, GenerationResult] = {}
+        with ThreadPoolExecutor(max_workers=min(self.max_concurrency, len(samples))) as pool:
+            futures = {
+                pool.submit(self._generate_one, sample): sample.sample_id for sample in samples
+            }
+            try:
+                for future in as_completed(futures):
+                    sample_id = futures[future]
+                    try:
+                        results[sample_id] = future.result()
+                    except KingChangedError:
+                        for pending in futures:
+                            pending.cancel()
+                        raise
+                    except Exception as exc:
+                        results[sample_id] = GenerationResult(
+                            sample_id=sample_id, text="", error=f"{type(exc).__name__}: {exc}"
+                        )
+            except KingChangedError:
+                raise
+        return [
+            results.get(
+                sample.sample_id,
+                GenerationResult(sample_id=sample.sample_id, text="", error="missing_result"),
+            )
+            for sample in samples
+        ]
+
+    def close(self) -> None:
+        return None
+
+    def _headers(self) -> dict[str, str]:
+        if not self.auth_token:
+            return {}
+        return {"Authorization": f"Bearer {self.auth_token}"}
+
+    def _generate_one(self, sample: EvalSample) -> GenerationResult:
+        import httpx
+
+        url = f"{self.base_url}/v1/completions"
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "prompt": sample.prompt,
+            "max_tokens": self.max_new_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "stop_token_ids": [_QWEN3_IM_END_TOKEN_ID],
+        }
+        if self.top_k is not None:
+            payload["top_k"] = self.top_k
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=max(1.0, self.result_timeout_seconds),
+            write=30.0,
+            pool=30.0,
+        )
+        with httpx.Client(timeout=timeout, headers=self._headers()) as client:
+            response = client.post(url, json=payload)
+        if response.status_code == 503:
+            fault = "king_changing"
+            generation_id = None
+            try:
+                body = response.json()
+                fault = str(body.get("fault_code") or body.get("detail") or fault)
+                generation_id = body.get("king_generation_id")
+                if isinstance(body.get("detail"), dict):
+                    detail = body["detail"]
+                    fault = str(detail.get("fault_code") or fault)
+                    generation_id = detail.get("king_generation_id") or generation_id
+            except Exception:
+                pass
+            if "king_changing" in str(fault) or "king_changed" in str(fault):
+                raise KingChangedError(
+                    f"king rejected generate: {fault}",
+                    king_generation_id=str(generation_id) if generation_id else None,
+                )
+            return GenerationResult(
+                sample_id=sample.sample_id,
+                text="",
+                error=f"king_http_503: {fault}",
+            )
+        if response.status_code >= 400:
+            return GenerationResult(
+                sample_id=sample.sample_id,
+                text="",
+                error=f"king_http_{response.status_code}: {response.text[:200]}",
+            )
+        try:
+            body = response.json()
+            choice = body["choices"][0]
+            text = choice.get("text") or ""
+            finish = choice.get("finish_reason") or ""
+            usage = body.get("usage") or {}
+            generated = int(usage.get("completion_tokens") or 0)
+            truncated = finish == "length" and generated >= self.max_new_tokens
+            return GenerationResult(
+                sample_id=sample.sample_id, text=text, truncated=truncated
+            )
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            return GenerationResult(
+                sample_id=sample.sample_id,
+                text="",
+                error=f"king_bad_response: {type(exc).__name__}: {exc}",
+            )
 
 
 def format_scored_trajectory(turns: list[dict[str, Any]]) -> str:

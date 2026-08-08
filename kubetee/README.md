@@ -7,50 +7,51 @@ cluster (`na-us-oakland-56`).
 
 ## What this is
 
-One Job = one Kubernetes pod = one king-of-the-hill evaluation. The pod
-runs vLLM (king + challenger), scores via the **shared** `albedo-judge-api`
-Service in `albedo-poc`, uploads artifacts to S3, prints the verdict JSON
-to stdout, and exits.
+**Always-on king** (`deploy/king.yaml`, 4 GPU / TP=4) + **per-eval challenger
+Job** (`deploy/eval.yaml`, 4 GPU / TP=4). The challenger loads the dataset,
+calls the king over HTTP for previous-king completions, runs local vLLM for
+the challenger, scores via the shared `albedo-judge-api`, uploads artifacts
+to S3, and exits.
 
-See [PLAN.md](PLAN.md) for architecture, apply order, auth, NetworkPolicy,
-`replicas: 1`, and `GET /eval-cost/{eval_run_id}` cost isolation.
+See [PLAN.md](PLAN.md) for architecture. Smoke / second-node / 8-GPU parity:
+[deploy/SMOKE.md](deploy/SMOKE.md), [deploy/JOIN-SECOND-H200.md](deploy/JOIN-SECOND-H200.md),
+[deploy/PARITY-KING-8GPU.md](deploy/PARITY-KING-8GPU.md).
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `app/run_eval.py` | Per-job self-drive entrypoint. |
+| `app/run_eval.py` | Per-job self-drive entrypoint (challenger). |
+| `app/king_serve.py` | King control plane (`/ready` + `/v1` proxy; 503 `king_changing`). |
 | `Dockerfile` | Reference eval image (live Job uses `vllm/vllm-openai` + git clone). |
 | `Dockerfile.judge-api` | Slim shared judge image → `ghcr.io/kubetee-ai/albedo-judge-api`. |
-| `deploy/eval.yaml` | Eval ConfigMap + Job + PVCs (no judge sidecar). |
+| `deploy/king.yaml` | Always-on king (ConfigMap + Deployment + Service + NetworkPolicy). |
+| `deploy/eval.yaml` | Challenger ConfigMap + Job + PVCs (`ALBEDO_REMOTE_KING_BASE_URL`). |
 | `deploy/judge-api.yaml` | Shared judge stack (ConfigMap + Deployment + Service + NetworkPolicy). |
 | `deploy/secret-template.yaml` | Secret template (LiteLLM key + auth token + S3/HF). |
 | `deploy/armada-job-template.yaml` | Future Armada submit shape (not used in PoC). |
 
 ## Quick start
 
-1. Build + push the shared judge image (from the albedo repo root):
+1. Label the king node and apply judge + king (after secrets exist):
    ```bash
-   docker buildx build --platform linux/amd64 \
-     -f kubetee/Dockerfile.judge-api \
-     -t ghcr.io/kubetee-ai/albedo-judge-api:latest --push .
-   ```
-2. Apply judge + eval manifests:
-   ```bash
+   kubectl --context na-us-oakland-56-direct label node am-h200-25 \
+     kubetee.ai/albedo-king=true --overwrite
    kubectl --context na-us-oakland-56-direct apply -f \
      kubetee/deploy/judge-api.yaml \
-     kubetee/deploy/eval.yaml
+     kubetee/deploy/king.yaml
    ```
-3. Apply the Secret out-of-band (`ALBEDO_JUDGE_API_AUTH_TOKEN` must match
-   `SELFDRIVE_SCORING_AUTH_TOKEN`):
+2. Apply the Secret out-of-band (`ALBEDO_JUDGE_API_AUTH_TOKEN` must match
+   `SELFDRIVE_SCORING_AUTH_TOKEN`; HF token for gated king weights):
    ```bash
    cp kubetee/deploy/secret-template.yaml ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    $EDITOR ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    kubectl --context na-us-oakland-56-direct apply -f \
      ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    ```
-4. Re-submit an eval Job (delete first — Jobs are immutable):
+3. Wait for king Ready, then submit a challenger Job (delete first — Jobs are immutable):
    ```bash
+   kubectl --context na-us-oakland-56-direct -n albedo-poc rollout status deploy/albedo-king --timeout=45m
    kubectl --context na-us-oakland-56-direct -n albedo-poc delete job albedo-poc-eval --ignore-not-found
    kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/eval.yaml
    ```
