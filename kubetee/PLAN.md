@@ -396,8 +396,9 @@ Why this is a natural fit:
   [chat.arbos.life](https://chat.arbos.life). SN90 can host a **second,
   capacity-backed** path on KubeTEE GPUs (and later on confidential
   `kata-*` runtimes) so the distilled champion is available to the public
-  through SN90’s demand channels (LiteLLM / partner routers — public
-  routing policy TBD).
+  through SN90’s demand channels — including the **SN28 (SayGM)
+  integration** (not exclusive; KubeTEE may also serve the public
+  directly via LiteLLM / other partners).
 
 Operational notes for Denrite / Albedo if the offer is accepted:
 
@@ -455,7 +456,7 @@ Tracked as follow-up **#7** below. Subnet-side write-up:
    window is reclaimable. Unlocks overlapping evals once a second
    challenger node (or freed GPUs on the king node) is available.
 7. **Public king inference (SN90 offer)** — register the always-on king in
-   LiteLLM and publish it for public use (SN90 capacity; demand-channel
-   routing TBD). Track reigning-king HF URI/revision; separate or
-   rate-limit public chat vs duel traffic; optional later move to
-   confidential serve. See [Offer from KubeTEE SN90](#offer-from-kubetee-sn90--public-inference-on-the-reigning-king) above.
+   LiteLLM and publish it for public use (SN90 capacity + SN28/SayGM
+   integration — not exclusive). Track reigning-king HF URI/revision;
+   separate or rate-limit public chat vs duel traffic; optional later
+   move to confidential serve. See [Offer from KubeTEE SN90](#offer-from-kubetee-sn90--public-inference-on-the-reigning-king) above.
