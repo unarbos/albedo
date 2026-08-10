@@ -148,12 +148,14 @@ Corpus download/build is **not** in the eval Job — run
 
 ### Main containers
 
-1. **`eval`** — `pip install -e .` + deps, then
-   `python3 /app/shared/albedo/kubetee/app/run_eval.py`. Drives
+1. **`eval`** (staging only) — base `vllm/vllm-openai` + `inject-code` clone +
+   `pip install -e .`, then `python3 …/run_eval.py`. Drives
    `RemoteEvalWorker`: downloads challenger weights to the `model-cache` PVC,
    spins up local vLLM (TP=4), HTTP-generates against the always-on king,
    samples from the prepared corpus, calls the shared judge Service for
    scoring, uploads artifacts to S3, and exits.
+   **Production** will use the final Albedo Docker image (baked code + deps)
+   instead of clone/`pip install` at Job start.
 
 ### Volumes
 
