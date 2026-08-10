@@ -299,11 +299,12 @@ spec:
               value: "hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
             - name: CHALLENGER_MODEL_HASH
               value: "1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
-            # Re-run after reasoning_effort=none judge fix; prior failed: d0899d40-b81e-4fb9-9ae2-14be68095979
+            # Apple-to-apple vs Denrite ca530856 (pinned sample_ids from request.json).
+            # Prior seed-only PoC: 7e09f071-4514-4ae0-9b92-6cf02019544f (0 sample overlap).
             - name: EVAL_RUN_ID
-              value: "7e09f071-4514-4ae0-9b92-6cf02019544f"
+              value: "13533899-145d-4717-8501-0499c5ff4e72"
             - name: SUBMISSION_ID
-              value: "4ca920b9-7a6b-4d0c-8f16-bcbad63b5a26"
+              value: "7ffbbc51-c86f-4835-9e3d-d781a2ffd0b0"
             - name: SELFDRIVE_JUDGE_BASE_URL
               value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
           envFrom:
