@@ -82,7 +82,7 @@ spec:
     spec:
       containers:
         - name: judge-api
-          image: ghcr.io/kubetee-ai/albedo-judge-api:reasoning-none-20260809233116
+          image: ghcr.io/kubetee-ai/albedo-judge-api:main-merge-20260810221000
           imagePullPolicy: Always
           ports:
             - name: http

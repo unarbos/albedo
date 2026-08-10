@@ -300,12 +300,12 @@ spec:
             - name: CHALLENGER_MODEL_HASH
               value: "1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
             # Apple-to-apple vs Denrite ca530856 (pinned sample_ids from request.json).
-            # Complete 9a0f5f09…: chal 0.68715 / king 0.665788 (+2.14pp), 100/100.
-            # Prior pin: 3e60c4c8… (0.6809/0.6785, 100/100); e6c56798… (99/100, 1 king err).
+            # Post origin/main merge (think-strip + phase read caps + discard audit).
+            # Prior 9a0f5f09…: chal 0.68715 / king 0.665788 (+2.14pp), 100/100.
             - name: EVAL_RUN_ID
-              value: "9a0f5f09-812d-48ee-b3ad-5d91c5210391"
+              value: "fd245d96-ad6e-46dd-b101-a92a88b6ec05"
             - name: SUBMISSION_ID
-              value: "b0c4a6da-ef58-42f2-a521-2245446d1c74"
+              value: "30a82d0a-14ac-408b-8913-ab82d60e02f8"
             - name: SELFDRIVE_JUDGE_BASE_URL
               value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
           envFrom:
