@@ -340,43 +340,52 @@ would mix concurrent Jobs).
 - **kubectl context** — all PoC ops from local use `na-us-oakland-56-direct`.
   Fleet ops (if ever needed) use `stagingrancher`. Never mix.
 
-## Latest successful PoC eval (2026-08-09)
+## Latest apple-to-apple PoC eval (2026-08-10)
 
-End-to-end king-of-the-hill run on `na-us-oakland-56` (split topology:
-always-on king on `am-h200-25` + challenger Job TP=4 on the same node;
-judge via `albedo-judge-api` → in-cluster LiteLLM → `z-ai/glm-5.2` CC +
-`deepseek/deepseek-v4-flash-0731` simulate).
+Pinned to Denrite reference `ca530856-ffa8-4e66-9175-7400e829e8c0` via
+`ALBEDO_EVAL_SAMPLE_IDS_FILE` (same 100 `sample_ids`, `manifest_hash=e3cff617…`,
+same king/challenger HF revision hashes). Split topology on `na-us-oakland-56`
+(always-on king + challenger Job TP=4 on `am-h200-25`; judge via
+`albedo-judge-api` → LiteLLM → `z-ai/glm-5.2` + simulate
+`deepseek/deepseek-v4-flash-0731`).
 
 | Field | Value |
 |-------|--------|
-| `eval_run_id` | `7e09f071-4514-4ae0-9b92-6cf02019544f` |
-| `submission_id` | `4ca920b9-7a6b-4d0c-8f16-bcbad63b5a26` |
+| `eval_run_id` | `9a0f5f09-812d-48ee-b3ad-5d91c5210391` |
 | Verdict | `succeeded` (`challenger_won=false`) |
-| Scores | challenger **0.635906** / king **0.636356** (binary, `judge_count=1`, win margin 0.03) |
-| Samples | 100 scored / 100 valid turns |
+| Scores | challenger **0.68715** / king **0.665788** (margin **+2.14 pp**, need +3.00) |
+| Samples | **100/100** scored (`king_vllm_errors=0`, `chal_vllm_errors=0`) |
 | King | `hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c` |
 | Challenger | `hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7` |
-| Wall clock | **2333 s** (~38.9 min) — `worker.execute` only (gen + score + upload) |
-| Judge spend | **$6.90** (3926 requests; glm-5.2 $5.77 + dsv4-flash $1.14) |
-| GPU spend (challenger Job) | **$6.48** (4× H200 @ $2.50/gpu/h × 0.648 h) |
-| Total (judge + GPU) | **$13.39** |
+| vs origin ca530856 | chal **−0.23 pp** / king **+0.67 pp**; per-sample winner agree **50%**; MAE ~0.15 |
+
+Origin Denrite (Blackwell): chal **0.689451** / king **0.659136**, margin **+3.03 pp**, won.
+
+Prior pin runs: `3e60c4c8…` (100/100, chal 0.6809 / king 0.6785); `e6c56798…`
+(99/100 — one king context overflow at `max_model_len=32768`).
+
+Stats + local artifacts: `kubetee/compare/kubetee-runs/compare-vs-origin.json`.
 
 Public artifact URLs (Hippius `public-read`; prefix
-`s3://sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/`):
+`s3://sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/`):
 
 | Artifact | URL |
 |----------|-----|
-| Verdict | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/verdict.json |
-| Eval summary | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/eval-summary.json |
-| Request | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/request.json |
-| Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/progress.jsonl |
-| Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/generated-samples.jsonl |
-| Scoring results | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/scoring-results.jsonl |
-| Remote logs | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/remote-logs.txt |
+| Verdict | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/verdict.json |
+| Request | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/request.json |
+| Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/progress.jsonl |
+| Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/generated-samples.jsonl |
+| Scoring results | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/scoring-results.jsonl |
 
-Reference Denrite eval used for shape comparison (not this run):
+Reference Denrite eval (pin source + origin scores):
 `kubetee/compare/reference-ca530856-ffa8-4e66-9175-7400e829e8c0/`
 ([detail](https://pub-e2a73e9642e74a2ea78d2910c7a86025.r2.dev/detail.html?eval_run_id=ca530856-ffa8-4e66-9175-7400e829e8c0)).
+
+### Earlier seed-only PoC (2026-08-09, not apple-to-apple)
+
+`7e09f071-4514-4ae0-9b92-6cf02019544f` — seed-resampled 100 IDs (**0** overlap
+with ca530856). Scores chal 0.6359 / king 0.6364. Kept for cost/wall-clock
+history only (~$13.39 judge+GPU, ~39 min).
 
 ### Observed idle-GPU window
 
