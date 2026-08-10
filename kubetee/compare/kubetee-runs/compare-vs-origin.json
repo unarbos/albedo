@@ -27,7 +27,24 @@
     "chal_vllm_errors": 0,
     "king_vllm_errors": 0,
     "accelerator": "H200",
-    "name": "KubeTEE latest"
+    "name": "KubeTEE latest",
+    "economics": {
+      "eval_elapsed_seconds": 1890.76,
+      "judge_cost": 6.63575724,
+      "judge_requests": 3881,
+      "judge_per_model": {
+        "deepseek/deepseek-v4-flash-0731": 1.12722574,
+        "z-ai/glm-5.2": 5.50853062
+      },
+      "gpu_cost": 5.25211111,
+      "gpu_count": 4,
+      "rate_per_gpu_per_hour": 2.5,
+      "total_eval_cost": 11.88786835,
+      "timing_scope": "worker.execute only (generation + scoring + upload); excludes dataset prep + judge readiness",
+      "eval_start_utc": "2026-08-10T20:23:04.819988+00:00",
+      "eval_end_utc": "2026-08-10T20:54:35.579801+00:00",
+      "job_wall_clock_seconds": 1953.0
+    }
   },
   "kubetee_prior": {
     "eval_run_id": "3e60c4c8-0e86-48b1-8601-9544227b8b43",

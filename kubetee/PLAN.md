@@ -352,11 +352,17 @@ same king/challenger HF revision hashes). Split topology on `na-us-oakland-56`
 | Field | Value |
 |-------|--------|
 | `eval_run_id` | `9a0f5f09-812d-48ee-b3ad-5d91c5210391` |
+| `submission_id` | `b0c4a6da-ef58-42f2-a521-2245446d1c74` |
 | Verdict | `succeeded` (`challenger_won=false`) |
 | Scores | challenger **0.68715** / king **0.665788** (margin **+2.14 pp**, need +3.00) |
 | Samples | **100/100** scored (`king_vllm_errors=0`, `chal_vllm_errors=0`) |
 | King | `hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c` |
 | Challenger | `hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7` |
+| Wall clock | **1891 s** (~31.5 min) — `worker.execute` only (gen + score + upload) |
+| Job wall (K8s) | **1953 s** (~32.6 min) — Job start→complete (includes challenger vLLM load) |
+| Judge spend | **$6.64** (3881 requests; glm-5.2 $5.51 + dsv4-flash $1.13) |
+| GPU spend (challenger Job) | **$5.25** (4× H200 @ $2.50/gpu/h × 0.525 h) |
+| Total (judge + GPU) | **$11.89** |
 | vs origin ca530856 | chal **−0.23 pp** / king **+0.67 pp**; per-sample winner agree **50%**; MAE ~0.15 |
 
 Origin Denrite (Blackwell): chal **0.689451** / king **0.659136**, margin **+3.03 pp**, won.
@@ -372,6 +378,7 @@ Public artifact URLs (Hippius `public-read`; prefix
 | Artifact | URL |
 |----------|-----|
 | Verdict | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/verdict.json |
+| Eval summary (time + $) | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/eval-summary.json |
 | Request | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/request.json |
 | Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/progress.jsonl |
 | Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/generated-samples.jsonl |
