@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from . import judge_metrics
+
 
 @dataclass(frozen=True)
 class AdaptiveConcurrencyConfig:
@@ -102,10 +104,14 @@ class AdaptiveConcurrencyGate:
         return max(absolute, relative)
 
     async def acquire(self) -> None:
+        t0 = time.monotonic()
         async with self._cond:
             while self._in_flight >= self._limit:
                 await self._cond.wait()
             self._in_flight += 1
+        judge_metrics.observe_acquire_wait(
+            model=self._name, wait_s=time.monotonic() - t0
+        )
 
     async def release(self) -> None:
         async with self._cond:
@@ -153,6 +159,7 @@ class AdaptiveConcurrencyGate:
         ):
             self._success_streak = 0
             self._limit += 1
+            judge_metrics.observe_ramp(model=self._name)
             logger.info(
                 "[adaptive-concurrency] ramp+1 name={} limit={} in_flight={} baseline_s={}",
                 self._name,
@@ -180,6 +187,7 @@ class AdaptiveConcurrencyGate:
         self._held = True
         self._success_streak = 0
         self._cooldown_remaining = self._cfg.cooldown_successes
+        judge_metrics.observe_hold(model=self._name, reason=reason)
         logger.warning(
             "[adaptive-concurrency] {} hold name={} prev_limit={} new_limit={} "
             "in_flight={} hold_ratio={:.2f} cooldown_successes={} {}",
@@ -242,6 +250,7 @@ class AdaptiveConcurrencyGate:
         if latency_s <= threshold:
             return False
 
+        judge_metrics.observe_latency_oor(model=self._name)
         logger.warning(
             "[adaptive-concurrency] latency out of range name={} "
             "latency_s={:.3f} threshold_s={:.3f} baseline_s={} "

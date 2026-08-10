@@ -16,6 +16,7 @@ import httpx
 from loguru import logger
 
 from .adaptive_concurrency import AdaptiveConcurrencyConfig, AdaptiveConcurrencyGate
+from . import judge_metrics
 from .judge_config import JudgeSettings
 from .judge_core import JUDGE_MODELS, JUDGE_PROVIDER_PINS
 
@@ -171,6 +172,14 @@ class OpenRouterJudgeClient:
                 else "OFF (no engy api key) — using OpenRouter/LiteLLM (KubeTEE default)"
             )
         )
+
+    def adaptive_gates(self) -> list[AdaptiveConcurrencyGate]:
+        """Live adaptive gates for Prometheus scrapes (empty if disabled)."""
+        return [
+            gate
+            for gate in self._gates.values()
+            if isinstance(gate, AdaptiveConcurrencyGate)
+        ]
 
     def _gate_for(self, model: str) -> AdaptiveConcurrencyGate | asyncio.Semaphore:
         gate = self._gates.get(model)
@@ -328,18 +337,37 @@ class OpenRouterJudgeClient:
                     purpose=purpose,
                     eval_run_id=eval_run_id,
                 )
+                duration_s = time.monotonic() - t0
                 if isinstance(gate, AdaptiveConcurrencyGate):
-                    gate.observe_success(time.monotonic() - t0)
+                    gate.observe_success(duration_s)
+                judge_metrics.observe_request(
+                    model=model, purpose=purpose, result="ok", duration_s=duration_s
+                )
                 return result
             except Exception as exc:
-                if (
-                    isinstance(gate, AdaptiveConcurrencyGate)
-                    and isinstance(exc, httpx.HTTPStatusError)
+                duration_s = time.monotonic() - t0
+                is_429 = (
+                    isinstance(exc, httpx.HTTPStatusError)
                     and exc.response.status_code == 429
-                ):
+                )
+                if isinstance(gate, AdaptiveConcurrencyGate) and is_429:
                     gate.observe_429()
+                if is_429:
+                    judge_metrics.observe_request(
+                        model=model,
+                        purpose=purpose,
+                        result="429",
+                        duration_s=duration_s,
+                    )
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt >= transport_budget:
+                    if not is_429:
+                        judge_metrics.observe_request(
+                            model=model,
+                            purpose=purpose,
+                            result="error",
+                            duration_s=duration_s,
+                        )
                     break
                 await asyncio.sleep(
                     _retry_sleep_seconds(exc, attempt, self.settings.retry_backoff_seconds)

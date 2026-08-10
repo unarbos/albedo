@@ -25,7 +25,8 @@ RUN pip install --no-cache-dir \
     "loguru>=0.7" \
     "pydantic>=2.8" \
     "pydantic-settings>=2.4" \
-    "pyarrow>=16"
+    "pyarrow>=16" \
+    "prometheus_client>=0.21"
 
 EXPOSE 8091
 

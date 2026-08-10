@@ -1,9 +1,13 @@
-# Shared albedo-judge-api stack (ConfigMap + Deployment + Service + NetworkPolicy).
+# Shared albedo-judge-api stack (ConfigMap + Deployment + Service +
+# NetworkPolicy + ServiceMonitor). Grafana dashboard is separate:
+#   deploy/grafana-dashboard-judge-api.yaml → cattle-dashboards
 #
 # Applied OUT-OF-BAND on na-us-oakland-56 (NOT Fleet-managed):
 #
 #   kubectl --context na-us-oakland-56-direct apply -f \
 #     kubetee/deploy/judge-api.yaml
+#   kubectl --context na-us-oakland-56-direct apply -f \
+#     kubetee/deploy/grafana-dashboard-judge-api.yaml
 #
 # Eval Jobs set:
 #   SELFDRIVE_JUDGE_BASE_URL=http://albedo-judge-api.albedo-poc.svc.cluster.local:8091
@@ -11,6 +15,10 @@
 # Auth token lives in Secret albedo-poc-secrets (ALBEDO_JUDGE_API_AUTH_TOKEN)
 # and must match SELFDRIVE_SCORING_AUTH_TOKEN on eval Jobs.
 # Eval GPU/dataset keys stay in eval.yaml.
+#
+# /metrics is unauthenticated (concurrency/load only — no cost). Scrapes need
+# NetworkPolicy allow from cattle-monitoring-system + ServiceMonitor
+# label release=rancher-monitoring.
 
 ---
 apiVersion: v1
@@ -82,7 +90,7 @@ spec:
     spec:
       containers:
         - name: judge-api
-          image: ghcr.io/kubetee-ai/albedo-judge-api:main-merge-20260810221000
+          image: ghcr.io/kubetee-ai/albedo-judge-api:metrics-20260811021000
           imagePullPolicy: Always
           ports:
             - name: http
@@ -99,8 +107,8 @@ spec:
             requests:
               cpu: "4"
               memory: "16Gi"
-          # /health and /ready are unauthenticated so kubelet probes work
-          # behind NetworkPolicy (host→pod probe traffic is not ns-sourced).
+          # /health, /ready, /metrics are unauthenticated so kubelet probes and
+          # Prometheus scrapes work behind NetworkPolicy.
           # Liveness is intentionally loose: a full /score-batch can keep the
           # event loop busy for minutes; a tight probe SIGKILLs mid-score
           # (PROVIDER_FAULT / judge_provider_exhausted on the eval Job).
@@ -169,3 +177,27 @@ spec:
       ports:
         - protocol: TCP
           port: 8091
+---
+# rancher-monitoring only selects ServiceMonitors with release=rancher-monitoring.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: albedo-judge-api
+  namespace: albedo-poc
+  labels:
+    release: rancher-monitoring
+    app.kubernetes.io/name: albedo-judge-api
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: albedo-judge-api
+  namespaceSelector:
+    matchNames:
+      - albedo-poc
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true

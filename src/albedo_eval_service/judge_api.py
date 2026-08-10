@@ -10,10 +10,11 @@ from uuid import uuid4
 
 import httpx
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from . import judge_metrics
 from .judge_config import JudgeSettings, get_judge_settings
 from .observation_format import (
     CommandContract,
@@ -874,6 +875,10 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
     async def startup() -> None:
         client = OpenRouterJudgeClient(settings)
         app.state.eval_client = client
+        judge_metrics.set_gates_provider(client.adaptive_gates)
+        judge_metrics.SCORE_SAMPLE_LIMIT.set(
+            float(max(1, settings.max_score_sample_concurrency))
+        )
         repo_context = RepoContextClient(settings) if settings.repo_context_url else None
         app.state.repo_context_client = repo_context
         app.state.observation_service = ObservationSimulationService(settings, client, repo_context)
@@ -885,6 +890,7 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
+        judge_metrics.set_gates_provider(None)
         client = getattr(app.state, "eval_client", None)
         if client is not None:
             await client.aclose()
@@ -903,6 +909,7 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
         if store is None:
             client = OpenRouterJudgeClient(settings)
             app.state.eval_client = client
+            judge_metrics.set_gates_provider(client.adaptive_gates)
             repo_context = RepoContextClient(settings) if settings.repo_context_url else None
             app.state.repo_context_client = repo_context
             app.state.observation_service = ObservationSimulationService(
@@ -929,6 +936,14 @@ def create_app(settings: JudgeSettings | None = None) -> FastAPI:
             "evaluator_model": settings.evaluator_model,
             "num_questions": settings.num_questions,
         }
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        # Unauthenticated scrape target for rancher-monitoring (NP-scoped).
+        # Concurrency/load only — cost stays on GET /eval-cost/{id}.
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/eval-cost")
     async def eval_cost_missing(_: None = Depends(require_auth)) -> dict[str, object]:
@@ -1308,86 +1323,94 @@ async def _score_samples(
         settings.max_concurrency_per_model,
     )
 
-    async def _score_one(sample: JudgeSample) -> dict[str, Any]:
-        nonlocal completed
-        async with sample_sem:
-            try:
-                return await _score_one_inner(sample)
-            except Exception as exc:
-                async with progress_lock:
-                    completed += 1
-                logger.warning(
-                    "score_batch_sample_failed eval_run_id={} batch_id={} completed={}/{} sample_id={} error={}",
+    judge_metrics.score_batch_enter(sample_limit=sample_limit)
+    try:
+
+        async def _score_one(sample: JudgeSample) -> dict[str, Any]:
+            nonlocal completed
+            async with sample_sem:
+                judge_metrics.score_sample_enter()
+                try:
+                    return await _score_one_inner(sample)
+                except Exception as exc:
+                    async with progress_lock:
+                        completed += 1
+                    logger.warning(
+                        "score_batch_sample_failed eval_run_id={} batch_id={} completed={}/{} sample_id={} error={}",
+                        request.eval_run_id, request.batch_id, completed, len(request.samples),
+                        sample.sample_id, f"{type(exc).__name__}: {exc}",
+                    )
+                    return {
+                        "sample_id": sample.sample_id,
+                        "questions": [],
+                        "king_score": None,
+                        "challenger_score": None,
+                        "judge_results": [],
+                        "scored": False,
+                        "scoring_mode": "binary",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                finally:
+                    judge_metrics.score_sample_exit()
+
+        async def _score_one_inner(sample: JudgeSample) -> dict[str, Any]:
+            nonlocal completed
+            prepared = await _questions_for(request, sample, prep_store)
+            if prepared.error:
+                raise QuestionScoringUnavailable(prepared.error)
+            questions = prepared.questions
+            gate_flag = prepared.source.get("reference_made_edit")
+            gate_flag = bool(gate_flag) if gate_flag is not None else None
+            if prepared.source.get("pruned_out") is not None:
+                gate_flag = None  # pruning already calibrated the checklist to the reference
+            async def _side(side: str, response_text: str):
+                if is_truncated(response_text):
+                    return _corrupted_side(
+                        side=side, questions=questions, judge_models=request.judge_models
+                    )
+                return await _judge_side(
+                    client=client, settings=settings, side=side,
+                    response_text=response_text, questions=questions,
+                    judge_models=request.judge_models, reference_made_edit=gate_flag,
+                )
+
+            (king_answers, king_recs), (chal_answers, chal_recs) = await asyncio.gather(
+                _side("previous_king", sample.previous_king_output),
+                _side("challenger", sample.challenger_output),
+            )
+            king_score = response_score(king_answers, questions)
+            chal_score = response_score(chal_answers, questions)
+            king_ok = all(r["parse_ok"] for r in king_recs) and king_score is not None
+            chal_ok = all(r["parse_ok"] for r in chal_recs) and chal_score is not None
+            scored = king_ok and chal_ok
+            async with progress_lock:
+                completed += 1
+                logger.info(
+                    "score_batch_sample_done eval_run_id={} batch_id={} completed={}/{} sample_id={} "
+                    "scored={} king={} chal={} elapsed_s={:.1f}",
                     request.eval_run_id, request.batch_id, completed, len(request.samples),
-                    sample.sample_id, f"{type(exc).__name__}: {exc}",
+                    sample.sample_id, scored, king_score, chal_score, time.monotonic() - started_at,
                 )
-                return {
-                    "sample_id": sample.sample_id,
-                    "questions": [],
-                    "king_score": None,
-                    "challenger_score": None,
-                    "judge_results": [],
-                    "scored": False,
-                    "scoring_mode": "binary",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
+            return {
+                "sample_id": sample.sample_id,
+                "questions": questions,
+                "king_score": king_score,
+                "challenger_score": chal_score,
+                "judge_results": king_recs + chal_recs,
+                "scored": scored,
+                "scoring_mode": "binary",
+                "question_source": prepared.source,
+            }
 
-    async def _score_one_inner(sample: JudgeSample) -> dict[str, Any]:
-        nonlocal completed
-        prepared = await _questions_for(request, sample, prep_store)
-        if prepared.error:
-            raise QuestionScoringUnavailable(prepared.error)
-        questions = prepared.questions
-        gate_flag = prepared.source.get("reference_made_edit")
-        gate_flag = bool(gate_flag) if gate_flag is not None else None
-        if prepared.source.get("pruned_out") is not None:
-            gate_flag = None  # pruning already calibrated the checklist to the reference
-        async def _side(side: str, response_text: str):
-            if is_truncated(response_text):
-                return _corrupted_side(
-                    side=side, questions=questions, judge_models=request.judge_models
-                )
-            return await _judge_side(
-                client=client, settings=settings, side=side,
-                response_text=response_text, questions=questions,
-                judge_models=request.judge_models, reference_made_edit=gate_flag,
-            )
-
-        (king_answers, king_recs), (chal_answers, chal_recs) = await asyncio.gather(
-            _side("previous_king", sample.previous_king_output),
-            _side("challenger", sample.challenger_output),
+        records = await asyncio.gather(*[_score_one(sample) for sample in request.samples])
+        logger.info(
+            "score_batch_done eval_run_id={} batch_id={} scored={}/{} elapsed_s={:.1f}",
+            request.eval_run_id, request.batch_id,
+            sum(1 for r in records if r.get("scored")), len(records), time.monotonic() - started_at,
         )
-        king_score = response_score(king_answers, questions)
-        chal_score = response_score(chal_answers, questions)
-        king_ok = all(r["parse_ok"] for r in king_recs) and king_score is not None
-        chal_ok = all(r["parse_ok"] for r in chal_recs) and chal_score is not None
-        scored = king_ok and chal_ok
-        async with progress_lock:
-            completed += 1
-            logger.info(
-                "score_batch_sample_done eval_run_id={} batch_id={} completed={}/{} sample_id={} "
-                "scored={} king={} chal={} elapsed_s={:.1f}",
-                request.eval_run_id, request.batch_id, completed, len(request.samples),
-                sample.sample_id, scored, king_score, chal_score, time.monotonic() - started_at,
-            )
-        return {
-            "sample_id": sample.sample_id,
-            "questions": questions,
-            "king_score": king_score,
-            "challenger_score": chal_score,
-            "judge_results": king_recs + chal_recs,
-            "scored": scored,
-            "scoring_mode": "binary",
-            "question_source": prepared.source,
-        }
-
-    records = await asyncio.gather(*[_score_one(sample) for sample in request.samples])
-    logger.info(
-        "score_batch_done eval_run_id={} batch_id={} scored={}/{} elapsed_s={:.1f}",
-        request.eval_run_id, request.batch_id,
-        sum(1 for r in records if r.get("scored")), len(records), time.monotonic() - started_at,
-    )
-    return list(records)
+        return list(records)
+    finally:
+        judge_metrics.score_batch_exit()
 
 
 def _notify(

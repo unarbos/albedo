@@ -1,0 +1,401 @@
+# Grafana dashboard for albedo-judge-api concurrency / dynamic load.
+# Sidecar only watches cattle-dashboards + grafana_dashboard=1.
+#
+#   kubectl --context na-us-oakland-56-direct apply -f \
+#     kubetee/deploy/grafana-dashboard-judge-api.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: albedo-judge-api-dashboard
+  namespace: cattle-dashboards
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: albedo-judge-api
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+data:
+  albedo-judge-api-concurrency.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "liveNow": false,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "In-flight (sum)",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum(albedo_judge_adaptive_in_flight{namespace=\"albedo-poc\"})",
+              "legendFormat": "in_flight",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 32 },
+                  { "color": "red", "value": 56 }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Adaptive limit (sum)",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum(albedo_judge_adaptive_limit{namespace=\"albedo-poc\"})",
+              "legendFormat": "limit",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Utilization",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "avg(albedo_judge_adaptive_utilization_ratio{namespace=\"albedo-poc\"})",
+              "legendFormat": "util",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.75 },
+                  { "color": "red", "value": 0.95 }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Held models",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum(albedo_judge_adaptive_held{namespace=\"albedo-poc\"})",
+              "legendFormat": "held",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Score-batch active",
+          "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum(albedo_judge_score_batch_active{namespace=\"albedo-poc\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Score samples in-flight",
+          "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum(albedo_judge_score_sample_in_flight{namespace=\"albedo-poc\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Adaptive concurrency: in-flight vs limit",
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "albedo_judge_adaptive_in_flight{namespace=\"albedo-poc\"}",
+              "legendFormat": "in_flight {{model}}",
+              "refId": "A"
+            },
+            {
+              "expr": "albedo_judge_adaptive_limit{namespace=\"albedo-poc\"}",
+              "legendFormat": "limit {{model}}",
+              "refId": "B"
+            },
+            {
+              "expr": "albedo_judge_adaptive_max_limit{namespace=\"albedo-poc\"}",
+              "legendFormat": "max {{model}}",
+              "refId": "C"
+            },
+            {
+              "expr": "albedo_judge_adaptive_min_limit{namespace=\"albedo-poc\"}",
+              "legendFormat": "min {{model}}",
+              "refId": "D"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Gate acquire wait (p50 / p95)",
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, model) (rate(albedo_judge_gate_acquire_wait_seconds_bucket{namespace=\"albedo-poc\"}[$__rate_interval])))",
+              "legendFormat": "p50 {{model}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, model) (rate(albedo_judge_gate_acquire_wait_seconds_bucket{namespace=\"albedo-poc\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{model}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Request rate by purpose / result",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum by (purpose, result) (rate(albedo_judge_requests_total{namespace=\"albedo-poc\"}[$__rate_interval]))",
+              "legendFormat": "{{purpose}} {{result}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never", "stacking": { "mode": "normal" } }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Upstream latency (p50 / p95) by purpose",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, purpose) (rate(albedo_judge_request_duration_seconds_bucket{namespace=\"albedo-poc\"}[$__rate_interval])))",
+              "legendFormat": "p50 {{purpose}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, purpose) (rate(albedo_judge_request_duration_seconds_bucket{namespace=\"albedo-poc\"}[$__rate_interval])))",
+              "legendFormat": "p95 {{purpose}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Adaptive holds / latency-OOR / ramps",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum by (model, reason) (rate(albedo_judge_adaptive_holds_total{namespace=\"albedo-poc\"}[$__rate_interval]))",
+              "legendFormat": "hold {{model}} {{reason}}",
+              "refId": "A"
+            },
+            {
+              "expr": "sum by (model) (rate(albedo_judge_adaptive_latency_oor_total{namespace=\"albedo-poc\"}[$__rate_interval]))",
+              "legendFormat": "latency_oor {{model}}",
+              "refId": "B"
+            },
+            {
+              "expr": "sum by (model) (rate(albedo_judge_adaptive_ramps_total{namespace=\"albedo-poc\"}[$__rate_interval]))",
+              "legendFormat": "ramp {{model}}",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Score-batch load",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "expr": "sum(albedo_judge_score_batch_active{namespace=\"albedo-poc\"})",
+              "legendFormat": "batches active",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(albedo_judge_score_sample_in_flight{namespace=\"albedo-poc\"})",
+              "legendFormat": "samples in-flight",
+              "refId": "B"
+            },
+            {
+              "expr": "max(albedo_judge_score_sample_limit{namespace=\"albedo-poc\"})",
+              "legendFormat": "sample limit",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+            }
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        }
+      ],
+      "refresh": "15s",
+      "schemaVersion": 39,
+      "style": "dark",
+      "tags": ["albedo", "judge-api", "kubetee", "concurrency"],
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "text": "default", "value": "default" },
+            "hide": 0,
+            "includeAll": false,
+            "multi": false
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Albedo Judge API — Concurrency",
+      "uid": "albedo-judge-api-concurrency",
+      "version": 1
+    }
