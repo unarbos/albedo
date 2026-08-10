@@ -340,49 +340,59 @@ would mix concurrent Jobs).
 - **kubectl context** — all PoC ops from local use `na-us-oakland-56-direct`.
   Fleet ops (if ever needed) use `stagingrancher`. Never mix.
 
-## Latest apple-to-apple PoC eval (2026-08-10)
+## Latest apple-to-apple PoC eval (2026-08-10) — post `origin/main` merge
 
 Pinned to Denrite reference `ca530856-ffa8-4e66-9175-7400e829e8c0` via
 `ALBEDO_EVAL_SAMPLE_IDS_FILE` (same 100 `sample_ids`, `manifest_hash=e3cff617…`,
 same king/challenger HF revision hashes). Split topology on `na-us-oakland-56`
 (always-on king + challenger Job TP=4 on `am-h200-25`; judge via
-`albedo-judge-api` → LiteLLM → `z-ai/glm-5.2` + simulate
+`albedo-judge-api:main-merge-20260810221000` → LiteLLM → `z-ai/glm-5.2` + simulate
 `deepseek/deepseek-v4-flash-0731`).
+
+**Merged from Denrite `main` before this run:** fence-aware `<think>` strip,
+phase read caps (`cold`/`pre_edit`/`at_edit`), discarded-questions audit.
+KubeTEE adaptive concurrency kept; Engy routing opt-in only (unset on PoC).
 
 | Field | Value |
 |-------|--------|
-| `eval_run_id` | `9a0f5f09-812d-48ee-b3ad-5d91c5210391` |
-| `submission_id` | `b0c4a6da-ef58-42f2-a521-2245446d1c74` |
+| `eval_run_id` | `fd245d96-ad6e-46dd-b101-a92a88b6ec05` |
+| `submission_id` | `30a82d0a-14ac-408b-8913-ab82d60e02f8` |
 | Verdict | `succeeded` (`challenger_won=false`) |
-| Scores | challenger **0.68715** / king **0.665788** (margin **+2.14 pp**, need +3.00) |
+| Scores | challenger **0.650496** / king **0.68124** (margin **−3.07 pp**) |
 | Samples | **100/100** scored (`king_vllm_errors=0`, `chal_vllm_errors=0`) |
 | King | `hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c` |
 | Challenger | `hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7` |
-| Wall clock | **1891 s** (~31.5 min) — `worker.execute` only (gen + score + upload) |
-| Job wall (K8s) | **1953 s** (~32.6 min) — Job start→complete (includes challenger vLLM load) |
-| Judge spend | **$6.64** (3881 requests; glm-5.2 $5.51 + dsv4-flash $1.13) |
-| GPU spend (challenger Job) | **$5.25** (4× H200 @ $2.50/gpu/h × 0.525 h) |
-| Total (judge + GPU) | **$11.89** |
-| vs origin ca530856 | chal **−0.23 pp** / king **+0.67 pp**; per-sample winner agree **50%**; MAE ~0.15 |
+| Wall clock | **2344 s** (~39.1 min) — `worker.execute` only |
+| Judge spend | **$6.87** (3953 requests; glm-5.2 $5.75 + dsv4-flash $1.12) |
+| GPU spend (challenger Job) | **$6.51** (4× H200 @ $2.50/gpu/h × 0.651 h) |
+| Total (judge + GPU) | **$13.38** |
 
-Origin Denrite (Blackwell): chal **0.689451** / king **0.659136**, margin **+3.03 pp**, won.
+### vs Denrite origin `ca530856` (challenger won on dashboard)
 
-Prior pin runs: `3e60c4c8…` (100/100, chal 0.6809 / king 0.6785); `e6c56798…`
-(99/100 — one king context overflow at `max_model_len=32768`).
+| | Origin (Denrite) | KubeTEE `fd245d96` (post-main) | KubeTEE `9a0f5f09` (pre-main) |
+|--|------------------|-------------------------------|-------------------------------|
+| Hardware | 8× RTX PRO 6000 Blackwell | H200 | H200 |
+| Challenger | **0.689451** | **0.650496** (−3.90 pp) | **0.68715** (−0.23 pp) |
+| King | **0.659136** | **0.68124** (+2.21 pp) | **0.665788** (+0.67 pp) |
+| Margin | **+3.03 pp** (won) | **−3.07 pp** (no win) | **+2.14 pp** (no win; need +3.00) |
+| Scored | 100/100 | 100/100 | 100/100 |
+| Winner agree (paired) | — | **57%** | **50%** |
+| MAE chal / king | — | 0.172 / 0.169 | ~0.154 / 0.155 |
+| Worker wall / total $ | — | 39.1 min / $13.38 | 31.5 min / $11.89 |
 
-Stats + local artifacts: `kubetee/compare/kubetee-runs/compare-vs-origin.json`.
+Stats: `kubetee/compare/kubetee-runs/compare-vs-origin.json`.
 
-Public artifact URLs (Hippius `public-read`; prefix
-`s3://sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/`):
+Public artifacts (Hippius `public-read`; prefix
+`s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/`):
 
 | Artifact | URL |
 |----------|-----|
-| Verdict | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/verdict.json |
-| Eval summary (time + $) | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/eval-summary.json |
-| Request | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/request.json |
-| Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/progress.jsonl |
-| Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/generated-samples.jsonl |
-| Scoring results | https://s3.hippius.com/sn97-albedo/kubetee-poc/9a0f5f09-812d-48ee-b3ad-5d91c5210391/scoring-results.jsonl |
+| Verdict | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/verdict.json |
+| Eval summary (time + $) | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/eval-summary.json |
+| Request | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/request.json |
+| Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/progress.jsonl |
+| Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/generated-samples.jsonl |
+| Scoring results | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/scoring-results.jsonl |
 
 Reference Denrite eval (pin source + origin scores):
 `kubetee/compare/reference-ca530856-ffa8-4e66-9175-7400e829e8c0/`

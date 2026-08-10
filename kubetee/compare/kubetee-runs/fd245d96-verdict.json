@@ -1,0 +1,93 @@
+{
+  "allowed_scores": [
+    0.0,
+    0.5,
+    1.0
+  ],
+  "artifact_metadata": {
+    "generated_samples": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/generated-samples.jsonl",
+      "sha256": "sha256:e4df4744ed1bfe4512ce45ee668468cdb82b93120bc568a6f0c2880bf00cc880",
+      "size_bytes": 18328235,
+      "uri": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/generated-samples.jsonl"
+    },
+    "progress": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/progress.jsonl",
+      "sha256": "sha256:131fa38a903bc206baa878db84f432b3ffb2199486e35c2b77a252fef094093f",
+      "size_bytes": 15095,
+      "uri": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/progress.jsonl"
+    },
+    "remote_logs": {
+      "bucket": "sn97-albedo",
+      "content_type": "text/plain",
+      "object_key": "kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/remote-logs.txt",
+      "sha256": "sha256:33f99d5f61fd7eb3ac715c6c73834dba00f469f4debef3e361053be907ffce69",
+      "size_bytes": 179,
+      "uri": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/remote-logs.txt"
+    },
+    "request": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/json",
+      "object_key": "kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/request.json",
+      "sha256": "sha256:3ea6af76f5acd65e164079344e9639baa96520afc16da68222a37c992ea2d131",
+      "size_bytes": 7264,
+      "uri": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/request.json"
+    },
+    "scoring_results": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/scoring-results.jsonl",
+      "sha256": "sha256:e94b63bd1aeebf35cbf2f87110f16a2d0ebdde87e0854b5e3a17881169b91133",
+      "size_bytes": 3933146,
+      "uri": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/scoring-results.jsonl"
+    }
+  },
+  "artifacts": {
+    "generated_samples": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/generated-samples.jsonl",
+    "progress": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/progress.jsonl",
+    "remote_logs": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/remote-logs.txt",
+    "request": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/request.json",
+    "scoring_results": "s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/scoring-results.jsonl"
+  },
+  "chal_vllm_errors": 0,
+  "challenger_won": false,
+  "eval_run_id": "fd245d96-ad6e-46dd-b101-a92a88b6ec05",
+  "fault_class": null,
+  "fault_code": null,
+  "fault_message": null,
+  "generated_sample_count": 100,
+  "gpu_topology": {
+    "accelerator": "H200",
+    "challenger": [
+      "0",
+      "1",
+      "2",
+      "3"
+    ],
+    "previous_king": [],
+    "tensor_parallel_size_per_model": 4
+  },
+  "judge_count": 1,
+  "judge_errors": 0,
+  "king_vllm_errors": 0,
+  "required_win_margin": 0.03,
+  "retryable": null,
+  "score_breakdown": {
+    "by_judge": {
+      "z-ai/glm-5.2": 0.650496
+    },
+    "by_metric": {}
+  },
+  "score_challenger": 0.650496,
+  "score_king": 0.68124,
+  "scored_sample_count": 100,
+  "scoring_mode": "binary",
+  "state": "succeeded",
+  "total_turns": 100,
+  "type": "verdict",
+  "valid_turns": 100
+}
