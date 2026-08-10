@@ -21,6 +21,15 @@ Kubernetes `Job` (no Armada — that's a follow-up) applied directly to the
 King change protocol: set king state to `changing` → in-flight Jobs get
 HTTP 503 `king_changing` → `fault_code=king_changed` (no registering verdict).
 
+**Dataset pin (apple-to-apple scoring):** eval Jobs load the exact 100
+`dataset.sample_ids` from
+`kubetee/compare/reference-ca530856-ffa8-4e66-9175-7400e829e8c0/request.json`
+via `ALBEDO_EVAL_SAMPLE_IDS_FILE` (same `manifest_hash`
+`e3cff61772b0096811d4c5d8bbc8dee8dacbd9a069bc4557608adf1c1c2ddf40` as
+`albedo-poc-dataset-config`). Seed resampling is disabled while that file
+is set — the earlier seed-only PoC run (`7e09f071-…`, seed `kubetee-poc`)
+had **0** overlap with this Denrite sample set.
+
 Concurrent challengers need a **second non-CC H200** (king already owns
 4 GPUs on `am-h200-25`).
 

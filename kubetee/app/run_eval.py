@@ -90,6 +90,49 @@ def _csv(name: str, default: str = "") -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _load_sample_ids() -> list[str]:
+    """Pinned sample IDs for apple-to-apple scoring (CSV env or JSON file).
+
+    Prefer ``ALBEDO_EVAL_SAMPLE_IDS`` (comma-separated). Else if
+    ``ALBEDO_EVAL_SAMPLE_IDS_FILE`` is set, load from that path:
+
+    - JSON list of strings
+    - JSON object with ``sample_ids``
+    - full EvalRequest-shaped JSON with ``dataset.sample_ids`` (e.g. the
+      Denrite reference ``compare/reference-ca530856-…/request.json``)
+
+    When non-empty, ``RemoteEvalWorker`` uses these IDs and ignores
+    ``sample_seed`` resampling.
+    """
+    from_csv = _csv("ALBEDO_EVAL_SAMPLE_IDS")
+    if from_csv:
+        return from_csv
+    path = _env("ALBEDO_EVAL_SAMPLE_IDS_FILE")
+    if not path:
+        return []
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if isinstance(payload, list):
+        ids = [str(item).strip() for item in payload if str(item).strip()]
+    elif isinstance(payload, dict):
+        if isinstance(payload.get("sample_ids"), list):
+            ids = [str(item).strip() for item in payload["sample_ids"] if str(item).strip()]
+        else:
+            nested = payload.get("dataset") or {}
+            ids = [
+                str(item).strip()
+                for item in (nested.get("sample_ids") or [])
+                if str(item).strip()
+            ]
+    else:
+        raise RuntimeError(
+            f"ALBEDO_EVAL_SAMPLE_IDS_FILE={path}: expected JSON list or object"
+        )
+    if not ids:
+        raise RuntimeError(f"ALBEDO_EVAL_SAMPLE_IDS_FILE={path}: empty sample_ids")
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # EvalRequest + RemoteSettings assembly
 # ---------------------------------------------------------------------------
@@ -126,6 +169,19 @@ def _load_eval_request() -> EvalRequest:
     # write to the same S3 path and evals from multiple submissions coexist.
     artifact_prefix = f"{artifact_prefix.rstrip('/')}/{eval_run_id}"
 
+    sample_ids = _load_sample_ids()
+    sample_count = (
+        len(sample_ids)
+        if sample_ids
+        else int(_env("ALBEDO_EVAL_SAMPLE_COUNT", "3"))
+    )
+    if sample_ids:
+        logger.info(
+            "pinned dataset sample_ids={} (seed resampling disabled; "
+            "apple-to-apple vs reference request.json)",
+            len(sample_ids),
+        )
+
     request = EvalRequest(
         eval_run_id=eval_run_id,
         submission_id=submission_id,
@@ -147,7 +203,7 @@ def _load_eval_request() -> EvalRequest:
                 "ALBEDO_EVAL_DATASET_MANIFEST_HASH",
                 "982a92bd85d122d287b15f2ddb4e2050b9e345fb3921aa9a63382c7af022bd7f",
             ),
-            sample_count=int(_env("ALBEDO_EVAL_SAMPLE_COUNT", "3")),
+            sample_count=sample_count,
             # max_turns_per_sample is NOT a DatasetConfig field (removed upstream);
             # the worker uses trajectory_assistant_turns from RemoteSettings instead.
             # The ConfigMap's ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE is inert (not read).
@@ -155,7 +211,7 @@ def _load_eval_request() -> EvalRequest:
             sampling_algo=_env("ALBEDO_EVAL_SAMPLING_ALGO", "swe-zero-multi-source-sample-v1"),
             generation_batch_size=_n_samples_per_batch("generation"),
             scoring_batch_size=_n_samples_per_batch("scoring"),
-            sample_ids=_csv("ALBEDO_EVAL_SAMPLE_IDS"),
+            sample_ids=sample_ids,
         ),
         scoring=ScoringConfig(
             judge_config_hash=_env("ALBEDO_EVAL_JUDGE_CONFIG_HASH", "sha256:replace-with-real-hash"),

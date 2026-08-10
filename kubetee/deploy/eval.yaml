@@ -59,6 +59,13 @@ data:
 
   # Match public Albedo reference ca530856 (see kubetee/compare/reference-ca530856-*).
   # 100 samples / batch 32 → 4 gen batches + 4 score batches; judge_count=1 (glm-5.2).
+  #
+  # Apple-to-apple dataset pin: exact sample_ids from Denrite reference
+  # request.json (manifest_hash e3cff617… — same as albedo-poc-dataset-config).
+  # When SAMPLE_IDS_FILE is set, run_eval loads dataset.sample_ids and does NOT
+  # re-sample from ALBEDO_EVAL_SAMPLE_SEED (PoC run 7e09f071 used seed-only and
+  # had 0 overlap with this reference set).
+  ALBEDO_EVAL_SAMPLE_IDS_FILE: "/app/shared/albedo/kubetee/compare/reference-ca530856-ffa8-4e66-9175-7400e829e8c0/request.json"
   ALBEDO_EVAL_SAMPLE_COUNT: "100"
   ALBEDO_EVAL_GENERATION_BATCH_SIZE: "32"
   ALBEDO_EVAL_SCORING_BATCH_SIZE: "32"
@@ -66,6 +73,7 @@ data:
   ALBEDO_REMOTE_SCORING_BATCH_CONCURRENCY: "128"
   ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE: "8"
   ALBEDO_EVAL_SAMPLING_ALGO: "multi-source-manifest-sample-v1"
+  # Ignored while SAMPLE_IDS_FILE / SAMPLE_IDS are set (kept for smoke/seeded runs).
   ALBEDO_EVAL_SAMPLE_SEED: "kubetee-poc"
   ALBEDO_EVAL_JUDGE_CONFIG_HASH: "sha256:replace-with-real-hash"
   # count=1 → glm only (hardcoded JUDGE_MODELS order; count=2 still includes 397B).
