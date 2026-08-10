@@ -14,4 +14,6 @@ Origin Denrite `ca530856`: chal **0.689451** / king **0.659136**, margin **+3.03
 
 Aggregate + paired stats: [`compare-vs-origin.json`](./compare-vs-origin.json).
 
-Public S3: `https://s3.hippius.com/sn97-albedo/kubetee-poc/<eval_run_id>/`.
+Public S3 objects: `https://s3.hippius.com/sn97-albedo/kubetee-poc/<eval_run_id>/<file>`
+(e.g. `verdict.json`). Trailing-slash / prefix list URLs return **403** — Hippius
+does not allow anonymous `ListBucket`; only per-object `public-read` GET works.

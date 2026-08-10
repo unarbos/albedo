@@ -382,8 +382,9 @@ KubeTEE adaptive concurrency kept; Engy routing opt-in only (unset on PoC).
 
 Stats: `kubetee/compare/kubetee-runs/compare-vs-origin.json`.
 
-Public artifacts (Hippius `public-read`; prefix
-`s3://sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/`):
+Public artifacts (Hippius): each **object** is `public-read` (HTTP 200).
+Anonymous **prefix listing** is denied (`…/fd245d96…/` → 403 `AccessDenied`) —
+open the file URLs below, not the directory URL.
 
 | Artifact | URL |
 |----------|-----|
@@ -393,6 +394,7 @@ Public artifacts (Hippius `public-read`; prefix
 | Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/progress.jsonl |
 | Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/generated-samples.jsonl |
 | Scoring results | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/scoring-results.jsonl |
+| Remote logs | https://s3.hippius.com/sn97-albedo/kubetee-poc/fd245d96-ad6e-46dd-b101-a92a88b6ec05/remote-logs.txt |
 
 Reference Denrite eval (pin source + origin scores):
 `kubetee/compare/reference-ca530856-ffa8-4e66-9175-7400e829e8c0/`
