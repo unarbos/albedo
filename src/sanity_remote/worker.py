@@ -16,7 +16,15 @@ import httpx
 from loguru import logger
 
 from albedo_eval_service.canonical_model_config import canonical_max_model_len
-from albedo_eval_service.observation_format import truncation_notice, unclosed_think_block_notice
+from albedo_eval_service.observation_format import (
+    THINK_CLOSE_RE,
+    THINK_OPEN_RE,
+    THINK_TAG_RE,
+    mask_fenced_spans,
+    truncation_notice,
+    unclosed_think_block_notice,
+    unmask_fenced_spans,
+)
 from albedo_eval_service.remote_dataset import format_messages
 from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.state import SanityRun
@@ -58,9 +66,13 @@ def _warn_if_generation_budget_consumes_context(
 
 
 def _strip_thinking(text: str) -> str:
-    if "</think>" in text:
-        return text.rsplit("</think>", 1)[1].strip()
-    if "<think>" in text:
+    masked, fences = mask_fenced_spans(text or "")
+    if THINK_CLOSE_RE.search(masked):
+        kept = THINK_CLOSE_RE.split(masked)[-1]
+        if THINK_OPEN_RE.search(kept):
+            return unclosed_think_block_notice()
+        return unmask_fenced_spans(kept, fences).strip()
+    if THINK_OPEN_RE.search(masked):
         return unclosed_think_block_notice()
 
     return text
@@ -432,7 +444,7 @@ class VllmEngine:
                 logger.info(
                     "[sanity-remote] prompt finish={} thinking={} answer_words={}",
                     finish,
-                    "<think>" in raw or "</think>" in raw,
+                    bool(THINK_TAG_RE.search(raw)),
                     len(answer.split()),
                 )
                 if finish == "length" and generated >= max_tokens:

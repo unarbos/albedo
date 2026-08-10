@@ -140,6 +140,29 @@ def unclosed_think_block_notice() -> str:
 def has_unclosed_think_block(text: str) -> bool:
     return UNCLOSED_THINK_BLOCK_SENTINEL in (text or "")
 
+THINK_PAIR_RE = re.compile(r"<\s*think\s*>.*?<\s*/\s*think\s*>", re.DOTALL | re.IGNORECASE)
+THINK_OPEN_RE = re.compile(r"<\s*think\s*>", re.IGNORECASE)
+THINK_CLOSE_RE = re.compile(r"<\s*/\s*think\s*>", re.IGNORECASE)
+THINK_TAG_RE = re.compile(r"<\s*/?\s*think\s*>", re.IGNORECASE)
+_FENCED_SPAN_RE = re.compile(r"```.*?```", re.DOTALL)
+_FENCE_PLACEHOLDER = "\x00fence{}\x00"
+
+
+def mask_fenced_spans(text: str) -> tuple[str, list[str]]:
+    spans: list[str] = []
+
+    def _take(match: re.Match[str]) -> str:
+        spans.append(match.group(0))
+        return _FENCE_PLACEHOLDER.format(len(spans) - 1)
+
+    return _FENCED_SPAN_RE.sub(_take, text or ""), spans
+
+
+def unmask_fenced_spans(text: str, spans: list[str]) -> str:
+    for index, span in enumerate(spans):
+        text = text.replace(_FENCE_PLACEHOLDER.format(index), span)
+    return text
+
 MISSING_COMMAND_MESSAGE = "No bash command found in assistant message."
 
 

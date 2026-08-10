@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import email.utils
 import random
 import threading
@@ -126,6 +127,9 @@ class JudgeRawResponse:
     error: str | None = None
 
 
+ENGY_PURPOSE = "reference"
+
+
 class OpenRouterJudgeClient:
     def __init__(self, settings: JudgeSettings):
         if not settings.openrouter_api_key:
@@ -141,8 +145,32 @@ class OpenRouterJudgeClient:
             timeout=httpx.Timeout(settings.request_timeout_seconds),
             limits=httpx.Limits(max_connections=pool, max_keepalive_connections=pool),
         )
-        # Per-model gates: AdaptiveConcurrencyGate when enabled, else Semaphore.
+        # KubeTEE path: AdaptiveConcurrencyGate (or Semaphore) per model.
+        # Engy path: optional second HTTP client — only when ALBEDO_JUDGE_ENGY_API_KEY
+        # is set. KubeTEE PoC leaves the key unset so all traffic stays on OpenRouter/
+        # LiteLLM (self._client) with identical scoring request shaping.
         self._gates: dict[str, AdaptiveConcurrencyGate | asyncio.Semaphore] = {}
+        self._engy = (
+            httpx.AsyncClient(
+                base_url=settings.engy_base_url.rstrip("/"),
+                headers={"Authorization": f"Bearer {settings.engy_api_key}"},
+                timeout=httpx.Timeout(settings.request_timeout_seconds),
+                limits=httpx.Limits(max_connections=pool, max_keepalive_connections=pool),
+            )
+            if settings.engy_api_key
+            else None
+        )
+        self._engy_models = {m.strip() for m in settings.engy_models.split(",") if m.strip()}
+        self._engy_errors: collections.Counter[str] = collections.Counter()
+        logger.info(
+            f"[judge-openrouter] engy routing for purpose={ENGY_PURPOSE}: "
+            + (
+                f"ON models={sorted(self._engy_models)} url={settings.engy_base_url} "
+                f"max_errors={settings.engy_max_errors}"
+                if self._engy is not None
+                else "OFF (no engy api key) — using OpenRouter/LiteLLM (KubeTEE default)"
+            )
+        )
 
     def _gate_for(self, model: str) -> AdaptiveConcurrencyGate | asyncio.Semaphore:
         gate = self._gates.get(model)
@@ -174,6 +202,13 @@ class OpenRouterJudgeClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        if self._engy is not None:
+            await self._engy.aclose()
+
+    def _use_engy(self, purpose: str, model: str, eval_run_id: str) -> bool:
+        if self._engy is None or purpose != ENGY_PURPOSE or model not in self._engy_models:
+            return False
+        return self._engy_errors[eval_run_id] < self.settings.engy_max_errors
 
     async def __aenter__(self) -> "OpenRouterJudgeClient":
         return self
@@ -212,11 +247,13 @@ class OpenRouterJudgeClient:
         purpose: str = "other",
         parse_retries: int | None = None,
         retry_count: int | None = None,
+        eval_run_id: str = "",
     ) -> JudgeRawResponse:
         return await self._call(
             model=model, messages=messages, response_schema=response_schema,
             temperature=temperature, max_tokens=max_tokens, provider=provider, accept=accept,
             purpose=purpose, parse_retries=parse_retries, retry_count=retry_count,
+            eval_run_id=eval_run_id,
         )
 
     async def _call(
@@ -233,6 +270,7 @@ class OpenRouterJudgeClient:
         purpose: str = "other",
         parse_retries: int | None = None,
         retry_count: int | None = None,
+        eval_run_id: str = "",
     ) -> JudgeRawResponse:
         gate = self._gate_for(model)
         parse_budget = self.settings.parse_retries if parse_retries is None else parse_retries
@@ -249,6 +287,7 @@ class OpenRouterJudgeClient:
                     purpose=purpose,
                     retry_count=transport_budget,
                     gate=gate,
+                    eval_run_id=eval_run_id,
                 )
                 if last.error is None and (accept is None or accept(last.raw)):
                     return last
@@ -270,6 +309,7 @@ class OpenRouterJudgeClient:
         purpose: str = "other",
         retry_count: int | None = None,
         gate: AdaptiveConcurrencyGate | asyncio.Semaphore | None = None,
+        eval_run_id: str = "",
     ) -> JudgeRawResponse:
         transport_budget = self.settings.retry_count if retry_count is None else retry_count
         last_error = ""
@@ -286,6 +326,7 @@ class OpenRouterJudgeClient:
                     provider=provider,
                     provider_shift=base_shift + attempt,
                     purpose=purpose,
+                    eval_run_id=eval_run_id,
                 )
                 if isinstance(gate, AdaptiveConcurrencyGate):
                     gate.observe_success(time.monotonic() - t0)
@@ -323,11 +364,14 @@ class OpenRouterJudgeClient:
         provider: dict[str, Any] | None = None,
         provider_shift: int = 0,
         purpose: str = "other",
+        eval_run_id: str = "",
     ) -> JudgeRawResponse:
+        on_engy = self._use_engy(purpose, model, eval_run_id)
+        client = self._engy if on_engy else self._client
         provider_block = provider if provider is not None else JUDGE_PROVIDER_PINS.get(model, {})
         provider_block = _rotate_order(provider_block, provider_shift)
         payload: dict[str, Any] = {
-            "model": model,
+            "model": model.split("/", 1)[-1] if on_engy else model,
             "messages": messages,
             "temperature": self.settings.temperature if temperature is None else temperature,
             "max_tokens": self.settings.max_tokens if max_tokens is None else max_tokens,
@@ -348,8 +392,18 @@ class OpenRouterJudgeClient:
                 "type": "json_schema",
                 "json_schema": {"name": schema_name, "strict": True, "schema": response_schema},
             }
-        response = await self._client.post("/v1/chat/completions", json=payload)
-        response.raise_for_status()
+        try:
+            response = await client.post("/v1/chat/completions", json=payload)
+            response.raise_for_status()
+        except Exception as exc:
+            if on_engy:
+                self._engy_errors[eval_run_id] += 1
+                logger.warning(
+                    f"[judge-openrouter] engy error {self._engy_errors[eval_run_id]}/"
+                    f"{self.settings.engy_max_errors} eval_run_id={eval_run_id} "
+                    f"model={model}: {type(exc).__name__}: {exc}"
+                )
+            raise
         body = response.json()
         usage = body.get("usage") or {}
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
@@ -378,7 +432,7 @@ class OpenRouterJudgeClient:
             f"cost={cost:.8f}"
         )
         raw = _message_content(body.get("choices", []))
-        provider = _provider_name(model)
+        provider = "engy" if on_engy else _provider_name(model)
         return JudgeRawResponse(model=model, provider=provider, raw=raw)
 
 

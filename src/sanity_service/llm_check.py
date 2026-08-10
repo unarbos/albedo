@@ -272,11 +272,17 @@ async def run_gate(samples: list[SampleInput], client, *, consensus: bool = Fals
     if not samples:
         return GateResult(False, "no samples", infra_fault=True, llm_gate=LLMGate.SKIPPED, decision_mode=mode)
 
-    heuristic_failed = next((s for s in samples if not s.heuristic_passed), None)
-    if heuristic_failed is not None:
-        excerpt = (heuristic_failed.prompt or "")[:60]
-        reason = f"heuristic: {heuristic_failed.heuristic_reason}"
-        verdicts = [SampleVerdict(excerpt, passed=False, reason=reason)]
+    heuristic_failed = any(not s.heuristic_passed for s in samples)
+    if heuristic_failed:
+        verdicts = []
+
+        for s in samples:
+            excerpt = (s.prompt or "")[:60]
+            if not s.heuristic_passed:
+                sv = SampleVerdict(excerpt, passed=False, reason=f"heuristic: {s.heuristic_reason}")
+            else:
+                sv = SampleVerdict(excerpt, passed=True, reason="skipped: another sample already failed heuristics")
+            verdicts.append(sv)
     else:
         verdicts = list(await asyncio.gather(*[_judge_sample(s, client, consensus, skip_viability, resolved) for s in samples]))
 

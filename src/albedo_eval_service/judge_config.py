@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,7 @@ class JudgeSettings(BaseSettings):
         env_file=".env",
         env_prefix="ALBEDO_JUDGE_",
         extra="ignore",
+        populate_by_name=True,
     )
 
     api_auth_token: str = ""
@@ -17,6 +19,12 @@ class JudgeSettings(BaseSettings):
     api_port: int = 8091
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api"
+    engy_api_key: str = Field(
+        "", validation_alias=AliasChoices("ALBEDO_JUDGE_ENGY_API_KEY")
+    )
+    engy_base_url: str = "https://api.engy.ai"
+    engy_models: str = "z-ai/glm-5.2"
+    engy_max_errors: int = 2
     request_timeout_seconds: float = 90.0
     retry_count: int = 5
     retry_backoff_seconds: float = 1.5

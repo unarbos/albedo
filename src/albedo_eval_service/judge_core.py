@@ -5,9 +5,19 @@ import json
 import math
 import os as _os
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from statistics import mean
 from typing import Any
+
+from albedo_eval_service.observation_format import (
+    THINK_CLOSE_RE,
+    THINK_OPEN_RE,
+    THINK_PAIR_RE,
+    THINK_TAG_RE,
+    mask_fenced_spans,
+    unmask_fenced_spans,
+)
 
 CHALLENGER_WIN_MARGIN = 0.03
 QUESTION_FLOOR_FRACTION = 0.22
@@ -393,7 +403,7 @@ _BEHAVIOR_FILE_RE = re.compile(r"[\w/-]+\.(?:py|rs|go|js|ts|c|h|java|php|rb)\b")
 
 
 def filter_behavior_questions(
-    questions: list[dict[str, str]], context: str
+    questions: list[dict[str, str]], context: str, *, discards: list[dict[str, str]] | None = None
 ) -> list[dict[str, str]]:
     """Deterministic backstop for prompt drift: drop banned-theme questions (repetition-form
     mentions of a repro command are fine) and questions naming files absent from the context."""
@@ -401,8 +411,19 @@ def filter_behavior_questions(
     for question in questions:
         text = question.get("text", "")
         if _BEHAVIOR_BANNED_RE.search(text) and not _BEHAVIOR_REPEAT_FORM_RE.search(text):
+            if discards is not None:
+                discards.append({
+                    "stage": "filter_behavior_questions", "reason": "behavior_banned_theme",
+                    "text": text, "origin": "behavior",
+                })
             continue
         if any(f not in context for f in _BEHAVIOR_FILE_RE.findall(text)):
+            if discards is not None:
+                discards.append({
+                    "stage": "filter_behavior_questions",
+                    "reason": "behavior_file_not_in_context",
+                    "text": text, "origin": "behavior",
+                })
             continue
         kept.append(question)
     return kept
@@ -1249,8 +1270,21 @@ def format_reference_trajectory(turns: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def filter_reference_leaks(questions: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [q for q in questions if "the reference" not in q["text"].casefold()]
+def filter_reference_leaks(
+    questions: list[dict[str, str]], *, discards: list[dict[str, str]] | None = None
+) -> list[dict[str, str]]:
+    if discards is None:
+        return [q for q in questions if "the reference" not in q["text"].casefold()]
+    kept = []
+    for q in questions:
+        if "the reference" in q["text"].casefold():
+            discards.append({
+                "stage": "filter_reference_leaks", "reason": "reference_leak",
+                "text": q["text"], "origin": "content",
+            })
+        else:
+            kept.append(q)
+    return kept
 
 
 _EDIT_BLOCK_RE = re.compile(r"```(?:bash|sh)?[ \t]*\n(.*?)```", re.DOTALL)
@@ -1282,6 +1316,12 @@ _ACTION_VERB_RE = re.compile(r"\b(edit|modif|submit|propagat|verif|appl|patch|ch
 _COMPLETED_WORK_RE = re.compile(
     r"\b(submit|final output|after the edit|the edit .{0,30}(applied|made|verified))\b", re.IGNORECASE
 )
+
+READ_CAPS_BY_PHASE = {
+    "cold": 10,
+    "pre_edit": 7,
+    "at_edit": 5
+}
 READ_ONLY_QUESTION_CAP = 5
 
 
@@ -1293,12 +1333,39 @@ def trajectory_made_edit(turn_texts: list[str]) -> bool:
     return any(_edited_in_turn(text) for text in turn_texts)
 
 
+def _discard_recorder(
+    discards: list[dict[str, str]] | None,
+    *,
+    stage: str,
+    origin: str = "content",
+    counters: dict[str, int] | None = None,
+) -> Callable[..., None]:
+    def _drop(reason: str, text: str, detail: str = "") -> None:
+        if counters is not None:
+            counters[reason] = counters.get(reason, 0) + 1
+        if discards is None:
+            return
+        entry = {"stage": stage, "reason": reason, "text": text, "origin": origin}
+        if detail:
+            entry["detail"] = detail
+        discards.append(entry)
+
+    return _drop
+
+
 def enforce_question_labels(
-    questions: list[dict[str, str]], *, reference_made_edit: bool
+    questions: list[dict[str, str]],
+    *,
+    phase: str,
+    reference_made_edit: bool,
+    discards: list[dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, int]]:
     kept: list[dict[str, str]] = []
     drops = {"read_cap": 0, "unfolded_avoid": 0, "no_edit_dead_weight": 0}
     read_kept = 0
+    read_only_question_cap = READ_CAPS_BY_PHASE.get(phase, READ_ONLY_QUESTION_CAP)
+    _drop = _discard_recorder(discards, stage="enforce_question_labels", counters=drops)
+
     for question in questions:
         text = question.get("text", "")
         requires = question.get("requires") or "neutral"
@@ -1306,14 +1373,14 @@ def enforce_question_labels(
             requires = "neutral"
         is_size = is_measurement_bound_question(text)
         if not is_size and _UNFOLDED_AVOID_RE.search(text) and not _ACTION_VERB_RE.search(text):
-            drops["unfolded_avoid"] += 1
+            _drop("unfolded_avoid", text)
             continue
         if not reference_made_edit and requires == "action" and _COMPLETED_WORK_RE.search(text):
-            drops["no_edit_dead_weight"] += 1
+            _drop("no_edit_dead_weight", text)
             continue
         if requires == "read" and not is_size:
-            if read_kept >= READ_ONLY_QUESTION_CAP:
-                drops["read_cap"] += 1
+            if read_kept >= read_only_question_cap:
+                _drop("read_cap", text)
                 continue
             read_kept += 1
         question["requires"] = requires
@@ -1360,8 +1427,18 @@ def apply_measurement_gate(
     return gated
 
 
-_THINK_PAIR_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-_STRAY_THINK_TAG_RE = re.compile(r"</?think>")
+NO_VISIBLE_OUTPUT = "[no visible output]"
+_COMMAND_FENCE_RE = re.compile(r"```(?:bash|sh|shell)[ \t]*\n", re.IGNORECASE)
+
+
+def _drop_unclosed_reasoning(text: str, fences: list[str]) -> str:
+    match = THINK_OPEN_RE.search(text)
+    if not match:
+        return text
+    tail = text[match.end():]
+    if _COMMAND_FENCE_RE.search(unmask_fenced_spans(tail, fences)):
+        return text[: match.start()] + tail
+    return text[: match.start()]
 
 
 def strip_leaked_reasoning(text: str) -> str:
@@ -1371,11 +1448,14 @@ def strip_leaked_reasoning(text: str) -> str:
     itself) in the generated text. A `THOUGHT:` before the tag is the mini-coder-rs corpus's own
     style and is real content, so only the stray tag is removed in that case.
     """
-    cleaned = _THINK_PAIR_RE.sub("", text or "")
-    if "</think>" in cleaned:
-        head, _, tail = cleaned.partition("</think>")
+    masked, fences = mask_fenced_spans(text or "")
+    cleaned = THINK_PAIR_RE.sub("", masked)
+    cleaned = _drop_unclosed_reasoning(cleaned, fences)
+    if THINK_CLOSE_RE.search(cleaned):
+        head, tail = THINK_CLOSE_RE.split(cleaned, 1)
         cleaned = head + tail if "THOUGHT:" in head else tail
-    return _STRAY_THINK_TAG_RE.sub("", cleaned).strip()
+    cleaned = THINK_TAG_RE.sub("", cleaned)
+    return unmask_fenced_spans(cleaned, fences).strip()
 
 
 def strip_candidate_reasoning(trajectory: str) -> str:
@@ -1389,7 +1469,9 @@ def strip_candidate_reasoning(trajectory: str) -> str:
         block, inner = match.group(0), match.group(1)
         start, end = match.start(1) - match.start(0), match.end(1) - match.start(0)
         stripped = strip_leaked_reasoning(inner)
-        return block[:start] + (stripped if stripped else inner) + block[end:]
+        if not stripped:
+            stripped = NO_VISIBLE_OUTPUT if inner.strip() else inner
+        return block[:start] + stripped + block[end:]
 
     return _CANDIDATE_BLOCK_RE.sub(_rewrite, trajectory or "")
 
@@ -1687,7 +1769,13 @@ def classify_question_category(text: str) -> str:
     return "other"
 
 
-def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
+def parse_questions(
+    raw: str,
+    n: int,
+    *,
+    discards: list[dict[str, str]] | None = None,
+    origin: str = "content",
+) -> tuple[list[dict[str, str]], bool]:
     obj = extract_json(raw, prefer_keys=("questions",))
     items = obj.get("questions") if isinstance(obj, dict) else obj
     out: list[dict[str, str]] = []
@@ -1697,19 +1785,29 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
     generic_hygiene_count = 0
     negative_count = 0
     measurement_count = 0
+
+    _drop = _discard_recorder(discards, stage="parse_questions", origin=origin)
+
     if isinstance(items, list):
         for item in items:
-            if not isinstance(item, dict) or not str(item.get("text", "")).strip():
+            if not isinstance(item, dict):
+                _drop("malformed_item", repr(item)[:200])
+                continue
+            if not str(item.get("text", "")).strip():
+                _drop("empty_text", str(item.get("text", "")).strip())
                 continue
             text = str(item["text"]).strip()
             if _CONDITIONAL_RE.match(text):
+                _drop("conditional_form", text)
                 continue
             key = " ".join(text.casefold().split())
             if key in seen:
+                _drop("exact_duplicate", text)
                 continue
             seen.add(key)
             if is_measurement_bound_question(text):
                 if measurement_count >= MEASUREMENT_QUESTION_LIMIT:
+                    _drop("measurement_cap", text)
                     continue
                 measurement_count += 1
                 kept_signatures.append(_question_signature(text))
@@ -1724,24 +1822,30 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
                 continue
             is_negative = _is_negative_question(text)
             if is_negative and negative_count >= NEGATIVE_QUESTION_LIMIT:
+                _drop("negative_cap", text)
                 continue
             is_generic_hygiene = _is_generic_hygiene_question(text)
             if (
                 is_generic_hygiene
                 and generic_hygiene_count >= GENERIC_HYGIENE_QUESTION_LIMIT
             ):
+                _drop("generic_hygiene_cap", text)
                 continue
             template = _template_key(text)
             if (
                 len(template) == _TEMPLATE_KEY_TOKENS
                 and template_counts.get(template, 0) >= _TEMPLATE_MAX_PER_KEY
             ):
+                _drop("template_cap", text)
                 continue
             signature = _question_signature(text)
-            if any(
-                _near_duplicate(signature, prev_sig, text, prev["text"])
-                for prev_sig, prev in zip(kept_signatures, out)
-            ):
+            near_dup_of = None
+            for prev_sig, prev in zip(kept_signatures, out):
+                if _near_duplicate(signature, prev_sig, text, prev["text"]):
+                    near_dup_of = prev["text"]
+                    break
+            if near_dup_of is not None:
+                _drop("near_duplicate", text, detail=f"near-duplicate of kept question: {near_dup_of!r}")
                 continue
             template_counts[template] = template_counts.get(template, 0) + 1
             if is_negative:
@@ -1758,7 +1862,13 @@ def parse_questions(raw: str, n: int) -> tuple[list[dict[str, str]], bool]:
                 **({"evidence": e} if (e := str(item.get("evidence", "")).strip()) else {}),
                 **({"step": item["step"]} if isinstance(item.get("step"), int) else {}),
             })
-    out = out[:n]
+    if len(out) > n:
+        for extra in out[n:]:
+            _drop(
+                "truncated_excess", extra["text"],
+                detail=f"{len(out)} well-formed candidates parsed, only the first {n} requested are kept",
+            )
+        out = out[:n]
     for position, question in enumerate(out, start=1):
         question["id"] = f"q_{position:02d}"
     return out, len(out) >= question_floor(n)

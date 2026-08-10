@@ -50,7 +50,7 @@ class FakeClient:
     def __init__(self, n_questions: int = 3):
         self.n_questions = n_questions
 
-    async def complete(self, *, model, messages, temperature=None, max_tokens=None, provider=None, response_schema=None, accept=None, purpose=""):
+    async def complete(self, *, model, messages, temperature=None, max_tokens=None, provider=None, response_schema=None, accept=None, purpose="", eval_run_id=""):
         questions = [{"text": f"q{i}?", "example_bad": "bad"} for i in range(self.n_questions)]
         return JudgeRawResponse(model=model, provider="fake", raw=json.dumps({"questions": questions}))
 
@@ -256,7 +256,7 @@ class OneJudgeBrokenClient:
     def __init__(self, n_questions=3):
         self.n_questions = n_questions
 
-    async def complete(self, *, model, messages, temperature=None, max_tokens=None, provider=None, response_schema=None, accept=None, purpose=""):
+    async def complete(self, *, model, messages, temperature=None, max_tokens=None, provider=None, response_schema=None, accept=None, purpose="", eval_run_id=""):
         qs = [{"text": f"q{i}", "example_bad": "b"} for i in range(self.n_questions)]
         return JudgeRawResponse(model=model, provider="fake", raw=json.dumps({"questions": qs}))
 
@@ -390,7 +390,7 @@ class _AnchorFakeClient:
 
     async def complete(self, *, model, messages, temperature=None, max_tokens=None,
                        provider=None, response_schema=None, accept=None, purpose="",
-                       parse_retries=None, retry_count=None):
+                       parse_retries=None, retry_count=None, eval_run_id=""):
         if response_schema is None:
             if self.fail_reference:
                 return JudgeRawResponse(model=model, provider="fake", raw="", error="boom")

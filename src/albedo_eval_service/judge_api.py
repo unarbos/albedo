@@ -275,6 +275,7 @@ class ReferenceTrajectoryService:
                 model=model,
                 messages=convo,
                 temperature=0.0,
+                eval_run_id=eval_run_id,
                 max_tokens=self.settings.sota_max_tokens,
                 provider=_evaluator_provider(self.settings)
                 if model == self.settings.evaluator_model
@@ -425,15 +426,67 @@ class QuestionService:
             f"[{m.get('role')}] {(m.get('content') or '')[:800]}" for m in (prefix or [])[-3:]
         )
         context_text = (sample.prompt or "") + "\n" + prefix_tail
+        discarded: list[dict[str, str]] = []
+        parse_budget = max(1, self.settings.parse_retries)
+
+        def _reject_logger(reason: str, origin: str):
+            attempts = 0
+
+            def record(detail: str) -> bool:
+                nonlocal attempts
+                attempts += 1
+                exhausted = attempts >= parse_budget
+                discarded.append({
+                    "stage": "generation_retry",
+                    "reason": reason,
+                    "text": "",
+                    "origin": origin,
+                    "detail": detail + (
+                        "; retries exhausted, this attempt was kept as-is"
+                        if exhausted
+                        else "; whole attempt discarded and regenerated"
+                    ),
+                })
+                return not exhausted
+
+            return record
+
+        def _record_rejected_attempt(
+            entries: list[dict[str, str]], survivors: list[dict[str, str]], origin: str
+        ) -> None:
+            discarded.extend(
+                {**entry, "stage": f"rejected_attempt:{entry['stage']}"} for entry in entries
+            )
+            discarded.extend(
+                {
+                    "stage": "rejected_attempt",
+                    "reason": "attempt_regenerated",
+                    "text": question.get("text", ""),
+                    "origin": origin,
+                    "detail": "parsed cleanly, binned with the attempt that fell short",
+                }
+                for question in survivors
+            )
 
         def _content_call():
+            _rejected = _reject_logger("content_batch_rejected", "content")
+
             def _accept(raw: str) -> bool:
-                questions, ok = parse_questions(raw, n_generic)
+                attempt_discards: list[dict[str, str]] = []
+                questions, ok = parse_questions(
+                    raw, n_generic, discards=attempt_discards, origin="content"
+                )
                 if reference is not None:
-                    questions = filter_reference_leaks(questions)
-                return (len(questions) >= generic_floor) if use_rubric else (
+                    questions = filter_reference_leaks(questions, discards=attempt_discards)
+                accepted = (len(questions) >= generic_floor) if use_rubric else (
                     ok and len(questions) >= generic_floor
                 )
+                if not accepted and _rejected(
+                    f"{len(questions)} well-formed questions parsed, needed "
+                    f">= {generic_floor}"
+                ):
+                    _record_rejected_attempt(attempt_discards, questions, "content")
+                return accepted
 
             if use_rubric:
                 messages = build_content_question_messages(
@@ -457,6 +510,21 @@ class QuestionService:
             )
 
         def _behavior_call(index: int):
+            _rejected = _reject_logger("behavior_batch_rejected", "behavior")
+
+            def _behavior_accept(raw: str) -> bool:
+                attempt_discards: list[dict[str, str]] = []
+                qs, _ = parse_questions(
+                    raw, BEHAVIOR_K, discards=attempt_discards, origin="behavior"
+                )
+                accepted = len(qs) >= 5
+                if not accepted and _rejected(
+                    f"phase={phase} index={index}: {len(qs)} well-formed questions "
+                    "parsed, needed >= 5"
+                ):
+                    _record_rejected_attempt(attempt_discards, qs, "behavior")
+                return accepted
+
             return self.client.complete(
                 purpose="questions", model=self.settings.evaluator_model,
                 messages=build_behavior_messages(
@@ -467,7 +535,7 @@ class QuestionService:
                 max_tokens=self.settings.question_max_tokens,
                 provider=_evaluator_provider(self.settings),
                 response_schema=question_schema(BEHAVIOR_K),
-                accept=lambda raw: len(parse_questions(raw, BEHAVIOR_K)[0]) >= 5,
+                accept=_behavior_accept,
             )
 
         calls = [_content_call()] + ([_behavior_call(i) for i in range(3)] if do_behavior else [])
@@ -476,16 +544,19 @@ class QuestionService:
         for r in responses:
             if r.error:
                 raise QuestionScoringUnavailable(r.error)
-        content_qs, ok = parse_questions(responses[0].raw, n_generic)
+        content_qs, ok = parse_questions(
+            responses[0].raw, n_generic, discards=discarded, origin="content"
+        )
         if use_rubric:
             ok = len(content_qs) >= generic_floor
             for q in content_qs:
                 q["requires"] = RUBRIC_TAG_REQUIRES.get(q.get("tag"), q.get("requires") or "neutral")
         drops: dict[str, int] = {}
         if reference is not None:
-            content_qs = filter_reference_leaks(content_qs)
+            content_qs = filter_reference_leaks(content_qs, discards=discarded)
             content_qs, drops = enforce_question_labels(
-                content_qs, reference_made_edit=reference_made_edit
+                content_qs, phase=phase, reference_made_edit=reference_made_edit,
+                discards=discarded,
             )
         if not ok or len(content_qs) < generic_floor:
             raise QuestionScoringUnavailable(
@@ -494,7 +565,7 @@ class QuestionService:
         pruned_info: dict[str, object] = {}
         if reference is not None:
             try:
-                kept_qs, self_rate = await self._prune_against_reference(
+                kept_qs, dropped_qs, self_rate = await self._prune_against_reference(
                     sample, reference, content_qs
                 )
             except Exception as exc:
@@ -511,11 +582,12 @@ class QuestionService:
                 pruned_info = {"reference_self_score": self_rate,
                                "pruned_out": len(content_qs) - len(kept_qs)}
                 content_qs = kept_qs
+                discarded.extend(dropped_qs)
         behavior_qs: list[dict[str, str]] = []
         for r in responses[1:]:
-            qs, _ = parse_questions(r.raw, BEHAVIOR_K)
+            qs, _ = parse_questions(r.raw, BEHAVIOR_K, discards=discarded, origin="behavior")
             behavior_qs.extend(qs)
-        behavior_qs = filter_behavior_questions(behavior_qs, context_text)
+        behavior_qs = filter_behavior_questions(behavior_qs, context_text, discards=discarded)
         for q in behavior_qs:
             q["requires"] = "action"
         questions = behavior_qs + content_qs
@@ -538,6 +610,7 @@ class QuestionService:
             "reference_made_edit": reference_made_edit if reference is not None else None,
             "enforcement_drops": drops,
             "economy_duplicate_bounds_added": len(economy_duplicates),
+            "discarded_questions": discarded,
         }
         if reference_model:
             source["reference_model"] = reference_model
@@ -550,7 +623,7 @@ class QuestionService:
     async def _prune_against_reference(
         self, sample: QuestionPrepSample | JudgeSample, reference: str,
         questions: list[dict[str, str]],
-    ) -> tuple[list[dict[str, str]], float | None]:
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]], float | None]:
         document = _reference_document(getattr(sample, "messages", None) or [], reference)
         _, recs = await _judge_side(
             client=self.client, settings=self.settings, side="reference",
@@ -561,8 +634,22 @@ class QuestionService:
         if not record.get("parse_ok"):
             raise RuntimeError("reference judge returned unparseable answers")
         answers = record.get("answers") or {}
-        kept = [q for q in questions if str(answers.get(q["id"], "1")) == "1"]
-        return kept, record.get("yes_rate")
+        explanations = record.get("explanations") or {}
+        kept: list[dict[str, str]] = []
+        dropped: list[dict[str, str]] = []
+        for q in questions:
+            if str(answers.get(q["id"], "1")) == "1":
+                kept.append(q)
+            else:
+                entry = {
+                    "stage": "reference_prune", "reason": "reference_answered_no",
+                    "text": q["text"], "origin": "content",
+                }
+                explanation = explanations.get(q["id"])
+                if explanation:
+                    entry["detail"] = explanation
+                dropped.append(entry)
+        return kept, dropped, record.get("yes_rate")
 
 
 class RepoContextClient:

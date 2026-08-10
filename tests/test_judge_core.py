@@ -582,9 +582,38 @@ def test_strip_candidate_reasoning_only_touches_candidate_blocks():
     # ...and neither the context turn nor the observation is altered
     assert "CONTEXT USER (do not score):\n------\nTHOUGHT: ctx\n</think>\nkeep me\n------" in out
     assert "<returncode>0</returncode>\n</think>" in out
-    # a block that is nothing but reasoning is left alone rather than emptied
+    # a block that is nothing but reasoning presents as no visible output: restoring it fed the
+    # judge raw reasoning, and a turn with no action has to read as a turn with no action
+    from albedo_eval_service.judge_core import NO_VISIBLE_OUTPUT
+
     only = "CANDIDATE OUTPUT 1:\n------\n</think>\n------"
-    assert strip_candidate_reasoning(only) == only
+    assert strip_candidate_reasoning(only) == (
+        f"CANDIDATE OUTPUT 1:\n------\n{NO_VISIBLE_OUTPUT}\n------"
+    )
+
+
+def test_strip_leaked_reasoning_drops_narration_but_keeps_commands_after_a_stray_tag():
+    from albedo_eval_service.judge_core import strip_leaked_reasoning
+
+    # an unclosed tag with only narration after it: the narration is reasoning, drop to end of turn
+    assert strip_leaked_reasoning("<think>I will run the tests and confirm the fix") == ""
+    assert strip_leaked_reasoning("edit foo.py\n<think>now I should verify") == "edit foo.py"
+    # measured on the King CVIII eval: every unclosed tag sat before a command that then executed,
+    # so the tag is a parser artifact and dropping the turn would erase real work
+    assert strip_leaked_reasoning("<think>\n```bash\nls -la\n```") == "```bash\nls -la\n```"
+    # casing and spacing variants are still reasoning tags
+    assert strip_leaked_reasoning("<THINK>secret</THINK>\nTHOUGHT: go") == "THOUGHT: go"
+    assert strip_leaked_reasoning("<think >secret</think >\nTHOUGHT: go") == "THOUGHT: go"
+    # a tag carried as data inside a fence is content, and must not cut the turn
+    diff = "```diff\n-print('</think>')\n+print('ok')\n```"
+    assert strip_leaked_reasoning(diff) == diff
+
+
+def test_strip_candidate_reasoning_leaves_an_already_blank_turn_alone():
+    from albedo_eval_service.judge_core import strip_candidate_reasoning
+
+    blank = "CANDIDATE OUTPUT 1:\n------\n\n------"
+    assert strip_candidate_reasoning(blank) == blank
 
 
 def test_edit_detection_ignores_prose_and_stderr_redirects():
