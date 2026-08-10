@@ -377,6 +377,43 @@ HTTP scoring + S3 upload **in the same Job**, which still holds
 `nvidia.com/gpu: 4`. Scoring itself needs no eval-pod GPUs (judge-api /
 LiteLLM only). See follow-up #6.
 
+## Offer from KubeTEE SN90 — public inference on the reigning king
+
+**KubeTEE SN90 offers to serve the Albedo / Distil (SN97) king-of-the-hill
+model for public inference**, in addition to running the GPU eval stack in
+this PoC.
+
+Why this is a natural fit:
+
+- The PoC already keeps an **always-on king** (`deploy/king.yaml`) with an
+  OpenAI-compatible surface (`king_serve.py` → local vLLM `/v1/*` on
+  `albedo-king:8000`).
+- SN90’s LiteLLM gateway (`llm.kubetee.ai`) already fronts other cluster
+  models (GLM-5.2, DeepSeek-V4-Flash, Kimi-K3, …). Registering the king is
+  the same pattern: `openai/<public-model-name>` →
+  `http://albedo-king.albedo-poc.svc.cluster.local:8000/v1`.
+- Upstream Distil already exposes a public king chat at
+  [chat.arbos.life](https://chat.arbos.life). SN90 can host a **second,
+  capacity-backed** path on KubeTEE GPUs (and later on confidential
+  `kata-*` runtimes) so the distilled champion is available to the public
+  through SN90’s demand channels (including SN28 / SayGM as the
+  general-public router, per KubeTEE’s inference distribution model).
+
+Operational notes for Denrite / Albedo if the offer is accepted:
+
+- King reloads use the existing `king_changing` → HTTP 503 protocol so
+  in-flight evals and chat clients fail soft / retry instead of corrupting
+  a duel verdict.
+- Chat load and challenger Jobs share the king node’s GPUs — capacity and
+  RPM need an explicit agreement (or a dedicated king replica for public
+  serve).
+- Model identity should track the on-chain / dashboard reigning king
+  (HF URI + revision), not a stale PoC pin, when productionized.
+
+Tracked as follow-up **#7** below. Subnet-side write-up:
+[KubeTEE-AI/kubetee-subnet `docs/SN97-ALBEDO-POC.md`](https://github.com/KubeTEE-AI/kubetee-subnet/blob/main/docs/SN97-ALBEDO-POC.md)
+(Integration opportunities).
+
 ## Follow-ups after PoC success
 
 1. **Armada integration** — replace the direct `kubectl apply` of the
@@ -417,3 +454,8 @@ LiteLLM only). See follow-up #6.
    during generation still needs the GPU Job; only the final score/upload
    window is reclaimable. Unlocks overlapping evals once a second
    challenger node (or freed GPUs on the king node) is available.
+7. **Public king inference (SN90 offer)** — register the always-on king in
+   LiteLLM and publish it for public use (SN90 capacity + SN28/SayGM as the
+   general-public demand channel). Track reigning-king HF URI/revision;
+   separate or rate-limit public chat vs duel traffic; optional later move
+   to confidential serve. See [Offer from KubeTEE SN90](#offer-from-kubetee-sn90--public-inference-on-the-reigning-king) above.
