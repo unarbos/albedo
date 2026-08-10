@@ -1,0 +1,7 @@
+remote_run_id=2205a13b-efeb-41f4-bf94-d8bd613301c9
+eval_run_id=2205a13b-efeb-41f4-bf94-d8bd613301c9
+state=succeeded
+events=17
+king_vllm_errors=0
+chal_vllm_errors=0
+judge_errors=0

@@ -49,7 +49,7 @@ data:
   ALBEDO_REMOTE_CHALLENGER_GPU_IDS: "0,1,2,3"
   ALBEDO_REMOTE_GENERATION_BACKEND: "vllm"
   ALBEDO_REMOTE_KING_BASE_URL: "http://albedo-king.albedo-poc.svc.cluster.local:8000"
-  ALBEDO_REMOTE_KING_OPENAI_MODEL: "seed429/albedo-qwen3.6-35b-hot"
+  ALBEDO_REMOTE_KING_OPENAI_MODEL: "bkn1890/albedo-qwen3.6-35b-hk971"
   ALBEDO_REMOTE_CLEANUP_STALE_VLLM: "false"
   ALBEDO_REMOTE_MODEL_CACHE_DIR: "/cache/models"
   ALBEDO_REMOTE_ARTIFACT_SPOOL_DIR: "/app/artifacts/spool"
@@ -57,11 +57,11 @@ data:
   # Dataset version / manifest hash / root: albedo-poc-dataset-config
   # (deploy/dataset-prep.yaml). Eval envFrom merges that ConfigMap.
 
-  # Match public Albedo reference 5d54c863 (see kubetee/compare/reference-5d54c863-*).
+  # Match public Albedo reference 2205a13b (see kubetee/compare/reference-2205a13b-*).
   # 100 samples / batch 32 → 4 gen batches + 4 score batches; judge_count=1 (glm-5.2).
   # Apple-to-apple dataset pin: exact sample_ids from Denrite reference request.json
-  # (manifest_hash e3cff617… — both HF sides public).
-  ALBEDO_EVAL_SAMPLE_IDS_FILE: "/app/shared/albedo/kubetee/compare/reference-5d54c863-0b69-425d-aa20-38fcdd414558/request.json"
+  # (manifest_hash e3cff617… — both HF sides public / ungated).
+  ALBEDO_EVAL_SAMPLE_IDS_FILE: "/app/shared/albedo/kubetee/compare/reference-2205a13b-efeb-41f4-bf94-d8bd613301c9/request.json"
   ALBEDO_EVAL_SAMPLE_COUNT: "100"
   ALBEDO_EVAL_GENERATION_BATCH_SIZE: "32"
   ALBEDO_EVAL_SCORING_BATCH_SIZE: "32"
@@ -198,7 +198,8 @@ spec:
             - sh
             - -c
             - |
-              KEEP_DIRS="tojointhecommunity__albedo-qwen3.6-35b-top bkn1890__albedo-qwen3.6-35b-hk971"
+              # Keep current 2205a13b pin (hk971 + kkk) + prior caches.
+              KEEP_DIRS="bkn1890__albedo-qwen3.6-35b-hk971 darius3th__albedo-qwen3.6-35b-kkk seed429__albedo-qwen3.6-35b-hot applet3__albedo-qwen3.6-35b-albedo-ckp150 tojointhecommunity__albedo-qwen3.6-35b-top"
               if [ ! -d /cache/models/hf ]; then
                 echo "no /cache/models/hf — skip prune"
                 exit 0
@@ -288,18 +289,18 @@ spec:
               memory: "256Gi"
           env:
             - name: KING_MODEL_URI
-              value: "hf://seed429/albedo-qwen3.6-35b-hot@7e53e451bf0c6f0d8ac3f776af71dbcd6d436eb8"
+              value: "hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
             - name: KING_MODEL_HASH
-              value: "7e53e451bf0c6f0d8ac3f776af71dbcd6d436eb8"
+              value: "1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
             - name: CHALLENGER_MODEL_URI
-              value: "hf://applet3/albedo-qwen3.6-35b-albedo-ckp150@f58e8cc377dc0bd5d69a4eca8a45626aff29dd61"
+              value: "hf://darius3th/albedo-qwen3.6-35b-kkk@90bd03cba51b5b895e9b0e7dc4f1cb5caf7f4238"
             - name: CHALLENGER_MODEL_HASH
-              value: "f58e8cc377dc0bd5d69a4eca8a45626aff29dd61"
-            # Apple-to-apple vs Albedo 5d54c863 (chal +1.10pp, lost vs 3pp threshold).
+              value: "90bd03cba51b5b895e9b0e7dc4f1cb5caf7f4238"
+            # Apple-to-apple vs Albedo 2205a13b (chal +0.79pp, lost vs 3pp threshold; both ungated).
             - name: EVAL_RUN_ID
-              value: "779611f4-c029-498e-915d-5087a24dfc81"
+              value: "0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8"
             - name: SUBMISSION_ID
-              value: "dbb748c2-1872-41cd-97bb-21cff0e94625"
+              value: "b869e4aa-ed62-4998-a07f-cda4a72f4449"
             - name: SELFDRIVE_JUDGE_BASE_URL
               value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
           envFrom:
