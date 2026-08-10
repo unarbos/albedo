@@ -1,4 +1,4 @@
-# KubeTEE PoC — SN97 Denrite (Albedo) GPU Evaluation
+# KubeTEE SN90 PoC — Denrite (Albedo) GPU Evaluation
 
 This directory lives in the `albedo` submodule on the `kubetee-poc` branch
 (based off `dev`). It holds the KubeTEE-side PoC code for running Albedo's
