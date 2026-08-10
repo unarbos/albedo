@@ -29,14 +29,14 @@ data:
   KING_API_PORT: "8000"
   KING_VLLM_URL: "http://127.0.0.1:8001"
   KING_STATE_PATH: "/tmp/king-state.json"
-  KING_GENERATION_ID: "2"
+  KING_GENERATION_ID: "3"
   # Served model — keep in sync with KING_MODEL_URI on eval Jobs for parity.
-  # Reference parity: ca530856 previous_king (public Albedo SN97).
-  KING_MODEL_URI: "hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c"
-  KING_HF_MODEL_ID: "tojointhecommunity/albedo-qwen3.6-35b-top"
-  KING_HF_REVISION: "438aec1140de06268cc36b79dc9567129678888c"
+  # Reference parity: bae48552 previous_king (public Albedo SN97, chal won → king v110).
+  KING_MODEL_URI: "hf://power612/albedo-qwen3.6-35b-9abd59b0@cceca114b8575c0d350c99b1b95e553a74f2dcd7"
+  KING_HF_MODEL_ID: "power612/albedo-qwen3.6-35b-9abd59b0"
+  KING_HF_REVISION: "cceca114b8575c0d350c99b1b95e553a74f2dcd7"
   # OpenAI model id returned by vLLM / used by HttpOpenAIGenerator.
-  KING_OPENAI_MODEL: "tojointhecommunity/albedo-qwen3.6-35b-top"
+  KING_OPENAI_MODEL: "power612/albedo-qwen3.6-35b-9abd59b0"
   KING_TENSOR_PARALLEL_SIZE: "4"
   KING_GPU_MEMORY_UTILIZATION: "0.95"
   KING_MAX_MODEL_LEN: "32768"
