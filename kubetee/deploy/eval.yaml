@@ -2,21 +2,25 @@
 #
 # Applied OUT-OF-BAND on na-us-oakland-56 (NOT Fleet-managed).
 #
-# Apply ORDER (required — king must own its 4 GPUs first):
-#   1. kubectl apply -f kubetee/deploy/king.yaml
-#   2. kubectl -n albedo-poc rollout status deploy/albedo-king --timeout=45m
-#   3. curl/check GET http://albedo-king...:8000/ready → status ready
-#   4. THEN delete+apply this eval Job
+# Apply ORDER (required):
+#   1. kubectl apply -f kubetee/deploy/dataset-prep.yaml   # once / on corpus bump
+#   2. wait job/albedo-poc-dataset-prep Complete
+#   3. kubectl apply -f kubetee/deploy/king.yaml           # king owns 4 GPUs first
+#   4. kubectl -n albedo-poc rollout status deploy/albedo-king --timeout=45m
+#   5. GET http://albedo-king...:8000/ready → status ready
+#   6. THEN delete+apply this eval Job
 #
 #   kubectl --context na-us-oakland-56-direct -n albedo-poc delete job albedo-poc-eval --ignore-not-found
 #   kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/eval.yaml
 #
-# Challenger-only Job (4 GPU / TP=4). Previous-king generation goes to the
-# always-on albedo-king Service (see king.yaml). The wait-for-king initContainer
-# blocks until /ready succeeds so we never start local vLLM against a cold king.
+# Challenger-only Job (4 GPU / TP=4). Corpus lives on albedo-poc-dataset-root
+# (filled by dataset-prep.yaml). This Job only checks the manifest hash, prunes
+# the model-cache, and samples N IDs per run. Previous-king generation goes to
+# the always-on albedo-king Service (see king.yaml). wait-for-king blocks until
+# /ready so we never start local vLLM against a cold king.
 #
-# For concurrent challengers: join a second H200 (JOIN-SECOND-H200.md) and
-# submit a second Job with a distinct EVAL_RUN_ID.
+# For concurrent challengers: join a second non-CC H200 and submit a second
+# Job with a distinct EVAL_RUN_ID (king already owns 4 GPUs on am-h200-25).
 #
 # Secrets stay in secret-template.yaml. Judge stack: judge-api.yaml.
 
@@ -45,49 +49,36 @@ data:
   ALBEDO_REMOTE_CHALLENGER_GPU_IDS: "0,1,2,3"
   ALBEDO_REMOTE_GENERATION_BACKEND: "vllm"
   ALBEDO_REMOTE_KING_BASE_URL: "http://albedo-king.albedo-poc.svc.cluster.local:8000"
-  ALBEDO_REMOTE_KING_OPENAI_MODEL: "wearetop/albedo-qwen3.6-35b-719"
+  ALBEDO_REMOTE_KING_OPENAI_MODEL: "tojointhecommunity/albedo-qwen3.6-35b-top"
   ALBEDO_REMOTE_CLEANUP_STALE_VLLM: "false"
   ALBEDO_REMOTE_MODEL_CACHE_DIR: "/cache/models"
   ALBEDO_REMOTE_ARTIFACT_SPOOL_DIR: "/app/artifacts/spool"
   ALBEDO_REMOTE_REMOTE_STATE_DIR: "/app/artifacts/state"
-  ALBEDO_REMOTE_DATASET_ROOT: "/app/dataset"
+  # Dataset version / manifest hash / root: albedo-poc-dataset-config
+  # (deploy/dataset-prep.yaml). Eval envFrom merges that ConfigMap.
 
-  ALBEDO_EVAL_DATASET_VERSION: "mini-coder+open-swe+smith-rs+hero-v1"
-  ALBEDO_EVAL_DATASET_MANIFEST_URI: "s3://sn97-albedo/datasets/manifest.json"
-  ALBEDO_EVAL_DATASET_MANIFEST_HASH: "e3cff61772b0096811d4c5d8bbc8dee8dacbd9a069bc4557608adf1c1c2ddf40"
-
+  # Match public Albedo reference ca530856 (see kubetee/compare/reference-ca530856-*).
+  # 100 samples / batch 32 → 4 gen batches + 4 score batches; judge_count=1 (glm-5.2).
   ALBEDO_EVAL_SAMPLE_COUNT: "100"
-  # Keep ≤ judge MAX_SCORE_SAMPLE_CONCURRENCY (8) so one wave finishes a batch.
-  ALBEDO_EVAL_SCORING_BATCH_SIZE: "8"
+  ALBEDO_EVAL_GENERATION_BATCH_SIZE: "32"
+  ALBEDO_EVAL_SCORING_BATCH_SIZE: "32"
+  # Parallel /score-batch HTTP calls from the eval worker (RemoteSettings default).
+  ALBEDO_REMOTE_SCORING_BATCH_CONCURRENCY: "128"
   ALBEDO_EVAL_MAX_TURNS_PER_SAMPLE: "8"
   ALBEDO_EVAL_SAMPLING_ALGO: "multi-source-manifest-sample-v1"
   ALBEDO_EVAL_SAMPLE_SEED: "kubetee-poc"
   ALBEDO_EVAL_JUDGE_CONFIG_HASH: "sha256:replace-with-real-hash"
-  ALBEDO_EVAL_JUDGE_COUNT: "3"
+  # count=1 → glm only (hardcoded JUDGE_MODELS order; count=2 still includes 397B).
+  ALBEDO_EVAL_JUDGE_COUNT: "1"
 
   ALBEDO_EVAL_ARTIFACT_BUCKET: "sn97-albedo"
   ALBEDO_EVAL_ARTIFACT_PREFIX: "s3://sn97-albedo/kubetee-poc"
   ALBEDO_REMOTE_S3_ENDPOINT_URL: "https://s3.hippius.com"
 
   SELFDRIVE_SCORING_AUTH_TOKEN: "poc"
-  # Per /score-batch HTTP read timeout. Qwen-397B batches were ~28–30m at size 16.
+  # Per /score-batch HTTP read timeout (glm-only panel; keep headroom).
   SELFDRIVE_SCORING_TIMEOUT_SECONDS: "5400"
   SELFDRIVE_JUDGE_BASE_URL: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: albedo-poc-dataset-root
-  namespace: albedo-poc
-  labels:
-    app.kubernetes.io/name: albedo-poc
-    app.kubernetes.io/part-of: kubetee-sn97-poc
-spec:
-  accessModes: [ReadWriteMany]
-  storageClassName: longhorn-v2
-  resources:
-    requests:
-      storage: 512Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -160,55 +151,77 @@ spec:
             - name: shared
               mountPath: /app/shared
 
-        - name: prepare-dataset
-          image: vllm/vllm-openai:v0.23.0
-          imagePullPolicy: Always
+        # Fail fast if corpus prep Job was not run (or hash drifted).
+        - name: check-dataset-manifest
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
           command:
-            - bash
+            - sh
             - -c
             - |
-              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:$PYTHONPATH
-              KEEP_DIRS="wearetop__albedo-qwen3.6-35b-719 doublerabbits__albedo-qwen3.6-35b-319192"
-              if [ -d /cache/models/hf ]; then
-                echo "model-cache before prune:"
-                df -h /cache/models | tail -1
-                du -sh /cache/models/hf/*/ 2>/dev/null || true
-                for d in /cache/models/hf/*/; do
-                  dirname=$(basename "$d")
-                  keep=0
-                  for k in $KEEP_DIRS; do
-                    [ "$dirname" = "$k" ] && keep=1 && break
-                  done
-                  if [ "$keep" -eq 0 ]; then
-                    echo "pruning unused model cache: $dirname"
-                    rm -rf "$d"
-                  fi
-                done
-                echo "model-cache after prune:"
-                df -h /cache/models | tail -1
-                du -sh /cache/models/hf/*/ 2>/dev/null || true
+              set -eu
+              EXPECTED="${ALBEDO_EVAL_DATASET_MANIFEST_HASH:?ALBEDO_EVAL_DATASET_MANIFEST_HASH required}"
+              EXPECTED="${EXPECTED#sha256:}"
+              MANIFEST=/app/dataset/manifest.json
+              if [ ! -f "$MANIFEST" ]; then
+                echo "ERROR: ${MANIFEST} missing — apply/run kubetee/deploy/dataset-prep.yaml first" >&2
+                exit 1
               fi
-              if [ -f /app/dataset/manifest.json ]; then
-                echo "manifest.json exists — skipping dataset preparation (PVC retained from previous run)"
-              else
-                echo "manifest.json not found — running prepare_datasets.py (first run on this PVC)"
-                python3 /app/shared/albedo/scripts/prepare_datasets.py --dataset-root /app/dataset
+              ACTUAL=$(sha256sum "$MANIFEST" | awk '{print $1}')
+              if [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "ERROR: dataset manifest hash mismatch" >&2
+                echo "  expected: ${EXPECTED}" >&2
+                echo "  actual:   ${ACTUAL}" >&2
+                echo "Re-run dataset-prep Job or update albedo-poc-dataset-config" >&2
+                exit 1
               fi
+              echo "dataset manifest hash OK (${ACTUAL})"
           env:
-            - name: HF_HUB_ENABLE_HF_TRANSFER
-              value: "1"
-            - name: HF_HUB_DISABLE_PROGRESS_BARS
-              value: "1"
+            - name: ALBEDO_EVAL_DATASET_MANIFEST_HASH
+              valueFrom:
+                configMapKeyRef:
+                  name: albedo-poc-dataset-config
+                  key: ALBEDO_EVAL_DATASET_MANIFEST_HASH
           volumeMounts:
             - name: dataset-root
               mountPath: /app/dataset
+
+        # Eval/node-local HF cache hygiene (not corpus ownership).
+        - name: prune-model-cache
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              KEEP_DIRS="tojointhecommunity__albedo-qwen3.6-35b-top bkn1890__albedo-qwen3.6-35b-hk971"
+              if [ ! -d /cache/models/hf ]; then
+                echo "no /cache/models/hf — skip prune"
+                exit 0
+              fi
+              echo "model-cache before prune:"
+              df -h /cache/models | tail -1
+              du -sh /cache/models/hf/*/ 2>/dev/null || true
+              for d in /cache/models/hf/*/; do
+                dirname=$(basename "$d")
+                keep=0
+                for k in $KEEP_DIRS; do
+                  [ "$dirname" = "$k" ] && keep=1 && break
+                done
+                if [ "$keep" -eq 0 ]; then
+                  echo "pruning unused model cache: $dirname"
+                  rm -rf "$d"
+                fi
+              done
+              echo "model-cache after prune:"
+              df -h /cache/models | tail -1
+              du -sh /cache/models/hf/*/ 2>/dev/null || true
+          volumeMounts:
             - name: model-cache
               mountPath: /cache/models
-            - name: shared
-              mountPath: /app/shared
 
-        # Block until always-on king is serving. Run last so inject/dataset
-        # prep can overlap king weight load when both schedule together.
+        # Block until always-on king is serving. Run last so inject/checks
+        # can overlap king weight load when both schedule together.
         - name: wait-for-king
           image: curlimages/curl:8.11.1
           imagePullPolicy: IfNotPresent
@@ -248,7 +261,7 @@ spec:
             - bash
             - -c
             - |
-              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:/app/shared/albedo/kubetee/app:$PYTHONPATH
+              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts:/app/shared/albedo/kubetee/app${PYTHONPATH:+:$PYTHONPATH}
               cd /app/shared/albedo
               pip install --no-cache-dir --no-deps -e . && \
               pip install --no-cache-dir \
@@ -271,25 +284,25 @@ spec:
               memory: "256Gi"
           env:
             - name: KING_MODEL_URI
-              value: "hf://wearetop/albedo-qwen3.6-35b-719@662d6efee9245b8e6a3b4c50c01130781178baec"
+              value: "hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c"
             - name: KING_MODEL_HASH
-              value: "662d6efee9245b8e6a3b4c50c01130781178baec"
+              value: "438aec1140de06268cc36b79dc9567129678888c"
             - name: CHALLENGER_MODEL_URI
-              value: "hf://doublerabbits/albedo-qwen3.6-35b-319192@28c27de4cc93d0c70934ba7c53b9b8076c688def"
+              value: "hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
             - name: CHALLENGER_MODEL_HASH
-              value: "28c27de4cc93d0c70934ba7c53b9b8076c688def"
-            # New split-king run (compare vs old co-located 8-GPU baseline):
-            # baseline EVAL_RUN_ID=b2f66cfa-6583-43d2-8570-d8a005fae7a6
-            # baseline SUBMISSION_ID=b6ef1319-cde5-4d35-8fc4-0b175ffb3753
+              value: "1ba87c52697f154a8f75a33ddf5714c1d314bcc7"
+            # Re-run after reasoning_effort=none judge fix; prior failed: d0899d40-b81e-4fb9-9ae2-14be68095979
             - name: EVAL_RUN_ID
-              value: "5de41185-4d72-482c-9491-28664329ad6b"
+              value: "7e09f071-4514-4ae0-9b92-6cf02019544f"
             - name: SUBMISSION_ID
-              value: "8d8793b3-317b-4950-aa77-fe26cfdec470"
+              value: "4ca920b9-7a6b-4d0c-8f16-bcbad63b5a26"
             - name: SELFDRIVE_JUDGE_BASE_URL
               value: "http://albedo-judge-api.albedo-poc.svc.cluster.local:8091"
           envFrom:
             - configMapRef:
                 name: albedo-poc-config
+            - configMapRef:
+                name: albedo-poc-dataset-config
             - secretRef:
                 name: albedo-poc-secrets
           volumeMounts:

@@ -1,0 +1,173 @@
+# KubeTEE PoC — one-shot corpus prep Job + dataset PVC + ConfigMap.
+#
+# Applied OUT-OF-BAND on na-us-oakland-56 (NOT Fleet-managed).
+#
+# Apply ORDER (required):
+#   1. Secrets exist (HF_TOKEN in albedo-poc-secrets)
+#   2. kubectl apply -f kubetee/deploy/dataset-prep.yaml
+#   3. Wait for Job Complete (first fill can take a long time)
+#   4. Then king.yaml, then eval.yaml Jobs
+#
+# Re-run when ALBEDO_EVAL_DATASET_MANIFEST_HASH / version changes, or after a
+# wiped PVC — NOT on every new king and NOT on every eval Job.
+#
+#   kubectl --context na-us-oakland-56-direct -n albedo-poc \
+#     delete job albedo-poc-dataset-prep --ignore-not-found
+#   kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/dataset-prep.yaml
+#   kubectl --context na-us-oakland-56-direct -n albedo-poc \
+#     wait --for=condition=complete job/albedo-poc-dataset-prep --timeout=6h
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: albedo-poc-dataset-config
+  namespace: albedo-poc
+  labels:
+    app.kubernetes.io/name: albedo-poc-dataset
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+data:
+  ALBEDO_EVAL_DATASET_VERSION: "mini-coder+open-swe+smith-rs+hero-v1"
+  ALBEDO_EVAL_DATASET_MANIFEST_URI: "s3://sn97-albedo/datasets/manifest.json"
+  ALBEDO_EVAL_DATASET_MANIFEST_HASH: "e3cff61772b0096811d4c5d8bbc8dee8dacbd9a069bc4557608adf1c1c2ddf40"
+  ALBEDO_REMOTE_DATASET_ROOT: "/app/dataset"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: albedo-poc-dataset-root
+  namespace: albedo-poc
+  labels:
+    app.kubernetes.io/name: albedo-poc-dataset
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: longhorn-v2
+  resources:
+    requests:
+      storage: 512Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: albedo-poc-dataset-prep
+  namespace: albedo-poc
+  labels:
+    app.kubernetes.io/name: albedo-poc-dataset
+    app.kubernetes.io/part-of: kubetee-sn97-poc
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 1
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: albedo-poc-dataset
+        app.kubernetes.io/part-of: kubetee-sn97-poc
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: inject-code
+          image: vllm/vllm-openai:v0.23.0
+          imagePullPolicy: Always
+          command:
+            - bash
+            - -c
+            - |
+              echo "cloning albedo fork (kubetee-poc branch)..."
+              apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1
+              cd /app/shared
+              git clone --depth 1 --branch kubetee-poc https://github.com/KubeTEE-AI-Blueprints/albedo.git albedo
+              echo "code injection complete"
+          volumeMounts:
+            - name: shared
+              mountPath: /app/shared
+      containers:
+        - name: prepare
+          image: vllm/vllm-openai:v0.23.0
+          imagePullPolicy: Always
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              export PYTHONPATH=/app/shared/albedo/src:/app/shared/albedo:/app/shared/albedo/scripts${PYTHONPATH:+:$PYTHONPATH}
+              EXPECTED="${ALBEDO_EVAL_DATASET_MANIFEST_HASH:?ALBEDO_EVAL_DATASET_MANIFEST_HASH required}"
+              EXPECTED="${EXPECTED#sha256:}"
+              MANIFEST=/app/dataset/manifest.json
+
+              actual_hash() {
+                if [ ! -f "$MANIFEST" ]; then
+                  echo ""
+                  return 0
+                fi
+                sha256sum "$MANIFEST" | awk '{print $1}'
+              }
+
+              ACTUAL="$(actual_hash)"
+              if [ -n "$ACTUAL" ] && [ "$ACTUAL" = "$EXPECTED" ]; then
+                echo "manifest.json hash OK (${ACTUAL}) — corpus already prepared"
+                exit 0
+              fi
+
+              pip install --no-cache-dir --quiet \
+                "datasets" "huggingface-hub==1.19.0" "hf_transfer>=0.1" \
+                "pyarrow>=16" "numpy" "loguru>=0.7"
+
+              if [ -n "$ACTUAL" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "manifest hash mismatch (got ${ACTUAL}, want ${EXPECTED}) — re-running with --force"
+                python3 /app/shared/albedo/scripts/prepare_datasets.py \
+                  --dataset-root /app/dataset --force
+              else
+                echo "manifest.json missing or empty — running prepare_datasets.py"
+                python3 /app/shared/albedo/scripts/prepare_datasets.py \
+                  --dataset-root /app/dataset
+              fi
+
+              ACTUAL="$(actual_hash)"
+              if [ -z "$ACTUAL" ]; then
+                echo "ERROR: prepare_datasets.py finished but ${MANIFEST} is missing" >&2
+                exit 1
+              fi
+              if [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "ERROR: manifest hash mismatch after prepare" >&2
+                echo "  expected (ConfigMap): ${EXPECTED}" >&2
+                echo "  actual (sha256 file): ${ACTUAL}" >&2
+                echo "Update albedo-poc-dataset-config ALBEDO_EVAL_DATASET_MANIFEST_HASH to ${ACTUAL}" >&2
+                exit 1
+              fi
+              echo "corpus ready — manifest hash ${ACTUAL}"
+          env:
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"
+            - name: HF_HUB_DISABLE_PROGRESS_BARS
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: albedo-poc-secrets
+                  key: HF_TOKEN
+                  optional: true
+          envFrom:
+            - configMapRef:
+                name: albedo-poc-dataset-config
+          volumeMounts:
+            - name: dataset-root
+              mountPath: /app/dataset
+            - name: shared
+              mountPath: /app/shared
+          resources:
+            requests:
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              cpu: "16"
+              memory: "64Gi"
+      volumes:
+        - name: shared
+          emptyDir: {}
+        - name: dataset-root
+          persistentVolumeClaim:
+            claimName: albedo-poc-dataset-root

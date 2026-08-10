@@ -9,9 +9,7 @@
 # Challenger Jobs set:
 #   ALBEDO_REMOTE_KING_BASE_URL=http://albedo-king.albedo-poc.svc.cluster.local:8000
 #
-# GPU cut: 4 GPUs / TP=4 on am-h200-25. For the gated 8-GPU parity follow-up,
-# change nvidia.com/gpu to "8", tensor-parallel-size to 8, and give the king
-# its own full node (no co-located challenger).
+# GPU cut: 4 GPUs / TP=4 on am-h200-25.
 #
 # To mark a king change (in-flight challengers get 503 king_changing):
 #   kubectl -n albedo-poc exec deploy/albedo-king -c king-api -- \
@@ -31,13 +29,14 @@ data:
   KING_API_PORT: "8000"
   KING_VLLM_URL: "http://127.0.0.1:8001"
   KING_STATE_PATH: "/tmp/king-state.json"
-  KING_GENERATION_ID: "1"
+  KING_GENERATION_ID: "2"
   # Served model — keep in sync with KING_MODEL_URI on eval Jobs for parity.
-  KING_MODEL_URI: "hf://wearetop/albedo-qwen3.6-35b-719@662d6efee9245b8e6a3b4c50c01130781178baec"
-  KING_HF_MODEL_ID: "wearetop/albedo-qwen3.6-35b-719"
-  KING_HF_REVISION: "662d6efee9245b8e6a3b4c50c01130781178baec"
+  # Reference parity: ca530856 previous_king (public Albedo SN97).
+  KING_MODEL_URI: "hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c"
+  KING_HF_MODEL_ID: "tojointhecommunity/albedo-qwen3.6-35b-top"
+  KING_HF_REVISION: "438aec1140de06268cc36b79dc9567129678888c"
   # OpenAI model id returned by vLLM / used by HttpOpenAIGenerator.
-  KING_OPENAI_MODEL: "wearetop/albedo-qwen3.6-35b-719"
+  KING_OPENAI_MODEL: "tojointhecommunity/albedo-qwen3.6-35b-top"
   KING_TENSOR_PARALLEL_SIZE: "4"
   KING_GPU_MEMORY_UTILIZATION: "0.95"
   KING_MAX_MODEL_LEN: "32768"
@@ -52,67 +51,191 @@ metadata:
     app.kubernetes.io/part-of: kubetee-sn97-poc
 data:
   king_serve.py: |
+    """Always-on king control plane in front of a local vLLM OpenAI server.
+    
+    Runs in the albedo-king pod alongside `vllm serve` (internal port). Exposes:
+      GET  /ready|/health  — kube probes + challenger wait
+      POST /v1/completions — proxy to vLLM, or 503 while starting/changing
+    
+    State file (JSON) at KING_STATE_PATH controls readiness:
+      {"status":"starting",...}  — vLLM not up yet (/ready 503)
+      {"status":"ready",...}
+      {"status":"changing",...}  — ops reload (/ready 503 king_changing)
+    
+    Binds :8000 immediately so kube /health works while a background thread waits
+    for local vLLM — avoids ConnectionRefusedError spam + liveness SIGKILL.
+    """
+    
     from __future__ import annotations
-    import json, os
+    
+    import json
+    import os
+    import threading
+    import time
     from pathlib import Path
     from typing import Any
-    import httpx, uvicorn
+    
+    import httpx
+    import uvicorn
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse, Response
+    
     _STATE_PATH = Path(os.environ.get("KING_STATE_PATH", "/tmp/king-state.json"))
     _VLLM_URL = os.environ.get("KING_VLLM_URL", "http://127.0.0.1:8001").rstrip("/")
     _MODEL_URI = os.environ.get("KING_MODEL_URI", "")
     _GENERATION_ID = os.environ.get("KING_GENERATION_ID", "1")
     _HOST = os.environ.get("KING_API_HOST", "0.0.0.0")
     _PORT = int(os.environ.get("KING_API_PORT", "8000"))
-    def _default_state() -> dict[str, Any]:
-        return {"status": "ready", "king_generation_id": _GENERATION_ID, "king_model_uri": _MODEL_URI}
+    _VLLM_WAIT_SECONDS = float(os.environ.get("KING_VLLM_WAIT_SECONDS", "3600"))
+    
+    
+    def _write_state(state: dict[str, Any]) -> None:
+        _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_PATH.write_text(json.dumps(state) + "\n")
+    
+    
+    def _default_state(*, status: str = "starting") -> dict[str, Any]:
+        return {
+            "status": status,
+            "king_generation_id": _GENERATION_ID,
+            "king_model_uri": _MODEL_URI,
+        }
+    
+    
     def _read_state() -> dict[str, Any]:
         if not _STATE_PATH.exists():
             state = _default_state()
-            _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _STATE_PATH.write_text(json.dumps(state) + "\n")
+            _write_state(state)
             return state
         try:
             return json.loads(_STATE_PATH.read_text())
         except Exception:
             return _default_state()
+    
+    
+    def _wait_for_vllm() -> None:
+        """Poll local vLLM quietly; flip state starting → ready when /v1/models works."""
+        deadline = time.monotonic() + max(60.0, _VLLM_WAIT_SECONDS)
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            try:
+                with httpx.Client(timeout=2.0) as client:
+                    response = client.get(f"{_VLLM_URL}/v1/models")
+                if response.status_code < 500:
+                    state = _read_state()
+                    if str(state.get("status") or "").lower() in ("starting", ""):
+                        state["status"] = "ready"
+                        state["king_generation_id"] = str(
+                            state.get("king_generation_id") or _GENERATION_ID
+                        )
+                        state["king_model_uri"] = str(state.get("king_model_uri") or _MODEL_URI)
+                        _write_state(state)
+                    print(f"king: vLLM ready at {_VLLM_URL} (attempt={attempt})", flush=True)
+                    return
+            except Exception:
+                pass
+            if attempt == 1 or attempt % 15 == 0:
+                print(
+                    f"king: waiting for vLLM {_VLLM_URL}/v1/models (attempt={attempt})",
+                    flush=True,
+                )
+            time.sleep(2.0)
+        print(f"king: timed out waiting for vLLM after {_VLLM_WAIT_SECONDS:g}s", flush=True)
+    
+    
     def create_app() -> FastAPI:
         app = FastAPI(title="albedo-king")
+    
+        @app.on_event("startup")
+        def _startup() -> None:
+            state = _read_state()
+            if str(state.get("status") or "").lower() not in ("changing", "king_changing", "ready"):
+                _write_state(_default_state(status="starting"))
+            threading.Thread(target=_wait_for_vllm, name="wait-vllm", daemon=True).start()
+    
         @app.get("/health")
         def health() -> dict[str, str]:
             return {"status": "ok"}
+    
         @app.get("/ready")
         def ready() -> JSONResponse:
             state = _read_state()
-            status = str(state.get("status") or "ready").lower()
+            status = str(state.get("status") or "starting").lower()
             payload = {
                 "status": status,
                 "king_generation_id": str(state.get("king_generation_id") or _GENERATION_ID),
                 "king_model_uri": str(state.get("king_model_uri") or _MODEL_URI),
             }
             if status in ("changing", "king_changing"):
-                return JSONResponse(status_code=503, content={**payload, "fault_code": "king_changing"})
+                return JSONResponse(
+                    status_code=503,
+                    content={**payload, "fault_code": "king_changing"},
+                )
+            if status != "ready":
+                return JSONResponse(
+                    status_code=503,
+                    content={**payload, "fault_code": "king_starting"},
+                )
             return JSONResponse(payload)
+    
         @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
         async def proxy_v1(path: str, request: Request) -> Response:
             state = _read_state()
-            status = str(state.get("status") or "ready").lower()
+            status = str(state.get("status") or "starting").lower()
             if status in ("changing", "king_changing"):
-                raise HTTPException(status_code=503, detail={
-                    "fault_code": "king_changing",
-                    "king_generation_id": str(state.get("king_generation_id") or _GENERATION_ID),
-                    "king_model_uri": str(state.get("king_model_uri") or _MODEL_URI),
-                })
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "fault_code": "king_changing",
+                        "king_generation_id": str(
+                            state.get("king_generation_id") or _GENERATION_ID
+                        ),
+                        "king_model_uri": str(state.get("king_model_uri") or _MODEL_URI),
+                    },
+                )
+            if status != "ready":
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "fault_code": "king_starting",
+                        "king_generation_id": str(
+                            state.get("king_generation_id") or _GENERATION_ID
+                        ),
+                        "king_model_uri": str(state.get("king_model_uri") or _MODEL_URI),
+                    },
+                )
             url = f"{_VLLM_URL}/v1/{path}"
             body = await request.body()
-            headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+            headers = {
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in ("host", "content-length")
+            }
             async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0)) as client:
-                upstream = await client.request(request.method, url, params=request.query_params, content=body, headers=headers)
-            return Response(content=upstream.content, status_code=upstream.status_code, media_type=upstream.headers.get("content-type"))
+                upstream = await client.request(
+                    request.method,
+                    url,
+                    params=request.query_params,
+                    content=body,
+                    headers=headers,
+                )
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("content-type"),
+            )
+    
         return app
-    if __name__ == "__main__":
+    
+    
+    def main() -> None:
         uvicorn.run(create_app(), host=_HOST, port=_PORT, log_level="info")
+    
+    
+    if __name__ == "__main__":
+        main()
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -124,6 +247,8 @@ metadata:
     app.kubernetes.io/part-of: kubetee-sn97-poc
 spec:
   replicas: 1
+  # Cold start downloads ~65Gi from HF/NFS + TP=4 load; default 600s is too short.
+  progressDeadlineSeconds: 2700
   selector:
     matchLabels:
       app.kubernetes.io/name: albedo-king
@@ -193,27 +318,7 @@ spec:
             - |
               set -euo pipefail
               pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27"
-              # Wait for local vLLM before advertising Ready.
-              for i in $(seq 1 600); do
-                if python3 - <<'PY'
-              import urllib.request
-              urllib.request.urlopen("http://127.0.0.1:8001/v1/models", timeout=2)
-              PY
-                then
-                  break
-                fi
-                sleep 2
-              done
-              python3 - <<'PY'
-              import json, os
-              from pathlib import Path
-              path = Path(os.environ.get("KING_STATE_PATH", "/tmp/king-state.json"))
-              path.write_text(json.dumps({
-                  "status": "ready",
-                  "king_generation_id": os.environ.get("KING_GENERATION_ID", "1"),
-                  "king_model_uri": os.environ.get("KING_MODEL_URI", ""),
-              }) + "\n")
-              PY
+              # Bind :8000 immediately (/health). Background thread waits for vLLM.
               exec python3 /scripts/king_serve.py
           envFrom:
             - configMapRef:

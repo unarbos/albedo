@@ -1,0 +1,50 @@
+{
+  "eval_run_id": "ca530856-ffa8-4e66-9175-7400e829e8c0",
+  "submission_id": "6dca2f88-c642-41c7-b1b9-aff4e7ed1a16",
+  "source": "https://albedo.tech/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/",
+  "detail_url": "https://pub-e2a73e9642e74a2ea78d2910c7a86025.r2.dev/detail.html?eval_run_id=ca530856-ffa8-4e66-9175-7400e829e8c0",
+  "finished_at": "2026-08-09T07:57:17.262025+00:00",
+  "shape": {
+    "sample_count": 100,
+    "generation_batch_size": 32,
+    "scoring_batch_size": 32,
+    "judge_count": 1,
+    "judge_model": "z-ai/glm-5.2",
+    "gen_batches": 4,
+    "score_batches": 4,
+    "accelerator": "RTX_PRO_6000_BLACKWELL",
+    "tensor_parallel_size_per_model": 4
+  },
+  "files": [
+    {
+      "name": "generated-samples.jsonl",
+      "bytes": 17948952,
+      "sha256": "2a4d5526f06478d0e6e9f15d615bc3d34babc63665126285f45591efab122cf1"
+    },
+    {
+      "name": "progress.jsonl",
+      "bytes": 15588,
+      "sha256": "1ae5bc513b3faa462f591d5083e7275cc1abec061f61b556f5cf6e6ad4966bd1"
+    },
+    {
+      "name": "remote-logs.txt",
+      "bytes": 179,
+      "sha256": "990df8a57ccdbc839881a3d484c10c51990d19bd0a5a4648adc9cffff6e0aea9"
+    },
+    {
+      "name": "request.json",
+      "bytes": 7357,
+      "sha256": "3f611cd1628c875e52617155e790bdb18aa152e4de17cad1e2867bf8be8c3cd7"
+    },
+    {
+      "name": "scoring-results.jsonl",
+      "bytes": 3579103,
+      "sha256": "cb7cbf694c77dd125e85d192d739475e3fbd4aa77492ec7e5560f232cbe8f127"
+    },
+    {
+      "name": "verdict.json",
+      "bytes": 4427,
+      "sha256": "cc9f8ccdb416ab6f9e5c7622773371a5bf0d32e491ba9cca5f9e5f0970479cae"
+    }
+  ]
+}

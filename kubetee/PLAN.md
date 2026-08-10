@@ -7,19 +7,22 @@ Kubernetes `Job` (no Armada — that's a follow-up) applied directly to the
 `albedo-poc` namespace on `na-us-oakland-56-direct`.
 
 **Split topology (current):**
+- **Dataset corpus** — `deploy/dataset-prep.yaml` one-shot Job fills
+  `albedo-poc-dataset-root` + verifies `manifest.json` against
+  `albedo-poc-dataset-config`. Re-run only on corpus/version change or wiped PVC.
 - **Always-on king** — `deploy/king.yaml` Deployment on `am-h200-25`
   (`kubetee.ai/albedo-king=true`), 4 GPU / TP=4, OpenAI-compatible HTTP
   behind ClusterIP `albedo-king:8000` (`king_serve.py` + local vLLM).
-- **Challenger Job** — `deploy/eval.yaml`, 4 GPU / TP=4, owns dataset load
-  (`sample-ids.json` under `eval_run_id`), HTTP-generates against the king,
-  local vLLM for the challenger, scores via shared judge, uploads artifacts.
+- **Challenger Job** — `deploy/eval.yaml`, 4 GPU / TP=4, mounts the prepared
+  corpus, samples N IDs (`sample-ids.json` under `eval_run_id`), HTTP-generates
+  against the king, local vLLM for the challenger, scores via shared judge,
+  uploads artifacts.
 
 King change protocol: set king state to `changing` → in-flight Jobs get
 HTTP 503 `king_changing` → `fault_code=king_changed` (no registering verdict).
 
-Concurrent challengers need a **second non-CC H200** (see
-`deploy/JOIN-SECOND-H200.md`). Gated king 8-GPU parity:
-`deploy/PARITY-KING-8GPU.md`.
+Concurrent challengers need a **second non-CC H200** (king already owns
+4 GPUs on `am-h200-25`).
 
 No Denrite docker-compose, no Postgres-backed queue, no Bittensor chain
 reads inside KubeTEE — the only dynamic inputs per job are the king and
@@ -27,15 +30,21 @@ challenger model refs + the eval/submission IDs.
 
 ```mermaid
 graph LR
+  subgraph once [Infrequent]
+    Prep["albedo-poc-dataset-prep Job"]
+    PVC["PVC dataset-root + manifest.json"]
+    Prep --> PVC
+  end
   subgraph KubeTEE["KubeTEE staging (na-us-oakland-56)"]
     King["albedo-king Deployment
 4 GPU TP=4 on am-h200-25"]
     subgraph EvalPod["Challenger Job (4 GPU)"]
-      Init["inject-code + prepare-dataset"]
+      Init["inject-code + check-manifest + prune-cache"]
       VChal["vLLM challenger TP=4"]
       Worker["run_eval.py"]
       Init --> VChal & Worker
     end
+    PVC --> EvalPod
     Worker -->|"HTTP /v1/completions"| King
     Judge["albedo-judge-api :8091"]
     Worker -->|"score-batch + /eval-cost"| Judge
@@ -127,25 +136,31 @@ NetworkPolicy allows ingress TCP/8091 only from `albedo-poc`. Auth:
 
 1. **`inject-code`** — `git clone --depth 1 --branch kubetee-poc
    https://github.com/KubeTEE-AI-Blueprints/albedo.git` into `/app/shared/albedo`.
-2. **`prepare-dataset`** — runs
-   `python3 /app/shared/albedo/scripts/prepare_datasets.py --dataset-root /app/dataset`
-   on first run (skipped if `manifest.json` already exists on the PVC).
+2. **`check-dataset-manifest`** — fail fast unless `/app/dataset/manifest.json`
+   exists and its sha256 matches `ALBEDO_EVAL_DATASET_MANIFEST_HASH` from
+   `albedo-poc-dataset-config` (filled by `deploy/dataset-prep.yaml`).
+3. **`prune-model-cache`** — deletes unused HF dirs under `/cache/models`
+   (eval/node-local hygiene; not corpus ownership).
+4. **`wait-for-king`** — polls `albedo-king` `/ready` until HTTP 200.
+
+Corpus download/build is **not** in the eval Job — run
+`deploy/dataset-prep.yaml` once (or on version/hash bump).
 
 ### Main containers
 
 1. **`eval`** — `pip install -e .` + deps, then
    `python3 /app/shared/albedo/kubetee/app/run_eval.py`. Drives
-   `RemoteEvalWorker`: downloads king + challenger weights to the
-   `model-cache` PVC, spins up two vLLM instances (TP=4 each, king on
-   GPUs 0-3, challenger on GPUs 4-7), runs the dataset, calls the shared
-   judge Service for scoring, uploads artifacts to S3, and exits.
+   `RemoteEvalWorker`: downloads challenger weights to the `model-cache` PVC,
+   spins up local vLLM (TP=4), HTTP-generates against the always-on king,
+   samples from the prepared corpus, calls the shared judge Service for
+   scoring, uploads artifacts to S3, and exits.
 
 ### Volumes
 
 | Volume | Type | Size | Purpose |
 |-------|------|------|---------|
 | `model-cache` | PVC (`longhorn-v2` RWX) | 256Gi | King + challenger safetensors (retained across runs) |
-| `dataset-root` | PVC (`longhorn-v2` RWX) | 512Gi | Public HF datasets + `manifest.json` (retained across runs) |
+| `dataset-root` | PVC (`longhorn-v2` RWX) | 512Gi | Public HF datasets + `manifest.json` (owned by dataset-prep Job) |
 | `artifacts` | PVC (`longhorn-v2` RWX) | 64Gi | Per-run spool files, uploaded to S3 |
 | `shared` | emptyDir | — | Code injection mount |
 | `dshm` | emptyDir (Memory) | 64Gi | vLLM/NCCL shared memory |
@@ -180,17 +195,16 @@ all 3 samples came back `scored=False`, verdict = `failed`).
 
 Each backend model in `JUDGE_MODELS` is configured in the LiteLLM DB with:
 
-- **`additional_drop_params: ["provider", "usage", "reasoning"]`** — albedo's
-  `OpenRouterJudgeClient` always sends OpenRouter-style `reasoning`,
-  `provider`, `usage` fields in the payload (for OpenRouter compatibility —
-  lets us switch `base_url` with no code change). LiteLLM drops these before
-  forwarding to the SGLang backend.
-- **For `z-ai/glm-5.2` only**: `extra_body: {chat_template_kwargs:
-  {enable_thinking: false}}` — disables GLM-5.2's thinking output (it
-  reasons by default, which produced 20K reasoning tokens per request and
-  caused `/score-batch` `ReadTimeout`). This is the SGLang-native way to
-  disable thinking, injected by LiteLLM so the albedo client doesn't need
-  to know about it.
+- **`additional_drop_params: ["provider", "usage", "reasoning"]`** (optional
+  hygiene) — albedo's `OpenRouterJudgeClient` still sends OpenRouter-style
+  `reasoning` / `provider` / `usage` for OpenRouter compatibility. LiteLLM
+  can drop those before the SGLang backend; they do not disable thinking.
+- **Thinking off for judge calls**: client sends `reasoning_effort: "none"`
+  (plus OpenRouter `reasoning: {enabled: false}`). LiteLLM must keep
+  `allowed_openai_params: ["reasoning_effort"]` on `z-ai/glm-5.2` so the
+  param reaches SGLang. Do **not** set a global LiteLLM
+  `extra_body.enable_thinking=false` on the shared model — other gateway
+  clients still want default reasoning.
 
 Set via `PATCH /model/{model_id}/update` from inside a LiteLLM pod (the
 pods don't have curl/jq, so use Python's `urllib.request`).
@@ -219,20 +233,10 @@ would mix concurrent Jobs).
      -t ghcr.io/kubetee-ai/albedo-judge-api:latest --push .
    ```
 
-1. **Apply judge + eval manifests**:
+1. **Apply the Secret** (out-of-band, never committed) — must include
+   `ALBEDO_JUDGE_API_AUTH_TOKEN` matching `SELFDRIVE_SCORING_AUTH_TOKEN`,
+   plus `HF_TOKEN` for dataset prep and gated weights:
    ```bash
-   kubectl --context na-us-oakland-56-direct apply -f \
-     albedo/kubetee/deploy/judge-api.yaml \
-     albedo/kubetee/deploy/eval.yaml
-   ```
-   Confirm the judge pod stays `Ready` after the NetworkPolicy apply
-   (kubelet probes are host-sourced; if Ready flips False, add a narrow
-   Calico host allow).
-
-2. **Apply the Secret** (out-of-band, never committed) — must include
-   `ALBEDO_JUDGE_API_AUTH_TOKEN` matching `SELFDRIVE_SCORING_AUTH_TOKEN`:
-   ```bash
-   # Fill in the template locally (outside the repo):
    cp albedo/kubetee/deploy/secret-template.yaml \
      ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    $EDITOR ~/kubetee-secret-backends/albedo-poc-secrets.yaml
@@ -240,16 +244,39 @@ would mix concurrent Jobs).
      ~/kubetee-secret-backends/albedo-poc-secrets.yaml
    ```
 
-3. **Verify all 3 judge models are served** by the gateway (a missing
-   backend here is the #1 cause of `PROVIDER_FAULT` verdicts):
+2. **Prepare the corpus once** (or on `ALBEDO_EVAL_DATASET_MANIFEST_HASH`
+   / version change, or after a wiped PVC) — **not** on every new king and
+   **not** on every eval Job:
+   ```bash
+   kubectl --context na-us-oakland-56-direct apply -f \
+     albedo/kubetee/deploy/dataset-prep.yaml
+   kubectl --context na-us-oakland-56-direct -n albedo-poc \
+     wait --for=condition=complete job/albedo-poc-dataset-prep --timeout=6h
+   ```
+
+3. **Apply judge + king** (king must own its 4 GPUs before any eval Job):
+   ```bash
+   kubectl --context na-us-oakland-56-direct label node am-h200-25 \
+     kubetee.ai/albedo-king=true --overwrite
+   kubectl --context na-us-oakland-56-direct apply -f \
+     albedo/kubetee/deploy/judge-api.yaml \
+     albedo/kubetee/deploy/king.yaml
+   kubectl --context na-us-oakland-56-direct -n albedo-poc \
+     rollout status deploy/albedo-king --timeout=45m
+   ```
+   Confirm the judge pod stays `Ready` after the NetworkPolicy apply
+   (kubelet probes are host-sourced; if Ready flips False, add a narrow
+   Calico host allow).
+
+4. **Verify judge backends** served by the gateway (a missing backend is
+   the #1 cause of `PROVIDER_FAULT` verdicts):
    ```bash
    kubectl --context na-us-oakland-56-direct -n nemo get pods -l app=qwen35-397b-a17b-fp8-sglang
    kubectl --context na-us-oakland-56-direct -n nemo get endpoints qwen35-397b-a17b-fp8-sglang
    # Repeat for glm-5-2-nvfp4-sglang + the dsv4-0731 services.
-   # All 3 must have an endpoint IP before starting the eval.
    ```
 
-4. **Start the eval** (restart — delete the old Job first if it exists):
+5. **Start the eval** (restart — delete the old Job first if it exists):
    ```bash
    kubectl --context na-us-oakland-56-direct -n albedo-poc delete job \
      albedo-poc-eval --ignore-not-found=true
@@ -257,7 +284,7 @@ would mix concurrent Jobs).
      albedo/kubetee/deploy/eval.yaml
    ```
 
-5. **Watch the pod**:
+6. **Watch the pod**:
    ```bash
    kubectl --context na-us-oakland-56-direct -n albedo-poc get pods -l \
      app.kubernetes.io/name=albedo-poc -o wide
@@ -268,15 +295,16 @@ would mix concurrent Jobs).
    ```
    Expected log sequence:
    - `inject-code`: "code injection complete"
-   - `prepare-dataset`: "manifest.json exists" (or dataset download on first run)
-   - `eval`: vLLM loads king + challenger, `Uvicorn running`, judge traffic
-     to LiteLLM, final verdict JSON with `score_king`, `score_challenger`,
+   - `check-dataset-manifest`: "dataset manifest hash OK"
+   - `prune-model-cache`: prune summary (or "no /cache/models/hf")
+   - `wait-for-king`: "king ready"
+   - `eval`: challenger vLLM + remote king HTTP, judge traffic to LiteLLM,
+     final verdict JSON with `score_king`, `score_challenger`,
      `challenger_won`, `S3ArtifactUploader` upload confirmations
    - `judge-api`: `[judge-openrouter] usage purpose=... cost=0.0xxxxx`
-     (non-zero cost after the cost-header patch), `score_batch_done
-     scored=3/3`
+     (non-zero cost after the cost-header patch), `score_batch_done`
 
-6. **Verify artifacts landed in S3**:
+7. **Verify artifacts landed in S3**:
    ```bash
    # From a pod with Hippius creds, or via the albedo pod itself:
    kubectl --context na-us-oakland-56-direct -n albedo-poc exec \
@@ -300,6 +328,52 @@ would mix concurrent Jobs).
   objects outside its bundles.
 - **kubectl context** — all PoC ops from local use `na-us-oakland-56-direct`.
   Fleet ops (if ever needed) use `stagingrancher`. Never mix.
+
+## Latest successful PoC eval (2026-08-09)
+
+End-to-end king-of-the-hill run on `na-us-oakland-56` (split topology:
+always-on king on `am-h200-25` + challenger Job TP=4 on the same node;
+judge via `albedo-judge-api` → in-cluster LiteLLM → `z-ai/glm-5.2` CC +
+`deepseek/deepseek-v4-flash-0731` simulate).
+
+| Field | Value |
+|-------|--------|
+| `eval_run_id` | `7e09f071-4514-4ae0-9b92-6cf02019544f` |
+| `submission_id` | `4ca920b9-7a6b-4d0c-8f16-bcbad63b5a26` |
+| Verdict | `succeeded` (`challenger_won=false`) |
+| Scores | challenger **0.635906** / king **0.636356** (binary, `judge_count=1`, win margin 0.03) |
+| Samples | 100 scored / 100 valid turns |
+| King | `hf://tojointhecommunity/albedo-qwen3.6-35b-top@438aec1140de06268cc36b79dc9567129678888c` |
+| Challenger | `hf://bkn1890/albedo-qwen3.6-35b-hk971@1ba87c52697f154a8f75a33ddf5714c1d314bcc7` |
+| Wall clock | **2333 s** (~38.9 min) — `worker.execute` only (gen + score + upload) |
+| Judge spend | **$6.90** (3926 requests; glm-5.2 $5.77 + dsv4-flash $1.14) |
+| GPU spend (challenger Job) | **$6.48** (4× H200 @ $2.50/gpu/h × 0.648 h) |
+| Total (judge + GPU) | **$13.39** |
+
+Public artifact URLs (Hippius `public-read`; prefix
+`s3://sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/`):
+
+| Artifact | URL |
+|----------|-----|
+| Verdict | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/verdict.json |
+| Eval summary | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/eval-summary.json |
+| Request | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/request.json |
+| Progress | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/progress.jsonl |
+| Generated samples | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/generated-samples.jsonl |
+| Scoring results | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/scoring-results.jsonl |
+| Remote logs | https://s3.hippius.com/sn97-albedo/kubetee-poc/7e09f071-4514-4ae0-9b92-6cf02019544f/remote-logs.txt |
+
+Reference Denrite eval used for shape comparison (not this run):
+`kubetee/compare/reference-ca530856-ffa8-4e66-9175-7400e829e8c0/`
+([detail](https://pub-e2a73e9642e74a2ea78d2910c7a86025.r2.dev/detail.html?eval_run_id=ca530856-ffa8-4e66-9175-7400e829e8c0)).
+
+### Observed idle-GPU window
+
+After multi-turn generation, `RemoteEvalWorker` closes the local challenger
+vLLM (`VllmProcessGenerator.close()` → EngineCore SIGTERM) and then runs
+HTTP scoring + S3 upload **in the same Job**, which still holds
+`nvidia.com/gpu: 4`. Scoring itself needs no eval-pod GPUs (judge-api /
+LiteLLM only). See follow-up #6.
 
 ## Follow-ups after PoC success
 
@@ -328,3 +402,16 @@ would mix concurrent Jobs).
    stable, Denrite points their real eval-dispatch loop at the same
    endpoint (Armada or direct `kubectl apply`) and retires manual
    submissions.
+6. **Split generation vs scoring Jobs (free challenger GPUs sooner)** —
+   Today `_execute()` is monolithic: after `close()` on the challenger
+   vLLM, scoring + artifact upload still run in the GPU Job.
+   **Improvement:** checkpoint durable gen outputs (and `request` /
+   `category_prep_id`) as soon as trajectories finish → exit/scale down
+   the 4-GPU Job → run a **CPU-only** score Job that reads the checkpoint,
+   calls `albedo-judge-api`, and writes the verdict. Requires a
+   score-from-artifacts entrypoint (not present today — `generated-samples`
+   is only uploaded in `_write_and_upload_artifacts` after scoring) and
+   wiring `category_prep_id` across Jobs. Multi-turn observation simulation
+   during generation still needs the GPU Job; only the final score/upload
+   window is reclaimable. Unlocks overlapping evals once a second
+   challenger node (or freed GPUs on the king node) is available.

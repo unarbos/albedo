@@ -1,0 +1,97 @@
+{
+  "allowed_scores": [
+    0.0,
+    1.0
+  ],
+  "artifact_metadata": {
+    "generated_samples": {
+      "bucket": "albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/generated-samples.jsonl",
+      "sha256": "sha256:2a4d5526f06478d0e6e9f15d615bc3d34babc63665126285f45591efab122cf1",
+      "size_bytes": 17948952,
+      "uri": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/generated-samples.jsonl"
+    },
+    "progress": {
+      "bucket": "albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/progress.jsonl",
+      "sha256": "sha256:1ae5bc513b3faa462f591d5083e7275cc1abec061f61b556f5cf6e6ad4966bd1",
+      "size_bytes": 15588,
+      "uri": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/progress.jsonl"
+    },
+    "remote_logs": {
+      "bucket": "albedo",
+      "content_type": "text/plain",
+      "object_key": "albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/remote-logs.txt",
+      "sha256": "sha256:990df8a57ccdbc839881a3d484c10c51990d19bd0a5a4648adc9cffff6e0aea9",
+      "size_bytes": 179,
+      "uri": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/remote-logs.txt"
+    },
+    "request": {
+      "bucket": "albedo",
+      "content_type": "application/json",
+      "object_key": "albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/request.json",
+      "sha256": "sha256:3f611cd1628c875e52617155e790bdb18aa152e4de17cad1e2867bf8be8c3cd7",
+      "size_bytes": 7357,
+      "uri": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/request.json"
+    },
+    "scoring_results": {
+      "bucket": "albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/scoring-results.jsonl",
+      "sha256": "sha256:cb7cbf694c77dd125e85d192d739475e3fbd4aa77492ec7e5560f232cbe8f127",
+      "size_bytes": 3579103,
+      "uri": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/scoring-results.jsonl"
+    }
+  },
+  "artifacts": {
+    "generated_samples": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/generated-samples.jsonl",
+    "progress": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/progress.jsonl",
+    "remote_logs": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/remote-logs.txt",
+    "request": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/request.json",
+    "scoring_results": "s3://albedo/albedo-eval-service/submissions/6dca2f88-c642-41c7-b1b9-aff4e7ed1a16/eval/ca530856-ffa8-4e66-9175-7400e829e8c0/scoring-results.jsonl"
+  },
+  "chal_vllm_errors": 0,
+  "challenger_won": true,
+  "eval_run_id": "ca530856-ffa8-4e66-9175-7400e829e8c0",
+  "fault_class": null,
+  "fault_code": null,
+  "fault_message": null,
+  "generated_sample_count": 100,
+  "gpu_topology": {
+    "accelerator": "RTX_PRO_6000_BLACKWELL",
+    "challenger": [
+      "4",
+      "5",
+      "6",
+      "7"
+    ],
+    "previous_king": [
+      "0",
+      "1",
+      "2",
+      "3"
+    ],
+    "tensor_parallel_size_per_model": 4
+  },
+  "judge_count": 1,
+  "judge_errors": 0,
+  "king_vllm_errors": 0,
+  "required_win_margin": 0.03,
+  "retryable": null,
+  "score_breakdown": {
+    "by_judge": {
+      "z-ai/glm-5.2": 0.689451
+    },
+    "by_metric": {}
+  },
+  "score_challenger": 0.689451,
+  "score_king": 0.659136,
+  "scored_sample_count": 100,
+  "scoring_mode": "binary",
+  "state": "succeeded",
+  "total_turns": 100,
+  "type": "verdict",
+  "valid_turns": 100
+}

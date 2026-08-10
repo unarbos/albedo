@@ -27,17 +27,35 @@ data:
   ALBEDO_JUDGE_SOTA_MODELS: "z-ai/glm-5.2"
   ALBEDO_JUDGE_TEMPERATURE: "0.0"
   ALBEDO_JUDGE_MAX_TOKENS: "768"
-  ALBEDO_JUDGE_REQUEST_TIMEOUT_SECONDS: "300"
+  # Match long glm judge completions (often 150–280s); was 300 < LATENCY_MAX.
+  ALBEDO_JUDGE_REQUEST_TIMEOUT_SECONDS: "480"
   ALBEDO_JUDGE_RETRY_COUNT: "5"
-  # Shared throttle across concurrent eval Jobs. Keep modest so /score-batch
-  # cannot starve uvicorn enough for kubelet liveness to SIGKILL the pod.
-  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "8"
-  ALBEDO_JUDGE_MAX_SCORE_SAMPLE_CONCURRENCY: "8"
+  # GLM B200 CC: balanced recipe with max-running=64 (2026-08-10).
+  # Cap judge ≤ backend: start/ceiling 64, floor 32, sample concurrency 48.
+  ALBEDO_JUDGE_MAX_CONCURRENCY_PER_MODEL: "64"
+  ALBEDO_JUDGE_MAX_SCORE_SAMPLE_CONCURRENCY: "48"
+  ALBEDO_JUDGE_ADAPTIVE_CONCURRENCY_ENABLED: "true"
+  ALBEDO_JUDGE_ADAPTIVE_CONCURRENCY_MAX: "64"
+  ALBEDO_JUDGE_ADAPTIVE_CONCURRENCY_MIN: "32"
+  ALBEDO_JUDGE_ADAPTIVE_HOLD_RATIO: "0.9"
+  ALBEDO_JUDGE_ADAPTIVE_RAMP_EVERY_SUCCESSES: "8"
+  ALBEDO_JUDGE_ADAPTIVE_COOLDOWN_SUCCESSES: "16"
+  # Latency: warn from first request if > LATENCY_MAX_SECONDS; after start
+  # baseline (median of first N), also warn at baseline × LATENCY_MAX_RATIO.
+  # 3 consecutive OOR completions trigger the same hold as a 429.
+  # 360s: glm-5.2 judge calls often take 150–280s (large completion/reasoning
+  # usage). The old 60s absolute floor + stale ~46s baseline (×3 ≈137s) held
+  # adaptive concurrency at MIN=32. Bumped 2026-08-09 mid-eval.
+  ALBEDO_JUDGE_LATENCY_MAX_SECONDS: "360"
+  ALBEDO_JUDGE_LATENCY_MAX_RATIO: "3.0"
+  ALBEDO_JUDGE_LATENCY_BASELINE_SAMPLES: "8"
+  ALBEDO_JUDGE_LATENCY_OOR_STRIKES_BEFORE_HOLD: "3"
   ALBEDO_JUDGE_MIN_VALID_FRACTION: "0.5"
   ALBEDO_JUDGE_API_HOST: "0.0.0.0"
   ALBEDO_JUDGE_API_PORT: "8091"
 ---
 # replicas=1 — in-memory QuestionPrepStore is not shared across pods.
+# RollingUpdate (maxSurge=1): brief dual-pod window during rollout only.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,7 +70,10 @@ spec:
     matchLabels:
       app.kubernetes.io/name: albedo-judge-api
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   template:
     metadata:
       labels:
@@ -61,7 +82,7 @@ spec:
     spec:
       containers:
         - name: judge-api
-          image: ghcr.io/kubetee-ai/albedo-judge-api:latest
+          image: ghcr.io/kubetee-ai/albedo-judge-api:reasoning-none-20260809233116
           imagePullPolicy: Always
           ports:
             - name: http

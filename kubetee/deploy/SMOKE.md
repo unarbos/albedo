@@ -1,15 +1,21 @@
 # Smoke checklist — split king vs challenger
 
-Run after `kubetee-poc` has the remote-king code and `king.yaml` is Ready.
+Run after `kubetee-poc` has the remote-king code. Apply order:
+**secrets → dataset-prep (once) → king Ready → eval**.
 
-## 0. Preflight — king must be Ready before challenger
+## 0. Preflight — corpus + king before challenger
 
-Do **not** apply `eval.yaml` until the king Deployment is Available and
-`GET /ready` returns 200. The current 8-GPU co-located Job holds all GPUs on
-`am-h200-25`; `albedo-king` stays Pending until that Job finishes and frees
-at least 4 GPUs.
+Do **not** apply `eval.yaml` until:
+
+1. `albedo-poc-dataset-prep` has Completed (manifest hash matches ConfigMap)
+2. king Deployment is Available and `GET /ready` returns 200
 
 ```bash
+# Corpus (once / on hash bump / wiped PVC — not every eval):
+kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/dataset-prep.yaml
+kubectl --context na-us-oakland-56-direct -n albedo-poc \
+  wait --for=condition=complete job/albedo-poc-dataset-prep --timeout=6h
+
 kubectl --context na-us-oakland-56-direct label node am-h200-25 \
   kubetee.ai/albedo-king=true --overwrite
 kubectl --context na-us-oakland-56-direct apply -f kubetee/deploy/king.yaml
@@ -39,6 +45,7 @@ kubectl --context na-us-oakland-56-direct -n albedo-poc logs -f job/albedo-poc-e
 ```
 
 Expect:
+- init `check-dataset-manifest`: "dataset manifest hash OK"
 - spool `{artifacts}/spool/{eval_run_id}/sample-ids.json` written early
 - generation events with `"king_remote": true`
 - king pod logs completions; challenger uses local GPUs 0-3 only
@@ -63,7 +70,7 @@ kubectl --context na-us-oakland-56-direct -n albedo-poc exec deploy/albedo-king 
 
 ## 3. Two concurrent challengers (needs second H200)
 
-See [JOIN-SECOND-H200.md](JOIN-SECOND-H200.md). Copy `eval.yaml` to a second
-Job name + distinct `EVAL_RUN_ID` / `SUBMISSION_ID`. Confirm pods land on
-different nodes (or non-overlapping GPU sets) and both complete against the
-same king Service.
+King already owns 4 GPUs on `am-h200-25`, so a second concurrent challenger
+needs another non-CC H200. Copy `eval.yaml` to a second Job name + distinct
+`EVAL_RUN_ID` / `SUBMISSION_ID`. Confirm pods land on different nodes (or
+non-overlapping GPU sets) and both complete against the same king Service.

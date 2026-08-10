@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterator
 import httpx
 from loguru import logger
 
+from .adaptive_concurrency import AdaptiveConcurrencyConfig, AdaptiveConcurrencyGate
 from .judge_config import JudgeSettings
 from .judge_core import JUDGE_MODELS, JUDGE_PROVIDER_PINS
 
@@ -130,14 +131,46 @@ class OpenRouterJudgeClient:
         if not settings.openrouter_api_key:
             raise ValueError("ALBEDO_JUDGE_OPENROUTER_API_KEY is required")
         self.settings = settings
-        pool = max(64, (len(JUDGE_MODELS) + 1) * settings.max_concurrency_per_model)
+        pool_slots = settings.max_concurrency_per_model
+        if settings.adaptive_concurrency_enabled:
+            pool_slots = max(pool_slots, settings.adaptive_concurrency_max)
+        pool = max(64, (len(JUDGE_MODELS) + 1) * pool_slots)
         self._client = httpx.AsyncClient(
             base_url=settings.openrouter_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
             timeout=httpx.Timeout(settings.request_timeout_seconds),
             limits=httpx.Limits(max_connections=pool, max_keepalive_connections=pool),
         )
-        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        # Per-model gates: AdaptiveConcurrencyGate when enabled, else Semaphore.
+        self._gates: dict[str, AdaptiveConcurrencyGate | asyncio.Semaphore] = {}
+
+    def _gate_for(self, model: str) -> AdaptiveConcurrencyGate | asyncio.Semaphore:
+        gate = self._gates.get(model)
+        if gate is not None:
+            return gate
+        initial = max(1, self.settings.max_concurrency_per_model)
+        if self.settings.adaptive_concurrency_enabled:
+            gate = AdaptiveConcurrencyGate(
+                model,
+                AdaptiveConcurrencyConfig(
+                    initial=initial,
+                    max_limit=max(initial, self.settings.adaptive_concurrency_max),
+                    min_limit=max(1, self.settings.adaptive_concurrency_min),
+                    hold_ratio=self.settings.adaptive_hold_ratio,
+                    ramp_every_successes=max(1, self.settings.adaptive_ramp_every_successes),
+                    cooldown_successes=max(1, self.settings.adaptive_cooldown_successes),
+                    latency_max_seconds=self.settings.latency_max_seconds,
+                    latency_max_ratio=self.settings.latency_max_ratio,
+                    latency_baseline_samples=max(1, self.settings.latency_baseline_samples),
+                    latency_oor_strikes_before_hold=max(
+                        1, self.settings.latency_oor_strikes_before_hold
+                    ),
+                ),
+            )
+        else:
+            gate = asyncio.Semaphore(initial)
+        self._gates[model] = gate
+        return gate
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -201,12 +234,11 @@ class OpenRouterJudgeClient:
         parse_retries: int | None = None,
         retry_count: int | None = None,
     ) -> JudgeRawResponse:
-        sem = self._semaphores.setdefault(
-            model, asyncio.Semaphore(max(1, self.settings.max_concurrency_per_model))
-        )
+        gate = self._gate_for(model)
         parse_budget = self.settings.parse_retries if parse_retries is None else parse_retries
         transport_budget = self.settings.retry_count if retry_count is None else retry_count
-        async with sem:
+        await _gate_acquire(gate)
+        try:
             last: JudgeRawResponse | None = None
             for parse_attempt in range(max(1, parse_budget)):
                 last = await self._score_with_retries(
@@ -216,10 +248,13 @@ class OpenRouterJudgeClient:
                     base_shift=parse_attempt * (transport_budget + 1),
                     purpose=purpose,
                     retry_count=transport_budget,
+                    gate=gate,
                 )
                 if last.error is None and (accept is None or accept(last.raw)):
                     return last
             return last
+        finally:
+            await _gate_release(gate)
 
     async def _score_with_retries(
         self,
@@ -234,12 +269,14 @@ class OpenRouterJudgeClient:
         base_shift: int = 0,
         purpose: str = "other",
         retry_count: int | None = None,
+        gate: AdaptiveConcurrencyGate | asyncio.Semaphore | None = None,
     ) -> JudgeRawResponse:
         transport_budget = self.settings.retry_count if retry_count is None else retry_count
         last_error = ""
         for attempt in range(transport_budget + 1):
+            t0 = time.monotonic()
             try:
-                return await self._score_once(
+                result = await self._score_once(
                     model=model,
                     messages=messages,
                     response_schema=response_schema,
@@ -250,7 +287,16 @@ class OpenRouterJudgeClient:
                     provider_shift=base_shift + attempt,
                     purpose=purpose,
                 )
+                if isinstance(gate, AdaptiveConcurrencyGate):
+                    gate.observe_success(time.monotonic() - t0)
+                return result
             except Exception as exc:
+                if (
+                    isinstance(gate, AdaptiveConcurrencyGate)
+                    and isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code == 429
+                ):
+                    gate.observe_429()
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt >= transport_budget:
                     break
@@ -285,7 +331,12 @@ class OpenRouterJudgeClient:
             "messages": messages,
             "temperature": self.settings.temperature if temperature is None else temperature,
             "max_tokens": self.settings.max_tokens if max_tokens is None else max_tokens,
+            # OpenRouter: disable thinking via reasoning block.
             "reasoning": {"enabled": False, "exclude": True},
+            # LiteLLM → SGLang (z-ai/glm-5.2 etc.): OpenRouter `reasoning` is
+            # ignored on openai/ backends; reasoning_effort=none is what actually
+            # turns thinking off (requires allowed_openai_params on the model).
+            "reasoning_effort": "none",
             "provider": {**provider_block, "require_parameters": True},
             "usage": {"include": True},
         }
@@ -329,6 +380,20 @@ class OpenRouterJudgeClient:
         raw = _message_content(body.get("choices", []))
         provider = _provider_name(model)
         return JudgeRawResponse(model=model, provider=provider, raw=raw)
+
+
+async def _gate_acquire(gate: AdaptiveConcurrencyGate | asyncio.Semaphore) -> None:
+    if isinstance(gate, AdaptiveConcurrencyGate):
+        await gate.acquire()
+    else:
+        await gate.acquire()
+
+
+async def _gate_release(gate: AdaptiveConcurrencyGate | asyncio.Semaphore) -> None:
+    if isinstance(gate, AdaptiveConcurrencyGate):
+        await gate.release()
+    else:
+        gate.release()
 
 
 def _rotate_order(provider: dict[str, Any], shift: int) -> dict[str, Any]:
