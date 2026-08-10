@@ -1,4 +1,4 @@
-# SN97 Denrite (Albedo) — KubeTEE Evaluation PoC
+# KubeTEE SN90 — Denrite (Albedo) Evaluation PoC
 
 ## High-level shape
 
