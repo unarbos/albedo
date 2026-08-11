@@ -28,6 +28,9 @@ dist/
 *.db
 postgres-data/
 
+# Local eval harness output
+scripts/local_eval/local_duel_results*.jsonl
+
 # Local design and runtime scratch directories
 Systemdesign.md
 design/

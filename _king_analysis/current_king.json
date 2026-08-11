@@ -1,0 +1,77 @@
+{
+  "king": {
+    "king_version": 104,
+    "model_uri": "foremost/albedo-qwen3.6-35b-albedo-47@sha256:78e9f5c562f3ef3339f7c0c48b32226f18a33683b5a64846e3ec21296bfc93e1",
+    "model_hash": "sha256:78e9f5c562f3ef3339f7c0c48b32226f18a33683b5a64846e3ec21296bfc93e1",
+    "hotkey": "5DAVDq9pYeqWAXsQadEeTn5gL4MUVBP2y6EMXg3DHTNDxwZg",
+    "uid": 90,
+    "weight_bps": 2000,
+    "score_challenger": 0.604138,
+    "score_king": 0.564687,
+    "eval_run_id": "8e56f148-9957-4d2a-81eb-3cec65f43dc9",
+    "is_king": true
+  },
+  "reign": [
+    {
+      "king_version": 104,
+      "model_uri": "foremost/albedo-qwen3.6-35b-albedo-47@sha256:78e9f5c562f3ef3339f7c0c48b32226f18a33683b5a64846e3ec21296bfc93e1",
+      "model_hash": "sha256:78e9f5c562f3ef3339f7c0c48b32226f18a33683b5a64846e3ec21296bfc93e1",
+      "hotkey": "5DAVDq9pYeqWAXsQadEeTn5gL4MUVBP2y6EMXg3DHTNDxwZg",
+      "uid": 90,
+      "weight_bps": 2000,
+      "score_challenger": 0.604138,
+      "score_king": 0.564687,
+      "eval_run_id": "8e56f148-9957-4d2a-81eb-3cec65f43dc9",
+      "is_king": true
+    },
+    {
+      "king_version": 103,
+      "model_uri": "0xgevdhc/albedo-qwen3.6-35b-testv1@be40ac358a8a369cfb1b089ca9d82c8d73ad0df8",
+      "model_hash": "be40ac358a8a369cfb1b089ca9d82c8d73ad0df8",
+      "hotkey": "5DhiUaqDaxyvsjk3tKeMyrB1Nsa5ZKNaDAHgtFwSn97aiZFZ",
+      "uid": 226,
+      "weight_bps": 2000,
+      "score_challenger": 0.537811,
+      "score_king": 0.507487,
+      "eval_run_id": "4e1c1b5e-01ad-4b78-b56a-1b4857609ddf",
+      "is_king": false
+    },
+    {
+      "king_version": 102,
+      "model_uri": "chelsea-blue/albedo-qwen3.6-35b-second@1447f2ba20d4d71ac3d8e522d271a7bbc2f4e30e",
+      "model_hash": "1447f2ba20d4d71ac3d8e522d271a7bbc2f4e30e",
+      "hotkey": "5CkJyDvaQ4TGmXUERgtWigkEGgDYyxZ2fXqcjvnjGagWyAwN",
+      "uid": 221,
+      "weight_bps": 2000,
+      "score_challenger": 0.549838,
+      "score_king": 0.51171,
+      "eval_run_id": "9a70bee1-34bd-4214-8be4-dad73cd380e5",
+      "is_king": false
+    },
+    {
+      "king_version": 101,
+      "model_uri": "jusua-hs/albedo-qwen3.6-35b-cyan-cc01@6f98d348e10a55d14721849b4e3a2ca8a54c5070",
+      "model_hash": "6f98d348e10a55d14721849b4e3a2ca8a54c5070",
+      "hotkey": "5CAaNr5usGXyn3adMSX55RUz2scmoEDerD5pRvtG7c32BFdY",
+      "uid": 193,
+      "weight_bps": 2000,
+      "score_challenger": 0.546795,
+      "score_king": 0.488104,
+      "eval_run_id": "234d2df4-7633-4369-846b-eec32a2f350c",
+      "is_king": false
+    },
+    {
+      "king_version": 100,
+      "model_uri": "tammyfritz/albedo-qwen3.6-35b-stp-120@54af9a2cc302ae286134c74fb6b608a473497e8a",
+      "model_hash": "54af9a2cc302ae286134c74fb6b608a473497e8a",
+      "hotkey": "5GH7QUhbhFp77ga8k29ssjB3BT7VyndF3svReHbDPVqBcs6a",
+      "uid": 189,
+      "weight_bps": 2000,
+      "score_challenger": 0.566567,
+      "score_king": 0.528515,
+      "eval_run_id": "c98bc5f7-fa3b-4edb-a36b-c6960ca828a8",
+      "is_king": false
+    }
+  ],
+  "updated_at": "2026-08-07T14:36:35.271489+00:00"
+}
