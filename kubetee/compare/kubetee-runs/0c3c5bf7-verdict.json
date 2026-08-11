@@ -1,0 +1,93 @@
+{
+  "allowed_scores": [
+    0.0,
+    0.5,
+    1.0
+  ],
+  "artifact_metadata": {
+    "generated_samples": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/generated-samples.jsonl",
+      "sha256": "sha256:8f299cd0c19036d7b01eab2e36ec69cbcf39b5507b00f09d1a94b549d8fd1e63",
+      "size_bytes": 17401989,
+      "uri": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/generated-samples.jsonl"
+    },
+    "progress": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/progress.jsonl",
+      "sha256": "sha256:1a3b4a697e47692600c68c5d7d29ad99ff47b2382ddc3861ebb849161ca1ff31",
+      "size_bytes": 15074,
+      "uri": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/progress.jsonl"
+    },
+    "remote_logs": {
+      "bucket": "sn97-albedo",
+      "content_type": "text/plain",
+      "object_key": "kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/remote-logs.txt",
+      "sha256": "sha256:17553898af7f563104c82b9fe3303a0ced199cd5dbaeb4ce5bc5f8e1f69eb964",
+      "size_bytes": 179,
+      "uri": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/remote-logs.txt"
+    },
+    "request": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/json",
+      "object_key": "kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/request.json",
+      "sha256": "sha256:8309219779db8053130e480035f49941caa0e86e199afaadae2b9068a00184da",
+      "size_bytes": 7278,
+      "uri": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/request.json"
+    },
+    "scoring_results": {
+      "bucket": "sn97-albedo",
+      "content_type": "application/x-ndjson",
+      "object_key": "kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/scoring-results.jsonl",
+      "sha256": "sha256:8bfc7c24d74a8ee764ccc6efeaab3c6b79c64a3f79648aeeca1476f24ee9db91",
+      "size_bytes": 3858972,
+      "uri": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/scoring-results.jsonl"
+    }
+  },
+  "artifacts": {
+    "generated_samples": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/generated-samples.jsonl",
+    "progress": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/progress.jsonl",
+    "remote_logs": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/remote-logs.txt",
+    "request": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/request.json",
+    "scoring_results": "s3://sn97-albedo/kubetee-poc/0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8/scoring-results.jsonl"
+  },
+  "chal_vllm_errors": 0,
+  "challenger_won": false,
+  "eval_run_id": "0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8",
+  "fault_class": null,
+  "fault_code": null,
+  "fault_message": null,
+  "generated_sample_count": 100,
+  "gpu_topology": {
+    "accelerator": "H200",
+    "challenger": [
+      "0",
+      "1",
+      "2",
+      "3"
+    ],
+    "previous_king": [],
+    "tensor_parallel_size_per_model": 4
+  },
+  "judge_count": 1,
+  "judge_errors": 0,
+  "king_vllm_errors": 1,
+  "required_win_margin": 0.03,
+  "retryable": null,
+  "score_breakdown": {
+    "by_judge": {
+      "z-ai/glm-5.2": 0.67688
+    },
+    "by_metric": {}
+  },
+  "score_challenger": 0.67688,
+  "score_king": 0.654923,
+  "scored_sample_count": 99,
+  "scoring_mode": "binary",
+  "state": "succeeded",
+  "total_turns": 100,
+  "type": "verdict",
+  "valid_turns": 99
+}

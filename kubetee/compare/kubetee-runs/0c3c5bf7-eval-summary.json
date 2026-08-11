@@ -1,0 +1,27 @@
+{
+  "type": "eval_summary",
+  "eval_run_id": "0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8",
+  "submission_id": "b869e4aa-ed62-4998-a07f-cda4a72f4449",
+  "verdict_state": "succeeded",
+  "eval_start_utc": "2026-08-10T23:41:02.916319+00:00",
+  "eval_end_utc": "2026-08-11T00:36:01.346655+00:00",
+  "eval_elapsed_seconds": 3298.43,
+  "timing_scope": "worker.execute only (generation + scoring + upload); excludes dataset prep + judge readiness",
+  "judge_cost": {
+    "eval_run_id": "0c3c5bf7-0e5c-4a13-8ad3-15a281f911e8",
+    "total_cost": 6.83785578,
+    "request_count": 3830,
+    "per_model": {
+      "deepseek/deepseek-v4-flash-0731": 1.04622083,
+      "z-ai/glm-5.2": 5.79163434
+    }
+  },
+  "gpu_cost": {
+    "gpu_count": 4,
+    "rate_per_gpu_per_hour": 2.5,
+    "rate_per_node_per_hour": 10.0,
+    "elapsed_hours": 0.916231,
+    "total_gpu_cost": 9.16230556
+  },
+  "total_eval_cost": 16.00016134
+}
