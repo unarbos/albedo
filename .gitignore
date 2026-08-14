@@ -30,6 +30,8 @@ postgres-data/
 
 # Local eval harness output
 scripts/local_eval/local_duel_results*.jsonl
+scripts/local_eval/local_noise_floor_results*.jsonl
+scripts/local_eval/local_weakness_report*.json
 
 # Local design and runtime scratch directories
 Systemdesign.md

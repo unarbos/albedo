@@ -12,6 +12,7 @@ passed via ``--env`` to run_duel.py.
 """
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,9 @@ if str(SRC) not in sys.path:
 
 import httpx  # noqa: E402
 
+from albedo_config import JudgeSettings, get_judge_settings  # noqa: E402
+from albedo_config.models import JUDGE_MODELS  # noqa: E402
+from albedo_eval_service.evaluator.shared.questions import sample_phase  # noqa: E402
 from albedo_eval_service.judge_api import (  # noqa: E402
     ObservationSimulationService,
     QuestionPrepSample,
@@ -30,19 +34,18 @@ from albedo_eval_service.judge_api import (  # noqa: E402
     ReferenceTrajectoryService,
     RepoContextClient,
     SimulateObservationRequest,
+    _evaluator_provider,
     _judge_side,
 )
-from albedo_eval_service.judge_config import JudgeSettings, get_judge_settings  # noqa: E402
 from albedo_eval_service.judge_core import (  # noqa: E402
-    JUDGE_MODELS,
+    CHALLENGER_WIN_MARGIN,
     aggregate_scores,
     challenger_beats_king,
     response_score,
-    sample_phase,
 )
 from albedo_eval_service.judge_llm_client import JudgeLLMClient  # noqa: E402
-from albedo_eval_service.observation_format import detect_format, wrap  # noqa: E402
-from albedo_eval_service.remote_generation import format_scored_trajectory  # noqa: E402
+from albedo_eval_service.remote.generation import format_scored_trajectory  # noqa: E402
+from albedo_eval_service.shared.observation_format import detect_format, wrap  # noqa: E402
 from sanity_service.checks import check_one  # noqa: E402
 
 # Mirrors src/sanity_service/dispatcher.py's private helpers of the same name. Reimplemented
@@ -76,14 +79,19 @@ def _missing_command_observation(
     )
 
 __all__ = [
+    "CHALLENGER_WIN_MARGIN",
     "JUDGE_MODELS",
+    "aggregate_category_breakdown",
     "aggregate_scores",
     "build_question_service",
+    "category_breakdown",
     "generate_candidate_turns",
+    "generate_reference_turns",
     "load_settings",
     "prefix_and_turn_count",
     "sample_phase",
     "score_challenger_vs_king",
+    "score_single_side",
 ]
 
 
@@ -221,6 +229,91 @@ async def generate_candidate_turns(
     return prefix_turns + turns
 
 
+async def generate_reference_turns(
+    *,
+    client_llm: JudgeLLMClient,
+    settings: JudgeSettings,
+    simulator: ObservationSimulationService,
+    sample_id: str,
+    prompt: str,
+    prefix_turns: list[dict[str, Any]],
+    n_turns: int,
+    eval_run_id: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    """Generate the SOTA reference trajectory for a sample, with structured turns intact.
+
+    Mirrors ReferenceTrajectoryService._generate_once (judge_api.py) turn-for-turn — same
+    model pool selection (settings.sota_models, seeded by sample_id), same client_llm.complete
+    call shape, same real ObservationSimulationService, same COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+    stop condition. The one difference: that method only returns the joined "REFERENCE STEP N:"
+    prose string (format_reference_trajectory), which is fine for building a judge prompt but
+    can't be turned back into role-tagged turns for an SFT example without fragile re-parsing.
+    This returns the same list-of-turns shape generate_candidate_turns does (prefix_turns + new
+    turns, each carrying role/content/score_target/environment_observation), so a caller can mask
+    the loss to score_target turns exactly like the validator scores them, and format it for
+    scoring with the same format_scored_trajectory used everywhere else in this module.
+
+    Since this is the SOTA model the checklist is *anchored to*, a sample's reference is expected
+    to satisfy almost every surviving question for that sample by construction (QuestionService
+    prunes questions the reference itself fails) — that's what makes reference trajectories the
+    highest-signal SFT target for weak checklist buckets: verify with score_single_side rather
+    than assuming, since measurement-gate edge cases can still zero out a question either way.
+    """
+    pool = [m.strip() for m in settings.sota_models.split(",") if m.strip()]
+    if not pool:
+        raise RuntimeError("ALBEDO_JUDGE_SOTA_MODELS is empty")
+    model = pool[random.Random(sample_id).randrange(len(pool))]
+
+    convo = [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in prefix_turns]
+    turns: list[dict[str, Any]] = []
+    turn_count = max(1, n_turns)
+    for turn_index in range(turn_count):
+        response = await client_llm.complete(
+            purpose="reference",
+            model=model,
+            messages=convo,
+            temperature=0.0,
+            eval_run_id=eval_run_id,
+            max_tokens=settings.sota_max_tokens,
+            provider=_evaluator_provider(settings) if model == settings.evaluator_model else None,
+            accept=lambda raw: bool(raw.strip()),
+        )
+        if response.error or not response.raw.strip():
+            raise RuntimeError(f"reference generation failed: {response.error or 'empty output'}")
+        text = response.raw.strip()
+        turns.append({"role": "assistant", "content": text, "score_target": True})
+
+        if _assistant_submitted(text):
+            if turn_index != turn_count - 1:
+                turns.append(
+                    {
+                        "role": "user",
+                        "content": _completion_observation(sample_id, prefix_turns),
+                        "environment_observation": True,
+                    }
+                )
+            break
+
+        if turn_index == turn_count - 1:
+            break
+
+        observation = await simulator.simulate(
+            SimulateObservationRequest(
+                eval_run_id=eval_run_id,
+                sample_id=sample_id,
+                prompt=prompt,
+                assistant_output=text,
+                messages=convo,
+            )
+        )
+        turns.append({"role": "user", "content": observation, "environment_observation": True})
+        convo = convo + [
+            {"role": "assistant", "content": text},
+            {"role": "user", "content": observation},
+        ]
+    return prefix_turns + turns, model
+
+
 async def score_challenger_vs_king(
     *,
     client_llm: JudgeLLMClient,
@@ -272,6 +365,123 @@ async def score_challenger_vs_king(
         "challenger_won": (
             challenger_beats_king(chal_score, king_score) if scored else None
         ),
+    }
+
+
+async def score_single_side(
+    *,
+    client_llm: JudgeLLMClient,
+    settings: JudgeSettings,
+    sample_id: str,
+    questions: list[dict[str, Any]],
+    output_text: str,
+    side: str,
+    judge_models: list[str],
+    reference_made_edit: bool | None,
+) -> dict[str, Any]:
+    """Score exactly one side (e.g. the king alone) against a checklist.
+
+    Cheaper than score_challenger_vs_king when you only need one trajectory's checklist
+    yes-rate — e.g. a weakness report on the king that doesn't need a real challenger at all.
+    """
+    answers, recs = await _judge_side(
+        client=client_llm,
+        settings=settings,
+        side=side,
+        response_text=output_text,
+        questions=questions,
+        judge_models=judge_models,
+        reference_made_edit=reference_made_edit,
+    )
+    score = response_score(answers, questions)
+    ok = all(r["parse_ok"] for r in recs) and score is not None
+    return {
+        "sample_id": sample_id,
+        "questions": questions,
+        "side": side,
+        "score": score,
+        "judge_results": recs,
+        "scored": ok,
+    }
+
+
+def category_breakdown(record: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Per-category, per-requires-label yes-rate for each side present in one scored record.
+
+    Works for two-sided duel records (judge_results has "previous_king" + "challenger")
+    and for single-sided records (score_single_side, judge_results has one side).
+    Purely additive reporting on top of the real judge_results — never affects scoring.
+    """
+    questions_by_id = {q["id"]: q for q in record.get("questions", [])}
+    by_key: dict[str, dict[str, list[float]]] = {}
+    for rec in record.get("judge_results", []):
+        side = rec.get("side", "unknown")
+        for qid, ans in (rec.get("answers") or {}).items():
+            q = questions_by_id.get(qid)
+            if q is None or ans is None:
+                continue
+            key = f"{q.get('category', 'other')}/{q.get('requires', 'neutral')}"
+            by_key.setdefault(key, {}).setdefault(side, []).append(float(ans))
+    return {
+        key: {side: round(sum(v) / len(v), 3) for side, v in sides.items() if v}
+        for key, sides in by_key.items()
+    }
+
+
+def aggregate_category_breakdown(
+    records: list[dict[str, Any]],
+    *,
+    phase_by_sample: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Aggregate per-category/requires yes-rate across many scored samples, weakest first.
+
+    Feed it results from score_challenger_vs_king (noise-floor / duel mode, sides
+    "previous_king" + "challenger") or score_single_side (weakness-report mode, one side)
+    — either shape works. Pass phase_by_sample (sample_id -> "cold"/"pre_edit"/"at_edit")
+    to also get a category x phase breakdown, since read caps and behavior differ by phase.
+    """
+    by_key: dict[str, dict[str, list[float]]] = {}
+    by_key_phase: dict[str, dict[str, list[float]]] = {}
+    n_samples = 0
+    for record in records:
+        if not record.get("scored", True):
+            continue
+        n_samples += 1
+        questions_by_id = {q["id"]: q for q in record.get("questions", [])}
+        phase = (phase_by_sample or {}).get(record.get("sample_id", ""))
+        for rec in record.get("judge_results", []):
+            side = rec.get("side", "unknown")
+            for qid, ans in (rec.get("answers") or {}).items():
+                q = questions_by_id.get(qid)
+                if q is None or ans is None:
+                    continue
+                key = f"{q.get('category', 'other')}/{q.get('requires', 'neutral')}"
+                by_key.setdefault(key, {}).setdefault(side, []).append(float(ans))
+                if phase:
+                    pkey = f"{key}@{phase}"
+                    by_key_phase.setdefault(pkey, {}).setdefault(side, []).append(float(ans))
+
+    def _rank_value(row: dict[str, Any]) -> float:
+        for side_key in ("previous_king", "challenger"):
+            if row.get(side_key) is not None:
+                return row[side_key]
+        values = [v for k, v in row.items() if k not in ("key", "n") and v is not None]
+        return min(values) if values else 1.0
+
+    def _summarize(d: dict[str, dict[str, list[float]]]) -> list[dict[str, Any]]:
+        rows = []
+        for key, sides in d.items():
+            row: dict[str, Any] = {"key": key, "n": sum(len(v) for v in sides.values())}
+            for side, values in sides.items():
+                row[side] = round(sum(values) / len(values), 3) if values else None
+            rows.append(row)
+        rows.sort(key=_rank_value)
+        return rows
+
+    return {
+        "n_samples": n_samples,
+        "by_category": _summarize(by_key),
+        "by_category_and_phase": _summarize(by_key_phase) if by_key_phase else [],
     }
 
 
