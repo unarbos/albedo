@@ -19,9 +19,7 @@ def check(model_dir: str, files: list[str]) -> tuple[bool, str]:
         except OSError as exc:
             return False, f"could not read chat_template.jinja: {exc}"
         if got != EXPECTED_CHAT_TEMPLATE_SHA256:
-            problems.append(
-                f"chat_template.jinja sha256 {got} != {EXPECTED_CHAT_TEMPLATE_SHA256}"
-            )
+            problems.append(f"chat_template.jinja sha256 {got} != {EXPECTED_CHAT_TEMPLATE_SHA256}")
 
     try:
         tokenizer_config = json.loads((root / "tokenizer_config.json").read_text())

@@ -43,8 +43,13 @@ def _patch_opensearch(monkeypatch, client):
 
 def test_exact_weights_match_beats_saturated_knn(monkeypatch):
     pytest.importorskip("opensearchpy")
-    exact_hit = {"_source": {"key": "ns/orig@" + "a" * 40, "hotkey": "hk-orig",
-                             "model_uri": "ns/orig@" + "a" * 40}}
+    exact_hit = {
+        "_source": {
+            "key": "ns/orig@" + "a" * 40,
+            "hotkey": "hk-orig",
+            "model_uri": "ns/orig@" + "a" * 40,
+        }
+    }
     client = _FakeClient(exact_hits=[exact_hit], knn_hits=[])
     fingerprints = _patch_opensearch(monkeypatch, client)
 
@@ -64,9 +69,7 @@ def test_no_exact_match_falls_through_to_knn(monkeypatch):
     client = _FakeClient(exact_hits=[], knn_hits=[])
     fingerprints = _patch_opensearch(monkeypatch, client)
 
-    result = fingerprints.find_duplicate(
-        {"norm_vector": [1.0, 2.0]}, "hk-x", weights_hash="w" * 64
-    )
+    result = fingerprints.find_duplicate({"norm_vector": [1.0, 2.0]}, "hk-x", weights_hash="w" * 64)
 
     assert result["is_duplicate"] is False
     assert result["exact_weights_match"] is False
@@ -85,7 +88,13 @@ def test_index_fingerprint_stores_weights_hash(monkeypatch):
     monkeypatch.setattr(fingerprints, "ensure_index", lambda dim: "idx")
     monkeypatch.setattr(fingerprints, "get_client", lambda: _Idx())
     fingerprints.index_fingerprint(
-        "k", {"norm_vector": [1.0]}, hotkey="hk", repo="ns/m", digest="d",
-        model_uri="ns/m@d", created_at="2026-07-10T00:00:00Z", weights_hash="w" * 64,
+        "k",
+        {"norm_vector": [1.0]},
+        hotkey="hk",
+        repo="ns/m",
+        digest="d",
+        model_uri="ns/m@d",
+        created_at="2026-07-10T00:00:00Z",
+        weights_hash="w" * 64,
     )
     assert indexed["weights_hash"] == "w" * 64

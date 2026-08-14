@@ -1,10 +1,15 @@
-
 from __future__ import annotations
 
 import asyncio
 
 import pytest
 
+from albedo_eval_service.shared.observation_format import (
+    detect_format,
+    unclosed_think_block_notice,
+    wrap,
+)
+from albedo_eval_service.simulator.prompt_simulator import MISSING_COMMAND_MESSAGE
 from sanity_remote import worker as sanity_worker
 from sanity_remote.models import SanityRunRequest
 from sanity_remote.worker import VllmEngine, WorkerFault, _format_prompt_messages, _heuristics
@@ -20,12 +25,6 @@ from sanity_service.checks import (
 )
 from sanity_service.dataset import sample_prompts
 from sanity_service.dispatcher import _format_scored_trajectory
-from albedo_eval_service.observation_format import (
-    MISSING_COMMAND_MESSAGE,
-    detect_format,
-    unclosed_think_block_notice,
-    wrap,
-)
 
 
 def test_check_one_passes_clean_code_answer():
@@ -50,8 +49,6 @@ def test_check_encoding_catches_garbled_weights():
 def test_check_vocabulary_catches_low_variety():
     assert not check_vocabulary("a b a b a b a b a b").passed
     assert check_vocabulary("alpha beta gamma delta epsilon zeta eta theta").passed
-
-
 
 
 def test_check_collapsed_flags_identical_responses():
@@ -101,7 +98,7 @@ def test_heuristics_allows_short_bash_commands():
         [
             "```bash\nls -la\n```",
             "```bash\ncat utils.py\n```",
-            "```bash\ngrep -r \"def double\" .\n```",
+            '```bash\ngrep -r "def double" .\n```',
         ],
         _req(),
     )
@@ -135,7 +132,11 @@ def test_sanity_trajectory_formatter_scores_candidate_turns_only():
                 "content": "Observation: src/app.py",
                 "environment_observation": True,
             },
-            {"role": "assistant", "content": "```bash\nsed -n '1,80p' src/app.py\n```", "score_target": True},
+            {
+                "role": "assistant",
+                "content": "```bash\nsed -n '1,80p' src/app.py\n```",
+                "score_target": True,
+            },
         ]
     )
 
@@ -267,8 +268,6 @@ def test_heuristics_passes_varied_code_responses():
     ]
     out = _heuristics(responses, _req())
     assert all(v["passed"] for v in out), out
-
-
 
 
 _CURSED_RAW = (

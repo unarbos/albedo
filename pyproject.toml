@@ -18,11 +18,14 @@ dependencies = [
     "numpy",
     "opensearch-py>=2,<3",
     "pandas",
+    "pre-commit",
     "prompt_toolkit>=3",
     "psycopg[binary]>=3.2.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
     "pyarrow>=16.0.0",
+    "pytest>=8.2.0",
+    "ruff",
     "safetensors",
     "torch==2.11.0",
     "torchaudio==2.11.0",
@@ -35,28 +38,22 @@ dependencies = [
 [project.optional-dependencies]
 # Miner-side SFT/RL training.
 train = ["trl", "accelerate", "deepspeed"]
-dev = ["ruff"]
 
 [project.scripts]
-albedo-eval-api = "albedo_eval_service.api:main"
-albedo-eval-dispatcher = "albedo_eval_service.dispatcher:main"
-albedo-eval-requeuer = "albedo_eval_service.requeuer:main"
+albedo-eval-api = "albedo_eval_service.control.api:main"
+albedo-eval-dispatcher = "albedo_eval_service.control.dispatcher:main"
+albedo-eval-requeuer = "albedo_eval_service.control.requeuer:main"
 set-reign-worker = "set_reign_worker.service:main"
 weight-setter = "weight_setter.service:main"
-albedo-remote-eval-api = "albedo_eval_service.remote_api:main"
+albedo-remote-eval-api = "albedo_eval_service.remote.api:main"
 albedo-judge-api = "albedo_eval_service.judge_api:main"
 albedo-repo-context-api = "repo_context_service.api:main"
-albedo-score-bridge = "albedo_eval_service.score_bridge_client:main"
+albedo-score-bridge = "albedo_eval_service.scoring.score_bridge_client:main"
 chain-reader = "chain_reader.reader:main"
 model-validation = "model_validation.validate_worker:main"
 sanity-remote = "sanity_remote.api:main"
 sanity-dispatcher = "sanity_service.dispatcher:main"
 albedo = "miner.cli:main"
-
-[dependency-groups]
-dev = [
-    "pytest>=8.2.0",
-]
 
 [build-system]
 requires = ["hatchling"]
@@ -64,6 +61,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = [
+    "src/albedo_config",
     "src/albedo_eval_service",
     "src/repo_context_service",
     "src/set_reign_worker",
@@ -94,5 +92,27 @@ select = ["E", "W", "F", "I"]
 [tool.ruff.lint.per-file-ignores]
 # Judge prompts are long-form prose inside string literals; line length is not meaningful there.
 "src/sanity_service/rubric.py" = ["E501"]
+"src/albedo_eval_service/judge/prompt_judge.py" = ["E501"]
+"src/albedo_eval_service/evaluator/reference/prompt_reference.py" = ["E501"]
+"src/albedo_eval_service/evaluator/behavior/prompt_behavior.py" = ["E501"]
+"src/albedo_eval_service/simulator/prompt_simulator.py" = ["E501"]
+"src/albedo_eval_service/remote/prompt_remote.py" = ["E501"]
 # Embedded SQL strings dominate the repository; line length is not meaningful there.
-"src/sanity_service/repository.py" = ["E501"]
+"src/albedo_eval_service/control/repository.py" = ["E501"]
+"src/sanity_service/db.py" = ["E501"]
+"src/chain_reader/db.py" = ["E501"]
+"tests/integration/test_eval_repository_postgres.py" = ["E501"]
+# Imports deliberately follow sys.path / environment setup in these entry points.
+"scripts/dataset_creator/pipeline.py" = ["E402"]
+"scripts/manual_dedup_h2h.py" = ["E402"]
+"chat_to_king/supervisor.py" = ["E402"]
+"tests/test_sanity_gate.py" = ["E402"]
+# Availability probe: the import itself is the feature test, inside try/except ImportError.
+"src/albedo_eval_service/modelstore/resolver.py" = ["F401"]
+"src/config_validation/storage/_fastdl.py" = ["F401"]
+# Long lines sit inside multi-line SQL/HTML literals, where a noqa comment would
+# become part of the string.
+"scripts/create_genesis_king.py" = ["E501"]
+"scripts/dataset_creator/db.py" = ["E501"]
+"scripts/dataset_creator/viewer.py" = ["E501"]
+"src/model_validation/db.py" = ["E501"]

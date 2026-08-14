@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import subprocess
@@ -21,8 +20,9 @@ def list_remote_runs(cfg: Config) -> dict[str, dict]:
     if not cfg.eval_ssh_host:
         return _list_local(Path(art_dir))
     cmd = f"find {art_dir} -mindepth 2 -maxdepth 2 -type f -printf '%P\\t%s\\t%T@\\n'"
-    res = subprocess.run(["ssh", *SSH_OPTS, cfg.eval_ssh_host, cmd],
-                         capture_output=True, text=True, timeout=60)
+    res = subprocess.run(
+        ["ssh", *SSH_OPTS, cfg.eval_ssh_host, cmd], capture_output=True, text=True, timeout=60
+    )
     if res.returncode != 0:
         raise RuntimeError(f"eval-machine listing failed: {res.stderr.strip()[:300]}")
     runs: dict[str, dict] = {}
@@ -64,12 +64,22 @@ def fetch_run(cfg: Config, run_id: str, files: dict[str, int]) -> Path:
         return Path(art_dir) / run_id
     dest = cfg.run_dir(run_id)
     if dest.exists() and all(
-            (dest / n).exists() and (dest / n).stat().st_size == s for n, s in files.items()):
+        (dest / n).exists() and (dest / n).stat().st_size == s for n, s in files.items()
+    ):
         return dest
     res = subprocess.run(
-        ["scp", "-q", *SSH_OPTS, "-r",
-         f"{cfg.eval_ssh_host}:{art_dir}/{run_id}", str(cfg.data_dir)],
-        capture_output=True, text=True, timeout=600)
+        [
+            "scp",
+            "-q",
+            *SSH_OPTS,
+            "-r",
+            f"{cfg.eval_ssh_host}:{art_dir}/{run_id}",
+            str(cfg.data_dir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
     if res.returncode != 0:
         raise RuntimeError(f"scp failed for {run_id}: {res.stderr.strip()[:300]}")
     for name, size in files.items():

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -15,8 +14,11 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from albedo_eval_service.canonical_model_config import canonical_max_model_len
-from albedo_eval_service.observation_format import (
+from albedo_config import SanityRemoteSettings, get_sanity_remote_settings
+from albedo_eval_service.modelstore.canonical_model_config import canonical_max_model_len
+from albedo_eval_service.remote.dataset import format_messages
+from albedo_eval_service.remote.prompt_remote import QWEN3_IM_END_TOKEN_ID
+from albedo_eval_service.shared.observation_format import (
     THINK_CLOSE_RE,
     THINK_OPEN_RE,
     THINK_TAG_RE,
@@ -25,8 +27,6 @@ from albedo_eval_service.observation_format import (
     unclosed_think_block_notice,
     unmask_fenced_spans,
 )
-from albedo_eval_service.remote_dataset import format_messages
-from sanity_remote.config import SanityRemoteSettings, get_remote_settings
 from sanity_remote.state import SanityRun
 from sanity_service.checks import (
     check_code_present,
@@ -38,7 +38,6 @@ from sanity_service.checks import (
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 _BASH_BLOCK_RE = re.compile(r"```(?:bash|sh|shell)\s*\n.*?```", re.IGNORECASE | re.DOTALL)
 _FORBIDDEN_CONFIG_KEYS = frozenset({"auto_map", "quantization_config"})
-_QWEN3_IM_END_TOKEN_ID = 248046
 
 
 def _warn_if_context_is_surprising(settings: SanityRemoteSettings) -> None:
@@ -94,7 +93,9 @@ def _strip_model_config(model_dir: str) -> None:
     stripped = {k: v for k, v in config.items() if k not in _FORBIDDEN_CONFIG_KEYS}
     removed = set(config) - set(stripped)
     if isinstance(stripped.get("text_config"), dict):
-        clean_tc = {k: v for k, v in stripped["text_config"].items() if k not in _FORBIDDEN_CONFIG_KEYS}
+        clean_tc = {
+            k: v for k, v in stripped["text_config"].items() if k not in _FORBIDDEN_CONFIG_KEYS
+        }
         removed |= {f"text_config.{k}" for k in set(stripped["text_config"]) - set(clean_tc)}
         stripped["text_config"] = clean_tc
     if not removed:
@@ -103,7 +104,9 @@ def _strip_model_config(model_dir: str) -> None:
     logger.info("[sanity-remote] stripped forbidden keys from config.json: {}", removed)
 
 
-def _format_prompt_messages(tokenizer_path: str, prompt_messages: list[list[dict[str, str]]]) -> list[str]:
+def _format_prompt_messages(
+    tokenizer_path: str, prompt_messages: list[list[dict[str, str]]]
+) -> list[str]:
     return [
         format_messages(messages, tokenizer_path=tokenizer_path, enable_thinking=True)
         for messages in prompt_messages
@@ -167,7 +170,7 @@ async def _audit_hippius_blobs(model_uri: str, digest: str) -> str:
                         dead.append(title or layer["digest"][:19])
                 if dead:
                     names = ", ".join(sorted(dead)[:4]) + ("…" if len(dead) > 4 else "")
-                    return f"; blob audit: {len(dead)}/{len(layers)} blobs missing on hippius (404: {names})"
+                    return f"; blob audit: {len(dead)}/{len(layers)} blobs missing on hippius (404: {names})"  # noqa: E501
                 return f"; blob audit: all {len(layers)} blobs present"
     except Exception as exc:
         logger.debug(f"[sanity-remote] blob audit failed: {exc}")
@@ -188,9 +191,10 @@ def _inject_seed_processor_files(model_dir: str) -> None:
     if all((Path(model_dir) / f).exists() for f in _SEED_PROCESSOR_FILES):
         return
     try:
-        from config_validation.config import SEED_DIGEST, SEED_REPO
+        from albedo_config.chain_spec import SEED_DIGEST, SEED_REPO
         from config_validation.storage import download_config
         from model_validation.storage import make_ref
+
         if not SEED_REPO or not SEED_DIGEST:
             return
         seed_dir = "/root/albedo-seed-processor"
@@ -211,7 +215,6 @@ def _inject_seed_processor_files(model_dir: str) -> None:
 
 
 class VllmEngine:
-
     def __init__(self, settings: SanityRemoteSettings) -> None:
         self._s = settings
         self._proc: subprocess.Popen | None = None
@@ -221,9 +224,18 @@ class VllmEngine:
         _warn_if_context_is_surprising(settings)
         self._kill_port_squatter()
 
-    async def run_job(self, model_uri: str, digest: str, prompts: list[str], max_tokens: int, prompt_messages: list[list[dict[str, str]]] | None = None,) -> list[str]:
+    async def run_job(
+        self,
+        model_uri: str,
+        digest: str,
+        prompts: list[str],
+        max_tokens: int,
+        prompt_messages: list[list[dict[str, str]]] | None = None,
+    ) -> list[str]:
         n = len(prompt_messages) if prompt_messages is not None else len(prompts)
-        logger.info("[sanity-remote] run_job digest={:.16} prompts={} max_tokens={}", digest, n, max_tokens)
+        logger.info(
+            "[sanity-remote] run_job digest={:.16} prompts={} max_tokens={}", digest, n, max_tokens
+        )
         _warn_if_generation_budget_consumes_context(
             max_tokens=max_tokens,
             max_model_len=self._s.max_model_len,
@@ -263,7 +275,11 @@ class VllmEngine:
             for pid_str in result.stdout.split():
                 try:
                     os.kill(int(pid_str), signal.SIGKILL)
-                    logger.info("[sanity-remote] killed orphan vLLM pid={} on port {}", pid_str, self._s.vllm_port,)
+                    logger.info(
+                        "[sanity-remote] killed orphan vLLM pid={} on port {}",
+                        pid_str,
+                        self._s.vllm_port,
+                    )
                 except Exception as exc:
                     logger.debug(f"[sanity-remote] failed to kill orphan pid={pid_str}: {exc}")
         except Exception as exc:
@@ -278,9 +294,13 @@ class VllmEngine:
             return
         logger.info("[sanity-remote] cold load — digest={:.16} uri={}", digest, model_uri)
         try:
-            model_dir = await asyncio.wait_for(self._materialize(model_uri, digest), timeout=self._s.download_timeout_s)
+            model_dir = await asyncio.wait_for(
+                self._materialize(model_uri, digest), timeout=self._s.download_timeout_s
+            )
         except asyncio.TimeoutError as exc:
-            raise WorkerFault("download_timeout", f"download exceeded {self._s.download_timeout_s}s") from exc
+            raise WorkerFault(
+                "download_timeout", f"download exceeded {self._s.download_timeout_s}s"
+            ) from exc
         except Exception as exc:
             detail = await _audit_hippius_blobs(model_uri, digest)
             raise WorkerFault("download_failed", f"model download failed: {exc}{detail}") from exc
@@ -307,20 +327,26 @@ class VllmEngine:
         if _model_present(dest):
             logger.info("[sanity-remote] reusing on-disk model at {} — skipping download", dest)
         else:
-            logger.info("[sanity-remote] downloading {} digest={:.16} to {}", repo, ref_digest, dest)
+            logger.info(
+                "[sanity-remote] downloading {} digest={:.16} to {}", repo, ref_digest, dest
+            )
             try:
                 dest = await asyncio.to_thread(download_full, ref)
             except Exception:
                 await asyncio.to_thread(shutil.rmtree, dest, True)
                 raise
-        from albedo_eval_service.canonical_model_config import apply_canonical_model_config
+        from albedo_eval_service.modelstore.canonical_model_config import (
+            apply_canonical_model_config,
+        )
 
         await asyncio.to_thread(apply_canonical_model_config, Path(dest))
         await asyncio.to_thread(_inject_seed_processor_files, dest)
         return dest
 
     async def _start_vllm(self, model_dir: str, model_name: str) -> None:
-        logger.info("[sanity-remote] starting vLLM port={} model={:.40}", self._s.vllm_port, model_name)
+        logger.info(
+            "[sanity-remote] starting vLLM port={} model={:.40}", self._s.vllm_port, model_name
+        )
         cmd = [
             self._s.vllm_python,
             "-m",
@@ -362,7 +388,10 @@ class VllmEngine:
         if self._s.vllm_moe_backend:
             cmd += ["--moe-backend", self._s.vllm_moe_backend]
         if self._s.vllm_compile_cache_dir:
-            cmd += ["--compilation-config", json.dumps({"cache_dir": self._s.vllm_compile_cache_dir})]
+            cmd += [
+                "--compilation-config",
+                json.dumps({"cache_dir": self._s.vllm_compile_cache_dir}),
+            ]
         self._proc = subprocess.Popen(
             cmd,
             env={
@@ -426,7 +455,7 @@ class VllmEngine:
                         "top_p": self._s.gen_top_p,
                         "top_k": self._s.gen_top_k,
                         "min_p": self._s.gen_min_p,
-                        "stop_token_ids": [_QWEN3_IM_END_TOKEN_ID],
+                        "stop_token_ids": [QWEN3_IM_END_TOKEN_ID],
                     },
                 )
             if r.status_code >= 400:
@@ -449,7 +478,7 @@ class VllmEngine:
                 )
                 if finish == "length" and generated >= max_tokens:
                     logger.warning(
-                        "[sanity-remote] response hit the {} token limit ({} generated) - model fault",
+                        "[sanity-remote] response hit the {} token limit ({} generated) - model fault",  # noqa: E501
                         max_tokens,
                         generated,
                     )
@@ -500,7 +529,7 @@ _ENGINE: VllmEngine | None = None
 def _engine() -> VllmEngine:
     global _ENGINE
     if _ENGINE is None:
-        _ENGINE = VllmEngine(get_remote_settings())
+        _ENGINE = VllmEngine(get_sanity_remote_settings())
     return _ENGINE
 
 
@@ -520,7 +549,9 @@ def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict
         if not r.passed and r.reason.startswith("too short") and _has_bash_command(resp):
             r = type(r)(True)
         if not r.passed:
-            logger.warning("[sanity-remote] per-response heuristic failed i={} reason={!r}", i, r.reason)
+            logger.warning(
+                "[sanity-remote] per-response heuristic failed i={} reason={!r}", i, r.reason
+            )
         out.append({"passed": r.passed, "reason": r.reason})
     if any(not item["passed"] for item in out):
         return out
@@ -537,9 +568,14 @@ def _heuristics(responses: list[str], req: Any, skip: bool = False) -> list[dict
 
 
 async def generate(run: SanityRun, settings: SanityRemoteSettings | None = None) -> None:
-    s = settings or get_remote_settings()
+    s = settings or get_sanity_remote_settings()
     req = run.request
-    logger.info("[sanity-remote] generate start run={} digest={:.16} uri={}", run.run_id, req.digest, req.model_uri,)
+    logger.info(
+        "[sanity-remote] generate start run={} digest={:.16} uri={}",
+        run.run_id,
+        req.digest,
+        req.model_uri,
+    )
     if s.mock_auto_result:
         run.succeed(
             responses=[f"mock response to: {p[:30]}" for p in req.prompts],

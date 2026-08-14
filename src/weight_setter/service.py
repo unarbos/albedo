@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
@@ -13,7 +12,8 @@ from uuid import UUID, uuid4
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from albedo_config import WeightSetterSettings
 
 
 @dataclass(frozen=True)
@@ -62,41 +62,6 @@ class ChainClient(Protocol):
     def set_weights(
         self, *, netuid: int, uids: list[int], weights: list[float]
     ) -> SetWeightsResult: ...
-
-
-class WeightSetterSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    database_url: str = ""
-    coldkey: str = ""
-    hotkey: str = ""
-    wallet_path: str = ""
-    network: str = "finney"
-    netuid: int = 97
-    set_rate_blocks: int = 100
-    poll_seconds: float = 12.0
-    worker_id: str = "weight-setter"
-    burn_uid: int = 0
-    retry_backoff_seconds: int = 60
-
-    @classmethod
-    def from_env(cls) -> "WeightSetterSettings":
-        return cls(
-            database_url=os.environ.get("ALBEDO_EVAL_DATABASE_URL", ""),
-            coldkey=os.environ.get("ALBEDO_WEIGHT_COLDKEY", ""),
-            hotkey=os.environ.get("ALBEDO_WEIGHT_HOTKEY", ""),
-            wallet_path=os.environ.get("ALBEDO_WEIGHT_WALLET_PATH", ""),
-            network=os.environ.get("ALBEDO_WEIGHT_NETWORK")
-            or os.environ.get("CHAIN_NETWORK", "finney"),
-            netuid=int(
-                os.environ.get("ALBEDO_WEIGHT_NETUID") or os.environ.get("CHAIN_NETUID") or "97"
-            ),
-            set_rate_blocks=int(os.environ.get("ALBEDO_WEIGHT_SET_RATE_BLOCKS", "100")),
-            poll_seconds=float(os.environ.get("ALBEDO_WEIGHT_POLL_SECONDS", "12")),
-            worker_id=os.environ.get("ALBEDO_WEIGHT_WORKER_ID", "weight-setter"),
-            burn_uid=int(os.environ.get("ALBEDO_WEIGHT_BURN_UID", "0")),
-            retry_backoff_seconds=int(os.environ.get("ALBEDO_WEIGHT_RETRY_BACKOFF_SECONDS", "60")),
-        )
 
 
 class BittensorChainClient:

@@ -30,11 +30,14 @@ def test_sharded_without_index_fails(tmp_path):
 def test_clean_sharded_ok(tmp_path):
     _write_shard(tmp_path / "model-00001-of-00002.safetensors", ["a", "b"])
     _write_shard(tmp_path / "model-00002-of-00002.safetensors", ["c"])
-    _write_index(tmp_path / "model.safetensors.index.json", {
-        "a": "model-00001-of-00002.safetensors",
-        "b": "model-00001-of-00002.safetensors",
-        "c": "model-00002-of-00002.safetensors",
-    })
+    _write_index(
+        tmp_path / "model.safetensors.index.json",
+        {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00001-of-00002.safetensors",
+            "c": "model-00002-of-00002.safetensors",
+        },
+    )
     ok, msg = check(str(tmp_path), [])
     assert ok, msg
 
@@ -42,9 +45,12 @@ def test_clean_sharded_ok(tmp_path):
 def test_extra_unreferenced_shard_fails(tmp_path):
     _write_shard(tmp_path / "model-00001-of-00001.safetensors", ["a"])
     _write_shard(tmp_path / "model-00002-of-00002.safetensors", ["b"])
-    _write_index(tmp_path / "model.safetensors.index.json", {
-        "a": "model-00001-of-00001.safetensors",
-    })
+    _write_index(
+        tmp_path / "model.safetensors.index.json",
+        {
+            "a": "model-00001-of-00001.safetensors",
+        },
+    )
     ok, msg = check(str(tmp_path), [])
     assert not ok and "not used by the model" in msg
     assert "model-00002-of-00002.safetensors" in msg
@@ -52,10 +58,13 @@ def test_extra_unreferenced_shard_fails(tmp_path):
 
 def test_missing_referenced_shard_fails(tmp_path):
     _write_shard(tmp_path / "model-00001-of-00002.safetensors", ["a"])
-    _write_index(tmp_path / "model.safetensors.index.json", {
-        "a": "model-00001-of-00002.safetensors",
-        "b": "model-00002-of-00002.safetensors",
-    })
+    _write_index(
+        tmp_path / "model.safetensors.index.json",
+        {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00002-of-00002.safetensors",
+        },
+    )
     ok, msg = check(str(tmp_path), [])
     assert not ok and "references missing shard" in msg
 
@@ -70,10 +79,13 @@ def test_dead_tensor_in_shard_fails(tmp_path):
 
 def test_index_maps_missing_tensor_fails(tmp_path):
     _write_shard(tmp_path / "model.safetensors", ["a"])
-    _write_index(tmp_path / "model.safetensors.index.json", {
-        "a": "model.safetensors",
-        "ghost": "model.safetensors",
-    })
+    _write_index(
+        tmp_path / "model.safetensors.index.json",
+        {
+            "a": "model.safetensors",
+            "ghost": "model.safetensors",
+        },
+    )
     ok, msg = check(str(tmp_path), [])
     assert not ok and "not present in shard" in msg
     assert "ghost" in msg

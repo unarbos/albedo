@@ -10,8 +10,9 @@ def _neuron_uid(st, ss58: str, netuid: int) -> int | None:
     return neuron.uid
 
 
-def register(coldkey: str, hotkey: str, netuid: int, network: str,
-             *, assume_yes: bool = False, confirm=None):
+def register(
+    coldkey: str, hotkey: str, netuid: int, network: str, *, assume_yes: bool = False, confirm=None
+):
     import bittensor as bt
 
     from miner.commit import build_wallet
@@ -23,7 +24,9 @@ def register(coldkey: str, hotkey: str, netuid: int, network: str,
 
     uid = _neuron_uid(st, ss58, netuid)
     if uid is not None:
-        logger.info(f"hotkey {ss58} already registered on netuid {netuid} (uid {uid}) — nothing to do")
+        logger.info(
+            f"hotkey {ss58} already registered on netuid {netuid} (uid {uid}) — nothing to do"
+        )
         return uid
 
     cost = st.recycle(netuid)
@@ -31,7 +34,9 @@ def register(coldkey: str, hotkey: str, netuid: int, network: str,
     logger.info(f"recycle (registration) cost on netuid {netuid}: {cost}")
     logger.info(f"coldkey {coldkey} balance: {balance}")
     if balance is not None and cost is not None and balance < cost:
-        raise SystemExit(f"insufficient balance: have {balance}, need {cost} to register on netuid {netuid}")
+        raise SystemExit(
+            f"insufficient balance: have {balance}, need {cost} to register on netuid {netuid}"
+        )
 
     text = (
         f"about to register on-chain (recycle):\n"
@@ -49,7 +54,9 @@ def register(coldkey: str, hotkey: str, netuid: int, network: str,
     logger.info(f"submitting burned_register for {ss58} on netuid {netuid}…")
     resp = st.burned_register(wallet=wallet, netuid=netuid)
     if not getattr(resp, "success", False):
-        raise SystemExit(f"registration failed: {getattr(resp, 'message', None) or getattr(resp, 'error', resp)}")
+        raise SystemExit(
+            f"registration failed: {getattr(resp, 'message', None) or getattr(resp, 'error', resp)}"
+        )
 
     uid = _neuron_uid(st, ss58, netuid)
     logger.info(f"registered ✓ hotkey {ss58} on netuid {netuid} — uid {uid}")

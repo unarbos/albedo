@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from config_validation.models import ModelRef
 from config_validation.storage import cache_dir as _cache_dir
 from config_validation.storage import download_config as _download_config
 from config_validation.storage import download_full as _download_full
 from config_validation.storage import list_files as _list_files
-from config_validation.models import ModelRef
-from model_validation import config as _config
 
 
 def make_ref(repo: str, digest: str) -> ModelRef:

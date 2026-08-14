@@ -30,8 +30,14 @@ def _ts(value: str | None) -> datetime:
     return datetime.fromisoformat(value) if value else _now()
 
 
-def ingest_run(cfg: Config, state: State, run_id: str, run_dir: Path,
-               source: str, started_at: str | None = None) -> None:
+def ingest_run(
+    cfg: Config,
+    state: State,
+    run_id: str,
+    run_dir: Path,
+    source: str,
+    started_at: str | None = None,
+) -> None:
     by_model = extract_rows(run_dir)
     for model, rows in by_model.items():
         append_rows(cfg, model, rows)
@@ -43,12 +49,14 @@ def ingest_run(cfg: Config, state: State, run_id: str, run_dir: Path,
 
 def scan_eval_machine(cfg: Config, state: State) -> None:
     remote = list_remote_runs(cfg)
-    new = {r: v for r, v in remote.items()
-           if not state.is_processed(r) and is_complete(v["files"])}
-    incomplete = sum(1 for r, v in remote.items()
-                     if not state.is_processed(r) and not is_complete(v["files"]))
-    print(f"eval machine: {len(remote)} run dirs, {len(new)} new complete"
-          + (f", {incomplete} in progress" if incomplete else ""))
+    new = {r: v for r, v in remote.items() if not state.is_processed(r) and is_complete(v["files"])}
+    incomplete = sum(
+        1 for r, v in remote.items() if not state.is_processed(r) and not is_complete(v["files"])
+    )
+    print(
+        f"eval machine: {len(remote)} run dirs, {len(new)} new complete"
+        + (f", {incomplete} in progress" if incomplete else "")
+    )
     for run_id, info in sorted(new.items(), key=lambda kv: kv[1]["mtime"]):
         run_dir = fetch_run(cfg, run_id, info["files"])
         ingest_run(cfg, state, run_id, run_dir, "eval-machine")
@@ -66,8 +74,14 @@ def db_health_check(cfg: Config, state: State) -> None:
         print(f"  DB has {len(missing)} succeeded runs missing locally — backfilling from S3")
         for run_id, info in sorted(missing.items(), key=lambda kv: kv[1]["started_at"]):
             download_run(cfg, run_id, info["files"])
-            ingest_run(cfg, state, run_id, cfg.run_dir(run_id), "s3-backfill",
-                       started_at=info["started_at"])
+            ingest_run(
+                cfg,
+                state,
+                run_id,
+                cfg.run_dir(run_id),
+                "s3-backfill",
+                started_at=info["started_at"],
+            )
         state.set_meta("last_new_dir_at", _now().isoformat(timespec="seconds"))
     state.set_meta("last_db_check_at", _now().isoformat(timespec="seconds"))
 
@@ -79,8 +93,10 @@ def tick(cfg: Config, state: State, no_upload: bool) -> int:
         print(f"eval-machine scan failed ({e}) — will rely on DB fallback")
 
     stall = timedelta(hours=cfg.stall_hours)
-    if (_now() - _ts(state.get_meta("last_new_dir_at")) > stall
-            and _now() - _ts(state.get_meta("last_db_check_at")) > stall):
+    if (
+        _now() - _ts(state.get_meta("last_new_dir_at")) > stall
+        and _now() - _ts(state.get_meta("last_db_check_at")) > stall
+    ):
         try:
             db_health_check(cfg, state)
         except Exception as e:
@@ -104,8 +120,9 @@ def tick(cfg: Config, state: State, no_upload: bool) -> int:
     return 0
 
 
-def run_pipeline(cfg: Config, repo: str | None, since: str | None,
-                 no_upload: bool, watch: bool) -> int:
+def run_pipeline(
+    cfg: Config, repo: str | None, since: str | None, no_upload: bool, watch: bool
+) -> int:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     state = State(cfg.db_path)
     migrate_if_needed(cfg, state)
@@ -113,10 +130,13 @@ def run_pipeline(cfg: Config, repo: str | None, since: str | None,
     if repo:
         state.set_meta("hf_repo", repo)
     if not state.get_meta("anchor"):
-        state.set_meta("anchor", since or
-                       (_now() - timedelta(hours=24)).isoformat(timespec="seconds"))
-    print(f"anchor={state.get_meta('anchor')}  processed_runs={state.processed_count()}"
-          f"  repo={state.get_meta('hf_repo')}")
+        state.set_meta(
+            "anchor", since or (_now() - timedelta(hours=24)).isoformat(timespec="seconds")
+        )
+    print(
+        f"anchor={state.get_meta('anchor')}  processed_runs={state.processed_count()}"
+        f"  repo={state.get_meta('hf_repo')}"
+    )
 
     if not watch:
         return tick(cfg, state, no_upload)
@@ -129,15 +149,23 @@ def run_pipeline(cfg: Config, repo: str | None, since: str | None,
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data-dir", type=Path, default=None,
-                    help="artifacts/state/output directory (default: env DATASET_CREATOR_DATA_DIR)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="artifacts/state/output directory (default: env DATASET_CREATOR_DATA_DIR)",
+    )
     ap.add_argument("--repo", help="HF dataset repo id (default: env DATASET_CREATOR_HF_REPO)")
     ap.add_argument("--since", help="ISO date anchor for the first run (default: now-24h)")
     ap.add_argument("--no-upload", action="store_true", help="build chunks, skip HF upload")
-    ap.add_argument("--watch", action="store_true",
-                    help="keep polling the eval machine every DATASET_CREATOR_POLL_SECONDS")
+    ap.add_argument(
+        "--watch",
+        action="store_true",
+        help="keep polling the eval machine every DATASET_CREATOR_POLL_SECONDS",
+    )
     args = ap.parse_args()
     cfg = Config(data_dir=args.data_dir) if args.data_dir else Config()
     return run_pipeline(cfg, args.repo, args.since, args.no_upload, args.watch)

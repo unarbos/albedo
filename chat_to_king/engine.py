@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -11,19 +10,18 @@ import time
 from pathlib import Path
 
 import httpx
+from config import KingChatSettings
+from king_source import King
 from loguru import logger
+from mirror import MirrorNotReady, mirror_repo_id, mirror_revision
 
+from albedo_eval_service.remote.prompt_remote import QWEN3_CHAT_TEMPLATE
 from sanity_remote.worker import (
     _inject_seed_processor_files,
     _model_present,
     _model_ref_parts,
     _strip_model_config,
 )
-from albedo_eval_service.remote_dataset import _QWEN3_CHAT_TEMPLATE
-
-from config import KingChatSettings
-from king_source import King
-from mirror import MirrorNotReady, mirror_repo_id, mirror_revision
 
 
 def _model_complete(model_dir: str) -> bool:
@@ -43,7 +41,6 @@ class KingVllmEngine:
         self.incoming_king: King | None = None
         self._kill_port_squatter()
 
-
     @property
     def serving(self) -> bool:
         return bool(self._loaded_digest)
@@ -57,7 +54,10 @@ class KingVllmEngine:
                 return
             logger.info(
                 "[king-chat] coronation: digest={:.16} uid={} v={} uri={}",
-                king.digest, king.uid, king.king_version, king.model_uri,
+                king.digest,
+                king.uid,
+                king.king_version,
+                king.model_uri,
             )
             self.incoming_king = king
             try:
@@ -109,7 +109,6 @@ class KingVllmEngine:
             finally:
                 self.reloading = False
 
-
     async def _materialize(self, king: King) -> str:
         from model_validation.storage import cache_dir, download_config, download_full, make_ref
 
@@ -152,23 +151,34 @@ class KingVllmEngine:
         logger.info("[king-chat] starting vLLM port={} model={}", s.vllm_port, s.served_model_name)
         template_path = os.path.join(s.models_dir, "albedo_chat_template.jinja")
         with open(template_path, "w", encoding="utf-8") as fh:
-            fh.write(_QWEN3_CHAT_TEMPLATE)
+            fh.write(QWEN3_CHAT_TEMPLATE)
         cmd = [
             s.vllm_python,
             "-m",
             "vllm.entrypoints.openai.api_server",
-            "--model", model_dir,
-            "--served-model-name", s.served_model_name,
-            "--host", s.vllm_host,
-            "--port", str(s.vllm_port),
-            "--gpu-memory-utilization", str(s.gpu_util),
-            "--dtype", s.vllm_dtype,
-            "--max-model-len", str(s.max_model_len),
-            "--kv-cache-dtype", s.kv_cache_dtype,
-            "--chat-template", template_path,
-            "--generation-config", "vllm",
+            "--model",
+            model_dir,
+            "--served-model-name",
+            s.served_model_name,
+            "--host",
+            s.vllm_host,
+            "--port",
+            str(s.vllm_port),
+            "--gpu-memory-utilization",
+            str(s.gpu_util),
+            "--dtype",
+            s.vllm_dtype,
+            "--max-model-len",
+            str(s.max_model_len),
+            "--kv-cache-dtype",
+            s.kv_cache_dtype,
+            "--chat-template",
+            template_path,
+            "--generation-config",
+            "vllm",
             "--enable-auto-tool-choice",
-            "--tool-call-parser", "hermes",
+            "--tool-call-parser",
+            "hermes",
         ]
         if s.tensor_parallel_size > 1:
             cmd += ["--tensor-parallel-size", str(s.tensor_parallel_size)]
@@ -201,7 +211,9 @@ class KingVllmEngine:
             return False
         try:
             async with httpx.AsyncClient(timeout=3.0) as c:
-                return (await c.get(f"http://localhost:{self._s.vllm_port}/health")).status_code == 200
+                return (
+                    await c.get(f"http://localhost:{self._s.vllm_port}/health")
+                ).status_code == 200
         except Exception:
             return False
 
@@ -259,7 +271,11 @@ class KingVllmEngine:
             for pid_str in result.stdout.split():
                 try:
                     os.kill(int(pid_str), signal.SIGKILL)
-                    logger.info("[king-chat] killed orphan vLLM pid={} on port {}", pid_str, self._s.vllm_port)
+                    logger.info(
+                        "[king-chat] killed orphan vLLM pid={} on port {}",
+                        pid_str,
+                        self._s.vllm_port,
+                    )
                 except Exception:
                     pass
         except Exception:

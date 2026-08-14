@@ -11,7 +11,6 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class CommitRecord:
-
     block: int | None
     hotkey: str
     coldkey: str

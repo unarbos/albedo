@@ -4,10 +4,9 @@ from uuid import uuid4
 
 import pytest
 
-from albedo_eval_service.config import Settings
-from albedo_eval_service.dispatcher import build_eval_request
-from albedo_eval_service.models import DatasetConfig
-
+from albedo_config import Settings
+from albedo_eval_service.control.dispatcher import build_eval_request
+from albedo_eval_service.shared.models import DatasetConfig
 
 _FAMILIES = ("pr", "lm", "combine", "mechanical")
 

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -8,8 +7,9 @@ from fastapi import BackgroundTasks, FastAPI
 from loguru import logger
 from pydantic import BaseModel
 
+from albedo_config import RepoContextSettings, get_repo_context_settings
+
 from .core import RepoContextService
-from .settings import RepoContextSettings, get_repo_context_settings
 
 
 class RepoContextRequest(BaseModel):
@@ -66,7 +66,8 @@ def create_app(
         except Exception as exc:
             logger.warning(
                 "repo_context_endpoint_error sample_id={} error={}",
-                request.sample_id, f"{type(exc).__name__}: {exc}",
+                request.sample_id,
+                f"{type(exc).__name__}: {exc}",
             )
             return RepoContextResponse(sample_id=request.sample_id, context=None, kind="none")
         return RepoContextResponse(

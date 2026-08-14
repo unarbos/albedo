@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -8,17 +7,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+from config import KingChatSettings
+from engine import KingVllmEngine
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 from starlette.background import BackgroundTask
 
-from config import KingChatSettings
-from engine import KingVllmEngine
-
 _RELOAD_ID = "chatcmpl-king-reload"
-
-
 
 
 def _message_text(messages: list) -> str:
@@ -43,7 +39,7 @@ def _build_knowledge(doc: str) -> str:
     return (
         "You are `albedo-king`, the current top-ranked model on Albedo (Bittensor subnet SN97). "
         "The user is asking about Albedo. Use the following reference document as authoritative "
-        "knowledge about Albedo — its subnet mechanics, mining, validation, scoring, and architecture. "
+        "knowledge about Albedo — its subnet mechanics, mining, validation, scoring, and architecture. "  # noqa: E501
         "Prefer it over your own assumptions; if it doesn't cover something, say so.\n\n"
         "<BEGIN ALBEDO REFERENCE (llms.txt)>\n" + doc + "\n<END ALBEDO REFERENCE>"
     )
@@ -51,7 +47,12 @@ def _build_knowledge(doc: str) -> str:
 
 def _inject_knowledge(messages: list, block: str) -> list:
     msgs = list(messages)
-    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system" and isinstance(msgs[0].get("content"), str):
+    if (
+        msgs
+        and isinstance(msgs[0], dict)
+        and msgs[0].get("role") == "system"
+        and isinstance(msgs[0].get("content"), str)
+    ):
         msgs[0] = {**msgs[0], "content": block + "\n\n" + msgs[0]["content"]}
     else:
         msgs = [{"role": "system", "content": block}, *msgs]
@@ -72,7 +73,9 @@ def _notice_text(engine: KingVllmEngine, settings: KingChatSettings) -> str:
         parts.append(f" ({hk}…)")
     if king.king_version is not None:
         parts.append(f", king v{king.king_version}")
-    parts.append(". The model is reloading on the GPUs (~1–2 min). Please resend your message shortly.")
+    parts.append(
+        ". The model is reloading on the GPUs (~1–2 min). Please resend your message shortly."
+    )
     return "".join(parts)
 
 
@@ -122,7 +125,9 @@ def create_app(engine: KingVllmEngine, settings: KingChatSettings) -> FastAPI:
         app.state.client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=5.0, read=600.0, write=10.0, pool=5.0)
         )
-        app.state.albedo_keywords = [k.strip().lower() for k in settings.llms_keywords.split(",") if k.strip()]
+        app.state.albedo_keywords = [
+            k.strip().lower() for k in settings.llms_keywords.split(",") if k.strip()
+        ]
         doc: str | None = None
         try:
             p = Path(settings.llms_path)
@@ -142,7 +147,8 @@ def create_app(engine: KingVllmEngine, settings: KingChatSettings) -> FastAPI:
         if app.state.albedo_knowledge:
             logger.info(
                 "[king-chat] loaded llms.txt ({:.1f} KB) — Albedo knowledge gated on {}",
-                len(doc) / 1024, app.state.albedo_keywords,
+                len(doc) / 1024,
+                app.state.albedo_keywords,
             )
         else:
             logger.warning("[king-chat] no llms.txt loaded; Albedo knowledge injection disabled")
@@ -173,7 +179,9 @@ def create_app(engine: KingVllmEngine, settings: KingChatSettings) -> FastAPI:
 
         client: httpx.AsyncClient = app.state.client
         url = f"http://127.0.0.1:{settings.vllm_port}{path}"
-        req = client.build_request("POST", url, content=body, headers={"content-type": "application/json"})
+        req = client.build_request(
+            "POST", url, content=body, headers={"content-type": "application/json"}
+        )
         try:
             upstream = await client.send(req, stream=True)
         except httpx.HTTPError:

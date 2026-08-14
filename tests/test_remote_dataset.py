@@ -3,8 +3,8 @@ import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from albedo_eval_service import remote_dataset
-from albedo_eval_service.remote_dataset import load_manifest_samples
+from albedo_eval_service.remote import dataset as remote_dataset
+from albedo_eval_service.remote.dataset import load_manifest_samples
 
 
 def test_load_manifest_sample_from_messages_json(tmp_path):

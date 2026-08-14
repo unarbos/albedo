@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import sqlite3
@@ -41,12 +40,19 @@ class State:
         cur = self.conn.execute("SELECT 1 FROM processed_runs WHERE run_id=?", (run_id,))
         return cur.fetchone() is not None
 
-    def mark_processed(self, run_id: str, rows: int, source: str,
-                       ingested_at: str | None = None, started_at: str | None = None) -> None:
+    def mark_processed(
+        self,
+        run_id: str,
+        rows: int,
+        source: str,
+        ingested_at: str | None = None,
+        started_at: str | None = None,
+    ) -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO processed_runs(run_id, rows, source, ingested_at, started_at)"
             " VALUES (?,?,?,?,?)",
-            (run_id, rows, source, ingested_at or _now(), started_at))
+            (run_id, rows, source, ingested_at or _now(), started_at),
+        )
         self.conn.commit()
 
     def processed_count(self) -> int:
@@ -59,7 +65,8 @@ class State:
     def record_chunk(self, path: str, model: str, uploaded_at: str | None = None) -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO chunks(path, model, created_at, uploaded_at) VALUES (?,?,?,?)",
-            (path, model, _now(), uploaded_at))
+            (path, model, _now(), uploaded_at),
+        )
         self.conn.commit()
 
     def mark_uploaded(self, path: str) -> None:
@@ -68,7 +75,8 @@ class State:
 
     def pending_uploads(self) -> list[tuple[str, str]]:
         cur = self.conn.execute(
-            "SELECT path, model FROM chunks WHERE uploaded_at IS NULL ORDER BY path")
+            "SELECT path, model FROM chunks WHERE uploaded_at IS NULL ORDER BY path"
+        )
         return cur.fetchall()
 
     def chunk_models(self) -> list[str]:
@@ -76,8 +84,9 @@ class State:
         return [r[0] for r in cur.fetchall()]
 
     def chunk_count(self, model: str) -> int:
-        return self.conn.execute(
-            "SELECT count(*) FROM chunks WHERE model=?", (model,)).fetchone()[0]
+        return self.conn.execute("SELECT count(*) FROM chunks WHERE model=?", (model,)).fetchone()[
+            0
+        ]
 
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -86,5 +95,7 @@ class State:
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES (?,?)"
-            " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
         self.conn.commit()

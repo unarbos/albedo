@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from albedo_eval_service.artifacts import artifact_records_from_verdict
+from albedo_eval_service.control.artifacts import artifact_records_from_verdict
 
 
 def test_artifact_records_from_verdict_maps_known_s3_artifacts():
@@ -44,7 +44,9 @@ def test_artifact_records_from_verdict_carries_metadata():
     records = artifact_records_from_verdict(
         submission_id=uuid4(),
         stage_attempt_id=uuid4(),
-        artifacts={"generated_samples": "s3://albedo-artifacts/submissions/1/eval/2/generated-samples.jsonl"},
+        artifacts={
+            "generated_samples": "s3://albedo-artifacts/submissions/1/eval/2/generated-samples.jsonl"
+        },
         artifact_metadata={
             "generated_samples": {
                 "sha256": "sha256:" + "a" * 64,

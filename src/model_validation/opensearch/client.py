@@ -4,7 +4,9 @@ import functools
 
 from loguru import logger as log
 
-from model_validation import config
+from albedo_config import get_model_validation_settings
+
+config = get_model_validation_settings()
 
 
 @functools.lru_cache(maxsize=1)
@@ -67,5 +69,7 @@ def ensure_index(dim: int) -> str:
         c.indices.create(index=name, body=_mapping(dim))
         log.info("created opensearch index {} (knn dim={})", name, dim)
     else:
-        c.indices.put_mapping(index=name, body={"properties": {"weights_hash": {"type": "keyword"}}})
+        c.indices.put_mapping(
+            index=name, body={"properties": {"weights_hash": {"type": "keyword"}}}
+        )
     return name

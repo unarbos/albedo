@@ -61,7 +61,6 @@ def test_validate_weight_payload_rejects_bad_sum():
         validate_weight_payload(WeightPayload(uids=[1], weights=[0.5], policy={}))
 
 
-
 def test_periodic_refresh_hash_is_stable_within_rate_window():
     first = periodic_refresh_weight_hash(
         netuid=97, reign_id=None, current_block=199, rate_limit_blocks=100

@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prepare_datasets import SOURCES
 
-COMPLETE_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+from albedo_eval_service.simulator.prompt_simulator import COMPLETE_MARKER
 
 _EDIT_SUBCOMMANDS = {"create", "str_replace", "insert", "undo_edit", "write"}
 _BASH_TOOLS = {"bash", "execute_bash", "run_bash_cmd", "shell"}
@@ -71,7 +71,7 @@ def _render_editor(args: dict) -> tuple[str, bool]:
         old = str(args.get("old_str") or "")
         new = str(args.get("new_str") or "")
         return (
-            f"Editing `{path}`:\n\n```\n<<<<<<< SEARCH\n{old}\n=======\n{new}\n>>>>>>> REPLACE\n```",
+            f"Editing `{path}`:\n\n```\n<<<<<<< SEARCH\n{old}\n=======\n{new}\n>>>>>>> REPLACE\n```",  # noqa: E501
             True,
         )
     if command == "undo_edit":
@@ -253,10 +253,13 @@ def render_source(
     for shard in shards:
         parquet = pq.ParquetFile(shard)
         columns = [
-            c for c in ("instance_id", "repo", "hf_dataset_name", "dataset", "language", "verified")
+            c
+            for c in ("instance_id", "repo", "hf_dataset_name", "dataset", "language", "verified")
             if c in parquet.schema_arrow.names
         ]
-        turns_col = next(c for c in ("messages", "trajectory", "conversation") if c in parquet.schema_arrow.names)
+        turns_col = next(
+            c for c in ("messages", "trajectory", "conversation") if c in parquet.schema_arrow.names
+        )
         for batch in parquet.iter_batches(batch_size=64, columns=columns + [turns_col]):
             for row in batch.to_pylist():
                 stats["rows_in"] += 1
@@ -302,12 +305,27 @@ def render_source(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source", required=True, help=f"one of: {','.join(n for n, s in SOURCES.items() if s.get('render'))}")
-    parser.add_argument("--raw-root", required=True, help="Dir holding <repo-name>/data/*.parquet snapshots.")
-    parser.add_argument("--out-root", required=True, help="Dir to write <source>/data/train-*.parquet into.")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--source",
+        required=True,
+        help=f"one of: {','.join(n for n, s in SOURCES.items() if s.get('render'))}",
+    )
+    parser.add_argument(
+        "--raw-root", required=True, help="Dir holding <repo-name>/data/*.parquet snapshots."
+    )
+    parser.add_argument(
+        "--out-root", required=True, help="Dir to write <source>/data/train-*.parquet into."
+    )
     parser.add_argument("--max-rows-per-shard", type=int, default=2500)
-    parser.add_argument("--limit-shards", type=int, default=None, help="Only read the first N raw shards (smoke runs).")
+    parser.add_argument(
+        "--limit-shards",
+        type=int,
+        default=None,
+        help="Only read the first N raw shards (smoke runs).",
+    )
     args = parser.parse_args()
 
     stats = render_source(
@@ -317,7 +335,9 @@ def main() -> None:
         max_rows_per_shard=args.max_rows_per_shard,
         limit_shards=args.limit_shards,
     )
-    print(f"{args.source}: {stats['rows_out']}/{stats['rows_in']} rows -> {stats['shards_written']} shards")
+    print(
+        f"{args.source}: {stats['rows_out']}/{stats['rows_in']} rows -> {stats['shards_written']} shards"  # noqa: E501
+    )
     for key, value in sorted(stats.items()):
         print(f"  {key:<28}{value}")
 

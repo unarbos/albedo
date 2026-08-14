@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -54,9 +53,12 @@ def extract_rows(run_dir: Path) -> dict[str, list[dict]]:
             if not ref_model or not ref_traj or rec["sample_id"] not in prompts:
                 continue
             system, user = parse_system_user(prompts[rec["sample_id"]])
-            messages = [{"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                        *parse_trajectory(ref_traj)]
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+                *parse_trajectory(ref_traj),
+            ]
             by_model.setdefault(sanitize(ref_model), []).append(
-                {"sample_id": rec["sample_id"], "messages": messages, "_run_id": run_id})
+                {"sample_id": rec["sample_id"], "messages": messages, "_run_id": run_id}
+            )
     return by_model

@@ -90,7 +90,7 @@ def _download(ref: ModelRef, *, config_only: bool, max_workers: int) -> str:
             )
         return str(dest)
     _supervise.supervise_download(
-        child_call="from config_validation.storage._hippius import _download_child; _download_child()",
+        child_call="from config_validation.storage._hippius import _download_child; _download_child()",  # noqa: E501
         args=[ref.repo, ref.digest, str(dest), str(max_workers)],
         watch_dir=dest,
         label=ref.immutable_ref,

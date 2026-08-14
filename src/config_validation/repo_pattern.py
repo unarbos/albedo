@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
+from albedo_config.chain_spec import REPO_PATTERN
 from config_validation.checks import CheckOutcome
-from config_validation.config import REPO_PATTERN
 from config_validation.models import ModelRef
 
 NAME = "repo_pattern"
@@ -14,8 +14,7 @@ def check(ref: ModelRef) -> CheckOutcome:
         return CheckOutcome(name=NAME, ok=True, details={"pattern": ""})
 
     ok = re.match(REPO_PATTERN, ref.repo) is not None
-    reason = "" if ok else (
-        f"repo {ref.repo!r} does not match required pattern {REPO_PATTERN!r}"
+    reason = "" if ok else (f"repo {ref.repo!r} does not match required pattern {REPO_PATTERN!r}")
+    return CheckOutcome(
+        name=NAME, ok=ok, reason=reason, details={"pattern": REPO_PATTERN, "repo": ref.repo}
     )
-    return CheckOutcome(name=NAME, ok=ok, reason=reason,
-                        details={"pattern": REPO_PATTERN, "repo": ref.repo})

@@ -5,8 +5,9 @@ from model_validation.validate.dtype import check
 
 
 def _write_shard(path, dtypes_by_key):
-    header = {k: {"dtype": dt, "shape": [0], "data_offsets": [0, 0]}
-              for k, dt in dtypes_by_key.items()}
+    header = {
+        k: {"dtype": dt, "shape": [0], "data_offsets": [0, 0]} for k, dt in dtypes_by_key.items()
+    }
     blob = json.dumps(header).encode("utf-8")
     path.write_bytes(struct.pack("<Q", len(blob)) + blob)
 

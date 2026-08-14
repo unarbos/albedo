@@ -2,11 +2,11 @@ from collections import Counter
 
 import pytest
 
-from albedo_eval_service.sampling import (
+from albedo_eval_service.shared.sampling import (
     BENCHMARK_LANGUAGE,
     FAMILY_MIX,
-    NON_BENCHMARK_LANGUAGE_FRACTION,
     MAX_PREFIX_CHARS,
+    NON_BENCHMARK_LANGUAGE_FRACTION,
     REPO_CAP,
     STEP_TRIM,
     _apportion,
@@ -39,8 +39,16 @@ def _manifest(mini_rows: int = 2000, hero_rows: int = 800) -> dict:
     return {
         "version": "test-v1",
         "sources": [
-            {"name": "mini-coder", "shards": [_shard("mini-coder", mini_rows)], "total_rows": mini_rows},
-            {"name": "swe-hero", "shards": [_shard("swe-hero", hero_rows)], "total_rows": hero_rows},
+            {
+                "name": "mini-coder",
+                "shards": [_shard("mini-coder", mini_rows)],
+                "total_rows": mini_rows,
+            },
+            {
+                "name": "swe-hero",
+                "shards": [_shard("swe-hero", hero_rows)],
+                "total_rows": hero_rows,
+            },
         ],
         "total_rows": mini_rows + hero_rows,
     }
@@ -64,7 +72,10 @@ def test_rejects_single_source_manifest():
 def test_requires_rows_meta():
     no_meta = {
         "sources": [
-            {"name": "mini-coder", "shards": [{"name": "mini-coder/data/train-0.parquet", "rows": 1}]},
+            {
+                "name": "mini-coder",
+                "shards": [{"name": "mini-coder/data/train-0.parquet", "rows": 1}],
+            },
         ]
     }
     with pytest.raises(ValueError, match="rows_meta"):
@@ -289,4 +300,6 @@ def test_missing_language_defaults_to_the_benchmark_language():
         for shard in source["shards"]:
             for entry in shard["rows_meta"]:
                 entry.pop("language", None)
-    assert len(multi_source_manifest_sample_ids(manifest, block_hash="0xabc", sample_count=100)) == 100
+    assert (
+        len(multi_source_manifest_sample_ids(manifest, block_hash="0xabc", sample_count=100)) == 100
+    )

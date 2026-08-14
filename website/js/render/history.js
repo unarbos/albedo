@@ -15,12 +15,25 @@ function scoreCell(r) {
     el("span", { class: "king-score" }, pct(r.score_king)));
 }
 
+function marginSpan(m, required, title) {
+  const cls = m >= (required ?? 0) ? "ok" : "bad";
+  return el("span", { class: `margin-pct ${cls}`.trim(), title }, `${m > 0 ? "+" : ""}${pct(m)}%`);
+}
+
 function marginCell(r) {
+  const required = r.required_win_margin;
+  const reqTitle = required != null ? `required ≥ +${pct(required)}%` : null;
+  const margins = Array.isArray(r.pass_margins) && r.pass_margins.length >= 2
+    ? r.pass_margins : null;
+  if (margins) {
+    return el("span", { class: "judge-scores", title: "pass 1 / pass 2 (win-on-both)" },
+      marginSpan(margins[0], required, reqTitle),
+      el("span", { class: "sep" }, " / "),
+      marginSpan(margins[1], required, reqTitle));
+  }
   const m = r.win_margin;
   if (m == null) return el("span", { class: "muted-dash" }, "—");
-  const cls = m >= (r.required_win_margin ?? 0) ? "ok" : "bad";
-  const title = r.required_win_margin != null ? `required ≥ +${pct(r.required_win_margin)}%` : null;
-  return el("span", { class: `margin-pct ${cls}`.trim(), title }, `${m > 0 ? "+" : ""}${pct(m)}%`);
+  return marginSpan(m, required, reqTitle);
 }
 
 const evalHref = r => `detail.html?eval_run_id=${encodeURIComponent(r.eval_run_id || "")}`;

@@ -2,33 +2,29 @@ from __future__ import annotations
 
 import json
 
+from albedo_config.models import JUDGE_MODELS, JUDGE_PROVIDER_PINS
+from albedo_eval_service.evaluator.behavior.questions import behavior_question_schema
+from albedo_eval_service.evaluator.shared.questions import (
+    GENERIC_HYGIENE_QUESTION_LIMIT,
+    NEGATIVE_QUESTION_LIMIT,
+    is_measurement_bound_question,
+    is_unbounded_submit_question,
+    parse_questions,
+)
 from albedo_eval_service.judge_core import (
     CHALLENGER_WIN_MARGIN,
-    GENERIC_HYGIENE_QUESTION_LIMIT,
-    JUDGE_MODELS,
-    JUDGE_PROVIDER_PINS,
-    NEGATIVE_QUESTION_LIMIT,
     aggregate_scores,
     build_judge_messages,
     challenger_beats_king,
-    classify_question_category,
-    is_terminal_gate_question,
-    is_unbounded_submit_question,
     judge_yes_rate,
     parse_answers,
-    parse_questions,
-    question_schema,
     response_score,
     strip_reply_injection,
 )
 
 
 def test_judge_panel_allows_any_fp8_provider():
-    assert JUDGE_MODELS == (
-        "z-ai/glm-5.2",
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek/deepseek-v3.2",
-    )
+    assert JUDGE_MODELS == ("z-ai/glm-5.2",)
     for model in JUDGE_MODELS:
         assert JUDGE_PROVIDER_PINS[model] == {"allow_fallbacks": True, "quantizations": ["fp8"]}
         assert "order" not in JUDGE_PROVIDER_PINS[model]
@@ -69,20 +65,20 @@ def test_judge_prompt_is_strict_on_workflow_and_grounding_failures():
 def test_build_judge_messages_shows_tag():
     messages = build_judge_messages(
         response="FULL CANDIDATE TRAJECTORY\nCANDIDATE OUTPUT 1:\nls",
-        questions=[{"id": "q_01", "text": "Does it inspect?", "example_bad": "no",
-                    "category": "grounding", "tag": "explore"}],
+        questions=[
+            {"id": "q_01", "text": "Does it inspect?", "example_bad": "no", "tag": "explore"}
+        ],
     )
 
     assert '"tag": "explore"' in messages[1]["content"]
     assert "TAG VALIDATION" in messages[0]["content"]
 
 
-def test_parse_questions_assigns_ids_and_category():
+def test_parse_questions_assigns_ids():
     raw = json.dumps({"questions": [{"text": f"q{i}?", "example_bad": "bad"} for i in range(3)]})
     questions, ok = parse_questions(raw, 3)
     assert ok is True
     assert [q["id"] for q in questions] == ["q_01", "q_02", "q_03"]
-    assert all(q["category"] == "other" for q in questions)
     _, ok2 = parse_questions(json.dumps({"questions": []}), 3)
     assert ok2 is False
 
@@ -111,69 +107,22 @@ def test_judge_yes_rate_and_response_score():
     assert response_score(per_judge) == 0.75
 
 
-def test_terminal_gate_questions_are_scored_like_regular_questions():
-    questions = [
-        {"id": "q_01", "category": "overall", "text": "Does it end with no unresolved failed command?"},
-        {"id": "q_02", "category": "overall", "text": "Does it inspect the relevant file?"},
-        {"id": "q_03", "category": "overall", "text": "Does it use a grounded path?"},
-    ]
-    answers = {"q_01": "0", "q_02": "1", "q_03": "1"}
-
-    assert judge_yes_rate(answers, questions) == round(2 / 3, 6)
-    assert response_score({"j1": answers}, questions) == round(2 / 3, 6)
-
-
-def test_terminal_gate_yes_counts_like_regular_yes():
-    questions = [
-        {"id": "q_01", "category": "terminal_gate", "text": "Does it submit after success?"},
-        {"id": "q_02", "category": "work_correctness", "text": "Does it make the correct edit?"},
-        {"id": "q_03", "category": "grounding", "text": "Does it use grounded file paths?"},
-        {"id": "q_04", "category": "progress", "text": "Does it react to observations?"},
-    ]
-    finish_only = {"q_01": "1", "q_02": "0", "q_03": "0", "q_04": "0"}
-
-    assert judge_yes_rate(finish_only, questions) == 0.25
-
-
-def test_classify_question_category():
-    assert classify_question_category("Does the final state leave no unresolved failure?") == "terminal_gate"
-    assert classify_question_category("Does it use the previous observation to advance?") == "progress"
-    assert classify_question_category("Does every path come from observed repository files?") == "grounding"
-    assert classify_question_category("Does it verify the edit with git diff?") == "verification"
-
-
-def test_terminal_gate_detection_avoids_broad_topic_matches():
-    true_gates = [
-        "Does the final state leave no unresolved failed command as the last observation?",
-        "Does the trajectory submit after success instead of continuing redundant exploration?",
-        "Does the candidate avoid hand-writing go.sum checksum hashes directly?",
-        "Does the trajectory avoid invoking forbidden interpreters or test runners per the system prompt?",
-    ]
-    false_gates = [
-        "Does the next command target a grounded file path such as validator.go?",
-        "Does the candidate operate on package-lock.json rather than editing package.json?",
-        "Does the new handler avoid invented path builders when constructing the expression?",
-        "Does the trajectory avoid prefixing the bash command with comment lines per the CONTEXT SYSTEM?",
-        "Does the trajectory check the lockfile for ESLint entries that need updating?",
-    ]
-
-    assert all(is_terminal_gate_question(text) for text in true_gates)
-    assert not any(is_terminal_gate_question(text) for text in false_gates)
-
-
 def test_unbounded_submit_questions_are_diagnostic_only():
     assert is_unbounded_submit_question("Does the trajectory submit?") is True
     assert is_unbounded_submit_question("Does it finalize cleanly?") is True
-    assert is_unbounded_submit_question(
-        "Does the trajectory submit after observations show the task is solved or verified?"
-    ) is False
+    assert (
+        is_unbounded_submit_question(
+            "Does the trajectory submit after observations show the task is solved or verified?"
+        )
+        is False
+    )
 
     raw = json.dumps(
         {
             "questions": [
                 {"text": "Does the trajectory submit?", "example_bad": "b"},
                 {
-                    "text": "Does the trajectory submit after observations show the task is solved?",
+                    "text": "Does the trajectory submit after observations show the task is solved?",  # noqa: E501
                     "example_bad": "b",
                 },
                 {"text": "Does the first output inspect a grounded file?", "example_bad": "b"},
@@ -186,7 +135,7 @@ def test_unbounded_submit_questions_are_diagnostic_only():
 
 
 def test_challenger_win_requires_margin():
-    assert CHALLENGER_WIN_MARGIN == 0.03
+    assert CHALLENGER_WIN_MARGIN == 0.025
     assert challenger_beats_king(0.34, 0.30) is True
     assert challenger_beats_king(0.32, 0.30) is False
 
@@ -201,7 +150,12 @@ def _record(king: float, chal: float, *, scored: bool = True) -> dict:
         {"side": side, "judge_model": "j1", "yes_rate": rate, "parse_ok": scored}
         for side, rate in (("previous_king", king), ("challenger", chal))
     ]
-    return {"king_score": king, "challenger_score": chal, "judge_results": judge_results, "scored": scored}
+    return {
+        "king_score": king,
+        "challenger_score": chal,
+        "judge_results": judge_results,
+        "scored": scored,
+    }
 
 
 def test_aggregate_scores_crowns_on_margin():
@@ -248,16 +202,22 @@ def test_aggregate_scores_fails_when_too_few_valid():
 
 def test_parse_questions_drops_duplicates_and_rejects_degenerate_padding():
     degenerate = json.dumps(
-        {"questions": [{"text": "q0?", "example_bad": "b"}]
-         + [{"text": "Does the response check X?", "example_bad": "b"} for _ in range(49)]}
+        {
+            "questions": [{"text": "q0?", "example_bad": "b"}]
+            + [{"text": "Does the response check X?", "example_bad": "b"} for _ in range(49)]
+        }
     )
     out, ok = parse_questions(degenerate, 50)
     assert [q["text"] for q in out] == ["q0?", "Does the response check X?"]
     assert ok is False
 
     fuzzy = json.dumps(
-        {"questions": [{"text": "Does it pass?", "example_bad": "b"},
-                       {"text": "  does IT pass? ", "example_bad": "b"}]}
+        {
+            "questions": [
+                {"text": "Does it pass?", "example_bad": "b"},
+                {"text": "  does IT pass? ", "example_bad": "b"},
+            ]
+        }
     )
     out2, _ = parse_questions(fuzzy, 2)
     assert len(out2) == 1
@@ -367,9 +327,7 @@ def test_parse_questions_caps_negative_form_questions():
         "Does the final turn submit after the verification output succeeds?",
         "Does the first output inspect a repo path shown in the task?",
     ]
-    raw = json.dumps(
-        {"questions": [{"text": t, "example_bad": "b"} for t in negative + positive]}
-    )
+    raw = json.dumps({"questions": [{"text": t, "example_bad": "b"} for t in negative + positive]})
 
     out, ok = parse_questions(raw, 20)
     texts = [q["text"] for q in out]
@@ -382,18 +340,34 @@ def test_parse_questions_caps_negative_form_questions():
 
 def test_parse_questions_keeps_validated_tag_and_blanks_invalid():
     raw = json.dumps(
-        {"questions": [
-            {"text": "Does `install()` return `False` when render is missing?",
-             "example_bad": "b", "tag": "action"},
-            {"text": "Is the reproduction script re-run after the edit?",
-             "example_bad": "b", "tag": " Verification "},
-            {"text": "Does the opening move grep a task-named symbol?",
-             "example_bad": "b", "tag": "bogus"},
-            {"text": "Are the candidate outputs, all turns combined, under roughly 900 words?",
-             "example_bad": "b", "tag": "economy"},
-            {"text": "Does the final turn submit after the verification succeeds?",
-             "example_bad": "b"},
-        ]}
+        {
+            "questions": [
+                {
+                    "text": "Does `install()` return `False` when render is missing?",
+                    "example_bad": "b",
+                    "tag": "action",
+                },
+                {
+                    "text": "Is the reproduction script re-run after the edit?",
+                    "example_bad": "b",
+                    "tag": " Verification ",
+                },
+                {
+                    "text": "Does the opening move grep a task-named symbol?",
+                    "example_bad": "b",
+                    "tag": "bogus",
+                },
+                {
+                    "text": "Are the candidate outputs, all turns combined, under roughly 900 words?",  # noqa: E501
+                    "example_bad": "b",
+                    "tag": "economy",
+                },
+                {
+                    "text": "Does the final turn submit after the verification succeeds?",
+                    "example_bad": "b",
+                },
+            ]
+        }
     )
     out, _ok = parse_questions(raw, 10)
 
@@ -401,17 +375,8 @@ def test_parse_questions_keeps_validated_tag_and_blanks_invalid():
 
 
 def test_question_schema_floor_does_not_force_padding():
-    schema = question_schema(50)["properties"]["questions"]
+    schema = behavior_question_schema(50)["properties"]["questions"]
     assert schema["minItems"] == 11 and schema["maxItems"] == 50
-
-
-def test_question_schema_includes_tag_enum():
-    items = question_schema(50)["properties"]["questions"]["items"]
-    assert items["properties"]["tag"] == {
-        "type": "string",
-        "enum": ["explore", "verification", "action", "economy"],
-    }
-    assert "tag" in items["required"]
 
 
 def test_parse_questions_accepts_slightly_short_and_truncates_extra():
@@ -419,10 +384,15 @@ def test_parse_questions_accepts_slightly_short_and_truncates_extra():
     out, ok = parse_questions(q9, 10)
     assert ok is True and len(out) == 9 and out[-1]["id"] == "q_09"
 
-    q11 = json.dumps({"questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(9)] + [
-        {"text": "Does the next turn use the observed KeyError?", "example_bad": "b"},
-        {"text": "Does the command target a real cache file?", "example_bad": "b"},
-    ]})
+    q11 = json.dumps(
+        {
+            "questions": [{"text": f"q{i}", "example_bad": "b"} for i in range(9)]
+            + [
+                {"text": "Does the next turn use the observed KeyError?", "example_bad": "b"},
+                {"text": "Does the command target a real cache file?", "example_bad": "b"},
+            ]
+        }
+    )
     out2, ok2 = parse_questions(q11, 10)
     assert ok2 is True and len(out2) == 10
 
@@ -460,24 +430,23 @@ def test_parse_questions_accepts_sparse_terminal_gates_when_list_is_large_enough
             "Does observation handling account for zero collected tests?",
             "Does first command choose a relevant search term?",
         ]
-    ] + [
-        {"text": "Does it end with no unresolved failed command?", "example_bad": "b"}
-    ]
+    ] + [{"text": "Does it end with no unresolved failed command?", "example_bad": "b"}]
     out, ok = parse_questions(json.dumps({"questions": items}), 50)
 
     assert len(out) == 25
-    assert sum(q["category"] == "terminal_gate" for q in out) == 1
     assert ok is True
 
 
 def test_candidate_output_measure_excludes_context():
-    from albedo_eval_service.judge_core import candidate_output_measure
+    from albedo_eval_service.evaluator.shared.questions import candidate_output_measure
 
     text = (
         "FULL CANDIDATE TRAJECTORY\nScore ONLY...\n\n"
         "CONTEXT USER (do not score):\n------\n" + ("ctx " * 500) + "\n------\n\n"
         "CANDIDATE OUTPUT 1:\n------\none two three\n------\n\n"
-        "ENVIRONMENT OBSERVATION (context only, do not score):\n------\n" + ("obs " * 200) + "\n------\n\n"
+        "ENVIRONMENT OBSERVATION (context only, do not score):\n------\n"
+        + ("obs " * 200)
+        + "\n------\n\n"
         "CANDIDATE OUTPUT 2:\n------\nfour five\n------"
     )
     m = candidate_output_measure(text)
@@ -488,17 +457,20 @@ def test_candidate_output_measure_excludes_context():
 
 def test_parse_keeps_size_ladder_rungs():
     import json
-    from albedo_eval_service.judge_core import parse_questions
+
+    from albedo_eval_service.evaluator.shared.questions import parse_questions
 
     rungs = [
-        {"text": f"Are the candidate outputs, all turns combined, under roughly {b} words?",
-         "example_bad": "a ~5000-word trajectory"}
+        {
+            "text": f"Are the candidate outputs, all turns combined, under roughly {b} words?",
+            "example_bad": "a ~5000-word trajectory",
+        }
         for b in (400, 800, 1600, 3200, 6400, 12800)
     ]
     extras = [{"text": f"q{i} gate{i}?", "example_bad": "bad"} for i in range(20)]
     parsed, ok = parse_questions(json.dumps({"questions": rungs + extras}), 50)
-    ladder = [q for q in parsed if q["category"] == "size"]
-    assert len(ladder) == 6
+    ladder = [q for q in parsed if is_measurement_bound_question(q["text"])]
+    assert len(ladder) == 5
     assert ok
 
 
@@ -574,7 +546,7 @@ def test_edit_detection_ignores_prose_and_stderr_redirects():
     """The pattern used to run over the whole turn, so `2>/dev/null`, a `>` in prose and the `>` of
     a leaked `</think>` all read as a redirect. That marked every candidate as having edited, which
     left apply_measurement_gate permanently inert in production."""
-    from albedo_eval_service.judge_core import trajectory_made_edit
+    from albedo_eval_service.evaluator.shared.questions import trajectory_made_edit
 
     def block(cmd):
         return f"```bash\n{cmd}\n```"
@@ -584,13 +556,20 @@ def test_edit_detection_ignores_prose_and_stderr_redirects():
     assert trajectory_made_edit(["THOUGHT: a > b so we fix it"]) is False
     assert trajectory_made_edit(["\n</think>\n\nTHOUGHT: x" + block("cat f.py")]) is False
 
-    for label in ("sed -i s/a/b/ f.py", "echo hi > out.txt", "cat >> f.py << EOF",
-                  "tee f.py", "cp a.py b.py", "patch -p1 < d.diff", "git apply d.diff"):
+    for label in (
+        "sed -i s/a/b/ f.py",
+        "echo hi > out.txt",
+        "cat >> f.py << EOF",
+        "tee f.py",
+        "cp a.py b.py",
+        "patch -p1 < d.diff",
+        "git apply d.diff",
+    ):
         assert trajectory_made_edit([block(label)]) is True, label
 
 
 def test_measurement_gate_fires_for_a_candidate_that_only_explored():
-    from albedo_eval_service.judge_core import apply_measurement_gate
+    from albedo_eval_service.evaluator.shared.questions import apply_measurement_gate
 
     questions = [
         {"id": "q_01", "requires": "action", "text": "Is the fix applied?"},
@@ -598,7 +577,8 @@ def test_measurement_gate_fires_for_a_candidate_that_only_explored():
         {"id": "q_03", "requires": "read", "text": "Is `foo()` located in `a.py`?"},
     ]
     gated = apply_measurement_gate(
-        {"q_01": "1", "q_02": "1", "q_03": "1"}, questions,
+        {"q_01": "1", "q_02": "1", "q_03": "1"},
+        questions,
         candidate_turn_texts=["```bash\ngrep -rn x . 2>/dev/null\n```"],
         reference_made_edit=True,
     )
@@ -608,7 +588,9 @@ def test_measurement_gate_fires_for_a_candidate_that_only_explored():
 
     # a candidate that did edit is left alone
     untouched = apply_measurement_gate(
-        {"q_01": "1"}, questions[:1],
-        candidate_turn_texts=["```bash\nsed -i s/a/b/ f.py\n```"], reference_made_edit=True,
+        {"q_01": "1"},
+        questions[:1],
+        candidate_turn_texts=["```bash\nsed -i s/a/b/ f.py\n```"],
+        reference_made_edit=True,
     )
     assert untouched == {"q_01": "1"}

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from loguru import logger as log
 
+from albedo_config import get_model_validation_settings
 from config_validation.fingerprint import similarity
-
-from model_validation import config
 from model_validation.opensearch.client import ensure_index, get_client
 
+config = get_model_validation_settings()
 
-def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
-                   k: int | None = None, weights_hash: str | None = None) -> dict:
+
+def find_duplicate(
+    fp: dict,
+    hotkey: str,
+    threshold: float | None = None,
+    k: int | None = None,
+    weights_hash: str | None = None,
+) -> dict:
     threshold = config.SIM_THRESHOLD if threshold is None else threshold
     k = config.KNN_CANDIDATES if k is None else k
     vec = fp.get("norm_vector") or []
@@ -19,10 +25,12 @@ def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
         exact_body = {
             "size": 1,
             "_source": ["key", "hotkey", "model_uri"],
-            "query": {"bool": {
-                "filter": [{"term": {"weights_hash": weights_hash}}],
-                "must_not": [{"term": {"hotkey": hotkey}}] if hotkey else [],
-            }},
+            "query": {
+                "bool": {
+                    "filter": [{"term": {"weights_hash": weights_hash}}],
+                    "must_not": [{"term": {"hotkey": hotkey}}] if hotkey else [],
+                }
+            },
         }
         exact_hits = get_client().search(index=index, body=exact_body)["hits"]["hits"]
         if exact_hits:
@@ -54,8 +62,11 @@ def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
         sim = similarity(fp, src.get("fingerprint", {}))
         if sim > best_sim:
             best_sim = sim
-            matched = {"key": src.get("key", ""), "hotkey": src.get("hotkey", ""),
-                       "model_uri": src.get("model_uri", "")}
+            matched = {
+                "key": src.get("key", ""),
+                "hotkey": src.get("hotkey", ""),
+                "model_uri": src.get("model_uri", ""),
+            }
 
     is_dup = best_sim >= threshold
     result = {
@@ -73,13 +84,26 @@ def find_duplicate(fp: dict, hotkey: str, threshold: float | None = None,
     return result
 
 
-def index_fingerprint(key: str, fp: dict, *, hotkey: str, repo: str, digest: str,
-                      model_uri: str, created_at: str, weights_hash: str | None = None) -> None:
+def index_fingerprint(
+    key: str,
+    fp: dict,
+    *,
+    hotkey: str,
+    repo: str,
+    digest: str,
+    model_uri: str,
+    created_at: str,
+    weights_hash: str | None = None,
+) -> None:
     vec = fp.get("norm_vector") or []
     index = ensure_index(len(vec))
     body = {
-        "key": key, "hotkey": hotkey, "repo": repo, "digest": digest,
-        "model_uri": model_uri, "created_at": created_at,
+        "key": key,
+        "hotkey": hotkey,
+        "repo": repo,
+        "digest": digest,
+        "model_uri": model_uri,
+        "created_at": created_at,
         "norm_vector": vec,
         "fingerprint": fp,
     }

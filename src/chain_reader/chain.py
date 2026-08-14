@@ -54,7 +54,9 @@ def _decode_commitment_pair(pair: tuple[Any, Any]) -> tuple[str, list[tuple[int,
     return key, out
 
 
-def _iter_revealed(subtensor: Any, netuid: int, block: int | None = None) -> Iterator[tuple[str, int, str]]:
+def _iter_revealed(
+    subtensor: Any, netuid: int, block: int | None = None
+) -> Iterator[tuple[str, int, str]]:
     qm = subtensor.query_map(
         module="Commitments", name="RevealedCommitments", params=[netuid], block=block
     )
@@ -112,7 +114,9 @@ def confirm_swaps(subtensor: Any, swaps: list[Any], block: int) -> list[Any]:
             log.warning(
                 "[chain-guard] swap candidate REJECTED: uid {} old hotkey {} is still owned "
                 "by coldkey {} — registration churn, not swap_hotkey; skipping ledger",
-                swap.uid, swap.old_hotkey, owner,
+                swap.uid,
+                swap.old_hotkey,
+                owner,
             )
     return confirmed
 
@@ -155,9 +159,13 @@ def _payload_hash(payload: dict[str, Any]) -> str:
 _warned_no_uid: set[str] = set()
 
 
-def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0,
-                     uids: dict[str, int] | None = None,
-                     at_block: int | None = None) -> list[Commit]:
+def scan_commitments(
+    subtensor: Any,
+    netuid: int,
+    start_block: int = 0,
+    uids: dict[str, int] | None = None,
+    at_block: int | None = None,
+) -> list[Commit]:
     if uids is None:
         uids = _uid_map(subtensor, netuid)
 
@@ -179,17 +187,19 @@ def scan_commitments(subtensor: Any, netuid: int, start_block: int = 0,
                 log.warning("no uid for hotkey={}; skipping", hotkey)
             n_skipped += 1
             continue
-        commits.append(Commit(
-            netuid=netuid,
-            block_number=block,
-            block_hash=_block_hash(subtensor, block),
-            extrinsic_hash=None,
-            uid=uid,
-            hotkey=hotkey,
-            commit_payload=payload,
-            model_uri=f"{payload['repo']}@{payload['digest']}",
-            payload_hash=_payload_hash(payload),
-        ))
+        commits.append(
+            Commit(
+                netuid=netuid,
+                block_number=block,
+                block_hash=_block_hash(subtensor, block),
+                extrinsic_hash=None,
+                uid=uid,
+                hotkey=hotkey,
+                commit_payload=payload,
+                model_uri=f"{payload['repo']}@{payload['digest']}",
+                payload_hash=_payload_hash(payload),
+            )
+        )
 
     log.info("scan: total={} v7_commits={} skipped={}", n_total, len(commits), n_skipped)
     return commits

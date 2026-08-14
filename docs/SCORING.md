@@ -54,11 +54,10 @@ there is no task-only fallback checklist. `question_source.question_mode` is alw
 Shares set only the per-section question counts (largest-remainder rounding in `step_counts`);
 scoring weights are separate.
 
-Each question carries two labels that drive scoring:
+Each question carries a label that drives scoring:
 
 - **`requires`** — `action` (needs real work), `read` (a read-only step can satisfy it), or
   `neutral` (size/protocol hygiene).
-- **`category`** — `size` questions are pulled out of the vote entirely and become a multiplier.
 
 ### Enforcement at parse time
 
@@ -79,28 +78,9 @@ come back well-formed (`QUESTION_FLOOR_FRACTION`).
 
 ### 1. Per judge: a weighted yes-rate
 
-`judge_yes_rate` weights each answered question by its `requires` label:
 
-| `requires` | weight | env override |
-|---|---|---|
-| `action` | **2.0** | `ALBEDO_EXP_W_ACTION` |
-| `read` | **0.75** | `ALBEDO_EXP_W_READ` |
-| `neutral` | **0.25** | `ALBEDO_EXP_W_NEUTRAL` |
-
-> The docstring on `judge_yes_rate` still says "1.5x / 1.0x / 0.5x" — that is stale; the constants
-> above are what runs.
-
-`size`-category questions do **not** vote. They become a multiplier on the whole rate:
-
-```
-rate = Σ(w · answer) / Σ(w)                       # over non-size questions
-rate *= SIZE_FACTOR_FLOOR + (1 - SIZE_FACTOR_FLOOR) · (size_yes / size_total)
-```
-
-with `SIZE_FACTOR_FLOOR = 0.6` (`ALBEDO_EXP_SIZE_FLOOR`). A model that fails every size check keeps
-60% of its earned rate; one that passes all of them keeps 100%. This is deliberate: a verbose model
-that brushes past every milestone by sheer volume must not out-vote the ladder — an observed 16k-word
-king passed 64% of action checks on volume alone.
+`judge_yes_rate` is the plain mean of every answered bit (1/0), measurement/size questions
+included — there is no separate size multiplier or per-`requires` weighting in the running code, size questions vote like any other question.
 
 ### 2. The measurement gate
 
@@ -111,8 +91,8 @@ judge involved:
   denominator**. They are dropped, never awarded: inaction is the adversary, and a free `1` would
   reward it.
 - If the reference proved an edit was reachable, the candidate made no edit, **and** its final turn
-  is still a read, every `requires: action` and `progress` question is forced to `0`. Well-groomed
-  exploration must not out-score imperfect work.
+  is still a read, every `requires: action` question is forced to `0`. Well-groomed exploration
+  must not out-score imperfect work.
 
 ### 3. Across judges and samples
 

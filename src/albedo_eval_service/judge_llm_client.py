@@ -11,8 +11,8 @@ from typing import Any, Callable
 import httpx
 from loguru import logger
 
-from .judge_config import JudgeSettings
-from .judge_core import JUDGE_MODELS, JUDGE_PROVIDER_PINS
+from albedo_config import JudgeSettings
+from albedo_config.models import JUDGE_MODELS, JUDGE_PROVIDER_PINS
 
 
 @dataclass(frozen=True)
@@ -50,12 +50,15 @@ class JudgeLLMClient:
             else None
         )
         self._engy_models = {m.strip() for m in settings.engy_models.split(",") if m.strip()}
-        self._engy_errors: collections.Counter[str] = collections.Counter()
+        self._engy_errors: collections.Counter[tuple[str, str]] = collections.Counter()
         logger.info(
             f"[judge-llm] engy routing for purposes={sorted(ENGY_PURPOSES)}: "
-            + (f"ON models={sorted(self._engy_models)} url={settings.engy_base_url} "
-               f"max_errors={settings.engy_max_errors}"
-               if self._engy is not None else "OFF (no engy api key)")
+            + (
+                f"ON models={sorted(self._engy_models)} url={settings.engy_base_url} "
+                f"max_errors={settings.engy_max_errors}"
+                if self._engy is not None
+                else "OFF (no engy api key)"
+            )
         )
 
     async def aclose(self) -> None:
@@ -68,7 +71,7 @@ class JudgeLLMClient:
             return False
         if purpose == "simulate" and model != self.settings.simulation_model:
             return False
-        return self._engy_errors[eval_run_id] < self.settings.engy_max_errors
+        return self._engy_errors[(eval_run_id, model)] < self.settings.engy_max_errors
 
     async def __aenter__(self) -> "JudgeLLMClient":
         return self
@@ -89,8 +92,13 @@ class JudgeLLMClient:
         purpose: str = "judge",
     ) -> JudgeRawResponse:
         return await self._call(
-            model=model, messages=messages, response_schema=response_schema,
-            schema_name=schema_name, max_tokens=max_tokens, provider=provider, accept=accept,
+            model=model,
+            messages=messages,
+            response_schema=response_schema,
+            schema_name=schema_name,
+            max_tokens=max_tokens,
+            provider=provider,
+            accept=accept,
             purpose=purpose,
         )
 
@@ -110,9 +118,16 @@ class JudgeLLMClient:
         eval_run_id: str = "",
     ) -> JudgeRawResponse:
         return await self._call(
-            model=model, messages=messages, response_schema=response_schema,
-            temperature=temperature, max_tokens=max_tokens, provider=provider, accept=accept,
-            purpose=purpose, parse_retries=parse_retries, retry_count=retry_count,
+            model=model,
+            messages=messages,
+            response_schema=response_schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            provider=provider,
+            accept=accept,
+            purpose=purpose,
+            parse_retries=parse_retries,
+            retry_count=retry_count,
             eval_run_id=eval_run_id,
         )
 
@@ -139,18 +154,47 @@ class JudgeLLMClient:
         transport_budget = self.settings.retry_count if retry_count is None else retry_count
         async with sem:
             last: JudgeRawResponse | None = None
+            engy_spent = False  # engy gets one shot per call; re-asking at t=0 repeats itself
             for parse_attempt in range(max(1, parse_budget)):
                 last = await self._score_with_retries(
-                    model=model, messages=messages, response_schema=response_schema,
-                    schema_name=schema_name, temperature=temperature, max_tokens=max_tokens,
+                    model=model,
+                    messages=messages,
+                    response_schema=response_schema,
+                    schema_name=schema_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                     provider=provider,
-                    base_shift=parse_attempt * (transport_budget + 1),
+                    base_shift=parse_attempt,
                     purpose=purpose,
                     retry_count=transport_budget,
                     eval_run_id=eval_run_id,
+                    force_openrouter=engy_spent,
                 )
-                if last.error is None and (accept is None or accept(last.raw)):
+                if _usable(last, accept):
                     return last
+                if last.provider == "engy":
+                    engy_spent = True
+                    logger.warning(
+                        f"[judge-llm] engy content rejected (not charged to engy health) "
+                        f"eval_run_id={eval_run_id} model={model} purpose={purpose}, "
+                        f"retrying this call on openrouter"
+                    )
+                    last = await self._score_with_retries(
+                        model=model,
+                        messages=messages,
+                        response_schema=response_schema,
+                        schema_name=schema_name,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        provider=provider,
+                        base_shift=parse_attempt,
+                        purpose=purpose,
+                        retry_count=transport_budget,
+                        eval_run_id=eval_run_id,
+                        force_openrouter=True,
+                    )
+                    if _usable(last, accept):
+                        return last
             return last
 
     async def _score_with_retries(
@@ -167,6 +211,7 @@ class JudgeLLMClient:
         purpose: str = "other",
         retry_count: int | None = None,
         eval_run_id: str = "",
+        force_openrouter: bool = False,
     ) -> JudgeRawResponse:
         transport_budget = self.settings.retry_count if retry_count is None else retry_count
         last_error = ""
@@ -183,6 +228,7 @@ class JudgeLLMClient:
                     provider_shift=base_shift + attempt,
                     purpose=purpose,
                     eval_run_id=eval_run_id,
+                    force_openrouter=force_openrouter,
                 )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -212,8 +258,9 @@ class JudgeLLMClient:
         provider_shift: int = 0,
         purpose: str = "other",
         eval_run_id: str = "",
+        force_openrouter: bool = False,
     ) -> JudgeRawResponse:
-        on_engy = self._use_engy(purpose, model, eval_run_id)
+        on_engy = not force_openrouter and self._use_engy(purpose, model, eval_run_id)
         client = self._engy if on_engy else self._client
         provider_block = provider if provider is not None else JUDGE_PROVIDER_PINS.get(model, {})
         provider_block = _rotate_order(provider_block, provider_shift)
@@ -240,9 +287,9 @@ class JudgeLLMClient:
         except Exception as exc:
             if not on_engy:
                 raise
-            self._engy_errors[eval_run_id] += 1
+            self._engy_errors[(eval_run_id, model)] += 1
             logger.warning(
-                f"[judge-llm] engy error {self._engy_errors[eval_run_id]}/"
+                f"[judge-llm] engy error {self._engy_errors[(eval_run_id, model)]}/"
                 f"{self.settings.engy_max_errors} eval_run_id={eval_run_id} "
                 f"model={model}, retrying this call on openrouter: "
                 f"{type(exc).__name__}: {exc}"
@@ -263,8 +310,23 @@ class JudgeLLMClient:
             f"cost={float(usage.get('cost') or 0.0):.8f}"
         )
         raw = _message_content(body.get("choices", []))
+        if on_engy and not raw.strip():
+            self._engy_errors[(eval_run_id, model)] += 1
+            logger.warning(
+                f"[judge-llm] engy returned empty content "
+                f"{self._engy_errors[(eval_run_id, model)]}/{self.settings.engy_max_errors} "
+                f"eval_run_id={eval_run_id} model={model} body={str(body)[:200]}"
+            )
         provider = "engy" if on_engy else _provider_name(model)
         return JudgeRawResponse(model=model, provider=provider, raw=raw)
+
+
+def _usable(result: JudgeRawResponse, accept: Callable[[str], bool] | None) -> bool:
+    if result.error is not None:
+        return False
+    if result.provider == "engy" and not result.raw.strip():
+        return False
+    return accept is None or accept(result.raw)
 
 
 def _rotate_order(provider: dict[str, Any], shift: int) -> dict[str, Any]:

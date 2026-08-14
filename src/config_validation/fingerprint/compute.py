@@ -22,7 +22,7 @@ def _deterministic_indices(key: str, n: int, k: int) -> list[int]:
     if n <= 0:
         return [0] * k
     h = hashlib.blake2b(key.encode("utf-8"), digest_size=4 * k).digest()
-    return [int.from_bytes(h[i * 4:(i + 1) * 4], "big") % n for i in range(k)]
+    return [int.from_bytes(h[i * 4 : (i + 1) * 4], "big") % n for i in range(k)]
 
 
 def _to_f32(raw: bytes, dtype: str) -> np.ndarray | None:
@@ -39,13 +39,13 @@ def _iter_tensors(shard: Path):
         mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
         try:
             header_len = int.from_bytes(mm[:8], "little")
-            header = json.loads(mm[8:8 + header_len])
+            header = json.loads(mm[8 : 8 + header_len])
             data_start = 8 + header_len
             for key, info in header.items():
                 if key == "__metadata__":
                     continue
                 start, end = info["data_offsets"]
-                arr = _to_f32(mm[data_start + start:data_start + end], info["dtype"])
+                arr = _to_f32(mm[data_start + start : data_start + end], info["dtype"])
                 if arr is not None:
                     yield key, arr
         finally:

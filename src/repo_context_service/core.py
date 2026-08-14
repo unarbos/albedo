@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import contextlib
@@ -18,8 +17,8 @@ from pathlib import Path, PurePosixPath
 import httpx
 from loguru import logger
 
-from albedo_eval_service.dataset_manifest import load_manifest_file
-from albedo_eval_service.remote_dataset import (
+from albedo_config import RepoContextSettings
+from albedo_eval_service.remote.dataset import (
     _content,
     _extract_turns,
     _parse_sample_id,
@@ -27,8 +26,8 @@ from albedo_eval_service.remote_dataset import (
     _role,
     _unwrap_column,
 )
-
-from .settings import RepoContextSettings
+from albedo_eval_service.shared.dataset_manifest import load_manifest_file
+from albedo_eval_service.simulator.prompt_simulator import COMPLETE_MARKER
 
 _API_BASE = "https://api.github.com"
 _DONE_MARKER = ".albedo-repo-context-done"
@@ -39,7 +38,6 @@ _MAX_MEMBER_BYTES = 2 * 1024 * 1024
 _MAX_MEMBERS = 200_000
 _MAX_MISSING_PATHS = 10
 _RETRIES = 3
-_COMPLETE_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 
 _COMMAND_BLOCK_RE = re.compile(r"```(?:bash|sh)?[ \t]*\n(.*?)```", re.DOTALL)
 
@@ -119,7 +117,9 @@ def parse_instance(source: str, instance_id: str) -> RepoRef | None:
         if tail.isdigit():
             return RepoRef(instance_id=instance_id, source=source, owner=owner, repo=repo, pr=tail)
         if re.fullmatch(r"[0-9a-f]{40}", tail):
-            return RepoRef(instance_id=instance_id, source=source, owner=owner, repo=repo, commit=tail)
+            return RepoRef(
+                instance_id=instance_id, source=source, owner=owner, repo=repo, commit=tail
+            )
         return None
     except ValueError:
         return None
@@ -148,9 +148,7 @@ def _filter_listing(paths: list[str], cmd: str) -> tuple[list[str], bool]:
     regexes = [
         re.compile(re.escape(p).replace(r"\*", ".*").replace(r"\?", ".") + "$") for p in pats
     ]
-    kept = [
-        p for p in paths if any(r.match(p.rsplit("/", 1)[-1]) or r.match(p) for r in regexes)
-    ]
+    kept = [p for p in paths if any(r.match(p.rsplit("/", 1)[-1]) or r.match(p) for r in regexes)]
     return kept, True
 
 
@@ -209,9 +207,7 @@ def _iid_from_parquet(dataset_root: str, shard_name: str, row_idx: int) -> str |
     path = Path(dataset_root) / shard_name
     try:
         seen = 0
-        for batch in pq.ParquetFile(path).iter_batches(
-            batch_size=1024, columns=["instance_id"]
-        ):
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=1024, columns=["instance_id"]):
             if seen + batch.num_rows <= row_idx:
                 seen += batch.num_rows
                 continue
@@ -248,14 +244,14 @@ class RepoContextService:
     def close(self) -> None:
         self._client.close()
 
-
     def context_for(self, sample_id: str, assistant_output: str) -> GroundingContext:
         try:
             return self._context_for(sample_id, assistant_output)
         except Exception as exc:
             logger.warning(
                 "repo_context_fallback sample_id={} kind=none reason=unexpected error={}",
-                sample_id, f"{type(exc).__name__}: {exc}",
+                sample_id,
+                f"{type(exc).__name__}: {exc}",
             )
             return GroundingContext(context=None, kind="none", reason="unexpected")
 
@@ -282,7 +278,8 @@ class RepoContextService:
             except Exception as exc:
                 logger.warning(
                     "repo_context_prefetch_instance_failed instance={} error={}",
-                    instance_id, f"{type(exc).__name__}: {exc}",
+                    instance_id,
+                    f"{type(exc).__name__}: {exc}",
                 )
                 return False
 
@@ -293,7 +290,9 @@ class RepoContextService:
         summary = {"samples": len(sample_ids), "instances": len(instances), "ready": ready}
         logger.info(
             "repo_context_prefetch_done samples={} instances={} ready={}",
-            summary["samples"], summary["instances"], summary["ready"],
+            summary["samples"],
+            summary["instances"],
+            summary["ready"],
         )
         return summary
 
@@ -313,7 +312,6 @@ class RepoContextService:
         listing = list(_load_listing(str(snapshot / _LISTING_NAME)))
         block = self._build_repo_block(snapshot, listing, _first_command(assistant_output))
         return GroundingContext(context=block, kind="repo")
-
 
     def _context_for(self, sample_id: str, assistant_output: str) -> GroundingContext:
         try:
@@ -336,7 +334,6 @@ class RepoContextService:
         logger.warning("repo_context_fallback sample_id={} kind=none reason={}", sample_id, reason)
         return GroundingContext(context=None, kind="none", reason=reason)
 
-
     def _iid_for(self, shard_name: str, row_idx: int) -> tuple[str, str] | None:
         if self.settings.dataset_manifest_path:
             resolved = self._iid_from_manifest(shard_name, row_idx)
@@ -356,7 +353,8 @@ class RepoContextService:
                 self._manifest_error_logged = True
                 logger.warning(
                     "repo_context_manifest_unavailable path={} error={}",
-                    self.settings.dataset_manifest_path, f"{type(exc).__name__}: {exc}",
+                    self.settings.dataset_manifest_path,
+                    f"{type(exc).__name__}: {exc}",
                 )
             return None
         entry = shards.get(shard_name)
@@ -386,7 +384,6 @@ class RepoContextService:
                     self._shards = shards
         return self._shards
 
-
     def _resolve_sha(self, ref: RepoRef) -> tuple[str, str, str] | None:
         cache_path = self._shas_dir / f"{_safe_name(ref.instance_id)}.json"
         cached = _read_json(cache_path)
@@ -410,7 +407,8 @@ class RepoContextService:
             except Exception as exc:
                 logger.info(
                     "repo_context_sha_unresolved instance={} error={}",
-                    ref.instance_id, f"{type(exc).__name__}: {exc}",
+                    ref.instance_id,
+                    f"{type(exc).__name__}: {exc}",
                 )
                 _write_json_atomic(
                     cache_path, {"error": f"{type(exc).__name__}: {exc}", "failed_at": time.time()}
@@ -425,7 +423,6 @@ class RepoContextService:
             return data["base"]["sha"]
         data = self._github_json(f"/repos/{owner}/{repo}/commits/{ref.commit}")
         return data["sha"]
-
 
     def _ensure_snapshot(self, owner: str, repo: str, sha: str) -> Path | None:
         key = f"{_safe_name(owner)}__{_safe_name(repo)}__{sha[:12]}"
@@ -457,7 +454,11 @@ class RepoContextService:
                 ttl_kind = "oversized" if isinstance(exc, _SnapshotTooLarge) else "transient"
                 logger.info(
                     "repo_context_snapshot_failed repo={}/{} sha={} kind={} error={}",
-                    owner, repo, sha[:12], ttl_kind, f"{type(exc).__name__}: {exc}",
+                    owner,
+                    repo,
+                    sha[:12],
+                    ttl_kind,
+                    f"{type(exc).__name__}: {exc}",
                 )
                 _write_json_atomic(
                     failed_path,
@@ -475,9 +476,7 @@ class RepoContextService:
         failed = _read_json(failed_path)
         if failed is None:
             return False
-        ttl = (
-            _NEGATIVE_TTL_SECONDS if failed.get("kind") == "oversized" else _TRANSIENT_TTL_SECONDS
-        )
+        ttl = _NEGATIVE_TTL_SECONDS if failed.get("kind") == "oversized" else _TRANSIENT_TTL_SECONDS
         return time.time() - float(failed.get("failed_at", 0)) < ttl
 
     def _download_tarball(self, owner: str, repo: str, sha: str, dest: Path) -> None:
@@ -511,7 +510,9 @@ class RepoContextService:
             return
         logger.warning(
             "repo_context_cache_cleared usage_bytes={} limit_bytes={} dir={}",
-            usage, limit, self._snapshots_dir,
+            usage,
+            limit,
+            self._snapshots_dir,
         )
         shutil.rmtree(self._snapshots_dir, ignore_errors=True)
         self._snapshots_dir.mkdir(parents=True, exist_ok=True)
@@ -548,7 +549,6 @@ class RepoContextService:
                     shutil.copyfileobj(source, out)
                 paths.append(rel)
         return sorted(paths), total
-
 
     _LISTING_MIN_CHARS = 8000
 
@@ -624,7 +624,6 @@ class RepoContextService:
         except OSError:
             return None
 
-
     def _trajectory_block(self, shard_name: str, row_idx: int, turn_idx: int) -> str | None:
         if not self.settings.dataset_root:
             return None
@@ -633,7 +632,9 @@ class RepoContextService:
         except Exception as exc:
             logger.info(
                 "repo_context_trajectory_unavailable shard={} row={} error={}",
-                shard_name, row_idx, f"{type(exc).__name__}: {exc}",
+                shard_name,
+                row_idx,
+                f"{type(exc).__name__}: {exc}",
             )
             return None
         normalized = {key: _unwrap_column(value) for key, value in row.items()}
@@ -651,7 +652,7 @@ class RepoContextService:
             observation = _content(turns[position + 1]).strip()
             if not observation:
                 continue
-            if _COMPLETE_MARKER in command or _COMPLETE_MARKER in observation:
+            if COMPLETE_MARKER in command or COMPLETE_MARKER in observation:
                 continue
             pairs.append((command, observation))
             if len(pairs) >= self.settings.max_trajectory_pairs:
@@ -665,7 +666,6 @@ class RepoContextService:
                 f"ENVIRONMENT OBSERVATION:\n{_truncate(observation, self.settings.max_file_chars)}"
             )
         return _truncate("\n\n".join(parts), self.settings.max_context_chars)
-
 
     def _auth_headers(self) -> dict[str, str]:
         token = (
@@ -688,9 +688,13 @@ class RepoContextService:
                 continue
             if response.status_code == 404:
                 raise _NotFound(path)
-            if response.status_code == 429 or response.status_code >= 500 or (
-                response.status_code == 403
-                and response.headers.get("x-ratelimit-remaining") == "0"
+            if (
+                response.status_code == 429
+                or response.status_code >= 500
+                or (
+                    response.status_code == 403
+                    and response.headers.get("x-ratelimit-remaining") == "0"
+                )
             ):
                 last_error = RuntimeError(f"github {response.status_code} for {path}")
                 retry_after = float(response.headers.get("retry-after") or 0)

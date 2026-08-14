@@ -11,8 +11,10 @@ from pathlib import Path
 import asyncpg
 from loguru import logger as log
 
+from albedo_config import get_model_validation_settings
 from config_validation.fingerprint import compute_fingerprint
-from model_validation import config, db
+from model_validation import db
+from model_validation.opensearch import find_duplicate, health, index_fingerprint
 from model_validation.storage import (
     download_config,
     download_full,
@@ -20,7 +22,6 @@ from model_validation.storage import (
     make_ref,
     safetensors_dtypes,
 )
-from model_validation.opensearch import find_duplicate, health, index_fingerprint
 from model_validation.uploads import put_fault, update_fingerprint_corpus
 from model_validation.validate import (
     check_architecture,
@@ -30,6 +31,8 @@ from model_validation.validate import (
     check_repo,
 )
 from model_validation.validate.chat_template import check as check_chat_template
+
+config = get_model_validation_settings()
 
 _WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
@@ -53,9 +56,18 @@ def _infra(code: str, msg: str) -> Outcome:
     return Outcome("failed", "INFRA_FAULT", code, msg, True, {})
 
 
-_NOT_FOUND_MARKERS = ("not found", "404", "no such", "does not exist", "nosuchkey",
-                      "no revision", "not exist", "norepo",
-                      "gated", "restricted")
+_NOT_FOUND_MARKERS = (
+    "not found",
+    "404",
+    "no such",
+    "does not exist",
+    "nosuchkey",
+    "no revision",
+    "not exist",
+    "norepo",
+    "gated",
+    "restricted",
+)
 
 
 def _is_not_found(exc: Exception) -> bool:
@@ -133,8 +145,7 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         return _infra("download_failed", f"model download failed: {exc}")
     mdir = Path(model_dir)
     if not any(mdir.glob("*.safetensors")):
-        return _miner("incomplete_repo",
-                      "downloaded repo is missing *.safetensors", {})
+        return _miner("incomplete_repo", "downloaded repo is missing *.safetensors", {})
 
     ok, msg = check_index(model_dir, files)
     if not ok:
@@ -152,10 +163,12 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
 
     dim = len(fp.get("norm_vector") or [])
     if dim > config.MAX_KNN_DIM:
-        return _miner("fingerprint_too_large",
-                      f"model fingerprint has {dim} dimensions (tensors), over the "
-                      f"{config.MAX_KNN_DIM} max — non-canonical architecture",
-                      {"fingerprint_dim": dim, "max_dim": config.MAX_KNN_DIM})
+        return _miner(
+            "fingerprint_too_large",
+            f"model fingerprint has {dim} dimensions (tensors), over the "
+            f"{config.MAX_KNN_DIM} max — non-canonical architecture",
+            {"fingerprint_dim": dim, "max_dim": config.MAX_KNN_DIM},
+        )
 
     fp_uri, tensors_uri = update_fingerprint_corpus(model_uri, fp)
 
@@ -168,25 +181,47 @@ def process_model(model_uri: str, hotkey: str) -> Outcome:
         if dedup.get("exact_weights_match"):
             reason = f"duplicate of {dedup['matched_key']}: exact weights match (weights_hash)"
         else:
-            reason = (f"duplicate of {dedup['matched_key']}: similarity "
-                      f"{dedup['similarity']:.6f} >= {dedup['threshold']} threshold")
-        summary = {"reason": reason, "similarity": dedup["similarity"], "threshold": dedup["threshold"],
-                   "duplicate_of": dedup["matched_key"], "duplicate_of_hotkey": dedup["matched_hotkey"],
-                   "candidates_checked": dedup["candidates_checked"],
-                   "exact_weights_match": dedup.get("exact_weights_match", False)}
+            reason = (
+                f"duplicate of {dedup['matched_key']}: similarity "
+                f"{dedup['similarity']:.6f} >= {dedup['threshold']} threshold"
+            )
+        summary = {
+            "reason": reason,
+            "similarity": dedup["similarity"],
+            "threshold": dedup["threshold"],
+            "duplicate_of": dedup["matched_key"],
+            "duplicate_of_hotkey": dedup["matched_hotkey"],
+            "candidates_checked": dedup["candidates_checked"],
+            "exact_weights_match": dedup.get("exact_weights_match", False),
+        }
         fault_detail = {**summary, "fingerprint": fp}
         return _miner("duplicate", reason, summary, fault_detail=fault_detail)
 
     created_at = datetime.now(timezone.utc).isoformat()
     try:
-        index_fingerprint(model_uri, fp, hotkey=hotkey, repo=repo, digest=digest,
-                          model_uri=model_uri, created_at=created_at, weights_hash=whash)
+        index_fingerprint(
+            model_uri,
+            fp,
+            hotkey=hotkey,
+            repo=repo,
+            digest=digest,
+            model_uri=model_uri,
+            created_at=created_at,
+            weights_hash=whash,
+        )
     except Exception as exc:
         return _infra("opensearch_index_failed", f"could not index fingerprint: {exc}")
 
-    return Outcome("done", result_summary={"similarity": dedup["similarity"], "threshold": dedup["threshold"],
-                                           "fingerprint_file": fp_uri, "tensors_file": tensors_uri,
-                                           "n_tensors": len(fp.get("layer_keys", []))})
+    return Outcome(
+        "done",
+        result_summary={
+            "similarity": dedup["similarity"],
+            "threshold": dedup["threshold"],
+            "fingerprint_file": fp_uri,
+            "tensors_file": tensors_uri,
+            "n_tensors": len(fp.get("layer_keys", [])),
+        },
+    )
 
 
 async def _heartbeat_loop(pool, attempt_id) -> None:
@@ -201,35 +236,54 @@ async def _finalize(pool, attempt, outcome: Outcome) -> None:
             await db.mark_done(pool, attempt["id"], outcome.result_summary)
         except asyncpg.UniqueViolationError as exc:
             await db.mark_failed(
-                pool, attempt["id"],
+                pool,
+                attempt["id"],
                 fault_class="MINER_FAULT",
                 fault_code="duplicate",
                 fault_message=f"model_hash already belongs to another submission: {exc}",
-                result_summary=outcome.result_summary)
+                result_summary=outcome.result_summary,
+            )
             log.warning("duplicate model_hash on mark_done — {}", attempt["model_uri"])
             return
         log.info("done — {}", attempt["model_uri"])
     elif outcome.retryable:
         new_state = await db.mark_retry(
-            pool, attempt["id"], attempt_number=attempt["attempt_number"],
-            max_attempts=config.MAX_ATTEMPTS, fault_class=outcome.fault_class,
-            fault_code=outcome.fault_code, fault_message=outcome.fault_message)
+            pool,
+            attempt["id"],
+            attempt_number=attempt["attempt_number"],
+            max_attempts=config.MAX_ATTEMPTS,
+            fault_class=outcome.fault_class,
+            fault_code=outcome.fault_code,
+            fault_message=outcome.fault_message,
+        )
         log.warning("infra fault [{}] {} → {}", outcome.fault_code, attempt["model_uri"], new_state)
     else:
         digest = attempt["model_uri"].partition("@")[2]
         fault_doc = {
-            "model_uri": attempt["model_uri"], "hotkey": attempt["hotkey"],
-            "block_number": attempt["block_number"], "fault_class": outcome.fault_class,
-            "fault_code": outcome.fault_code, "fault_message": outcome.fault_message,
+            "model_uri": attempt["model_uri"],
+            "hotkey": attempt["hotkey"],
+            "block_number": attempt["block_number"],
+            "fault_class": outcome.fault_class,
+            "fault_code": outcome.fault_code,
+            "fault_message": outcome.fault_message,
             **(outcome.fault_detail or {"details": outcome.result_summary}),
         }
         fault_uri = await asyncio.to_thread(put_fault, attempt["hotkey"], digest, fault_doc)
         summary = {**outcome.result_summary, "fault_uri": fault_uri}
-        await db.mark_failed(pool, attempt["id"], fault_class=outcome.fault_class,
-                             fault_code=outcome.fault_code, fault_message=outcome.fault_message,
-                             result_summary=summary)
-        log.warning("miner fault [{}] {} — {}", outcome.fault_code, attempt["model_uri"],
-                    outcome.fault_message)
+        await db.mark_failed(
+            pool,
+            attempt["id"],
+            fault_class=outcome.fault_class,
+            fault_code=outcome.fault_code,
+            fault_message=outcome.fault_message,
+            result_summary=summary,
+        )
+        log.warning(
+            "miner fault [{}] {} — {}",
+            outcome.fault_code,
+            attempt["model_uri"],
+            outcome.fault_message,
+        )
 
 
 async def run() -> None:
@@ -250,8 +304,12 @@ async def run() -> None:
                 await asyncio.sleep(config.POLL_INTERVAL_S)
                 continue
 
-            log.info("claim — block={} hotkey={} {}", attempt["block_number"],
-                     attempt["hotkey"][:10], attempt["model_uri"])
+            log.info(
+                "claim — block={} hotkey={} {}",
+                attempt["block_number"],
+                attempt["hotkey"][:10],
+                attempt["model_uri"],
+            )
 
             sanity_reason = await db.hotkey_sanity_block_reason(pool, attempt["hotkey"])
             if sanity_reason is not None:
@@ -260,10 +318,12 @@ async def run() -> None:
                     attempt["id"],
                     fault_class="MINER_FAULT",
                     fault_code="hotkey_sanity_blocked",
-                    fault_message=f"hotkey blocked from further submissions — prior sanity failure: {sanity_reason}",
+                    fault_message=f"hotkey blocked from further submissions — prior sanity failure: {sanity_reason}",  # noqa: E501
                     result_summary={"hotkey": attempt["hotkey"], "sanity_reason": sanity_reason},
                 )
-                log.info("skip — hotkey sanity-blocked ({}): {}", sanity_reason, attempt["hotkey"][:10])
+                log.info(
+                    "skip — hotkey sanity-blocked ({}): {}", sanity_reason, attempt["hotkey"][:10]
+                )
                 continue
 
             dup_reason = await db.hotkey_duplicate_block_reason(pool, attempt["hotkey"])
@@ -273,7 +333,7 @@ async def run() -> None:
                     attempt["id"],
                     fault_class="MINER_FAULT",
                     fault_code="hotkey_duplicate_blocked",
-                    fault_message=f"hotkey blocked from further submissions — prior duplicate: {dup_reason}",
+                    fault_message=f"hotkey blocked from further submissions — prior duplicate: {dup_reason}",  # noqa: E501
                     result_summary={"hotkey": attempt["hotkey"], "duplicate_reason": dup_reason},
                 )
                 log.info("skip — hotkey duplicate-blocked: {}", attempt["hotkey"][:10])
@@ -294,27 +354,36 @@ async def run() -> None:
             holder = None
             if attempt["commit_hash"]:
                 holder = await db.model_hash_holder(
-                    pool, attempt["commit_hash"], attempt["submission_id"])
+                    pool, attempt["commit_hash"], attempt["submission_id"]
+                )
             if holder is not None:
-                reason = (f"exact duplicate: digest {attempt['commit_hash']} already submitted "
-                          f"by hotkey {holder['hotkey']} ({holder['model_uri']})")
+                reason = (
+                    f"exact duplicate: digest {attempt['commit_hash']} already submitted "
+                    f"by hotkey {holder['hotkey']} ({holder['model_uri']})"
+                )
                 await db.mark_failed(
                     pool,
                     attempt["id"],
                     fault_class="MINER_FAULT",
                     fault_code="duplicate",
                     fault_message=reason,
-                    result_summary={"duplicate_of": holder["model_uri"],
-                                    "duplicate_of_hotkey": holder["hotkey"]},
+                    result_summary={
+                        "duplicate_of": holder["model_uri"],
+                        "duplicate_of_hotkey": holder["hotkey"],
+                    },
                 )
-                log.info("skip — exact digest duplicate of {}: {}",
-                         holder["hotkey"][:10], attempt["hotkey"][:10])
+                log.info(
+                    "skip — exact digest duplicate of {}: {}",
+                    holder["hotkey"][:10],
+                    attempt["hotkey"][:10],
+                )
                 continue
 
             hb = asyncio.create_task(_heartbeat_loop(pool, attempt["id"]))
             try:
                 outcome = await asyncio.to_thread(
-                    process_model, attempt["model_uri"], attempt["hotkey"])
+                    process_model, attempt["model_uri"], attempt["hotkey"]
+                )
             except Exception as exc:
                 outcome = _infra("unexpected", f"{type(exc).__name__}: {exc}")
             finally:
@@ -322,8 +391,9 @@ async def run() -> None:
             try:
                 await _finalize(pool, attempt, outcome)
             except Exception as exc:
-                log.error("finalize failed for {} — left to lease expiry: {}",
-                          attempt["model_uri"], exc)
+                log.error(
+                    "finalize failed for {} — left to lease expiry: {}", attempt["model_uri"], exc
+                )
     finally:
         await pool.close()
 

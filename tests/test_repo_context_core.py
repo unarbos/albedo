@@ -9,6 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from albedo_config import RepoContextSettings
 from repo_context_service.core import (
     GroundingContext,
     RepoContextService,
@@ -18,7 +19,6 @@ from repo_context_service.core import (
     _SnapshotTooLarge,
     parse_instance,
 )
-from repo_context_service.settings import RepoContextSettings
 
 FULL_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 SNAPSHOT_KEY = f"o__r__{FULL_SHA[:12]}"
@@ -150,6 +150,7 @@ def test_resolve_sha_negative_cache_ttl(tmp_path, monkeypatch):
 def _tar_bytes() -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+
         def add(name, data=b"", **attrs):
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -356,8 +357,7 @@ def test_no_bypass_even_with_poisoned_listing(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_resolve_sha", lambda ref: ("o", "r", FULL_SHA))
 
     command = (
-        "```bash\ncat ../../../host_secret.txt evil/host_secret.txt src/app.py "
-        f"{host_secret}\n```"
+        f"```bash\ncat ../../../host_secret.txt evil/host_secret.txt src/app.py {host_secret}\n```"
     )
     block = service.repo_context_for_instance("swe-zero", "o__r-1", command).context
     assert "HOST SECRET" not in block

@@ -11,10 +11,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from albedo_eval_service.sampling import _SHARD_RE, SAMPLING_ALGO
-
+from albedo_eval_service.shared.sampling import _SHARD_RE, SAMPLING_ALGO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_manifest_meta import write_meta
@@ -36,6 +34,7 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
 
 _EDIT_RE = re.compile(
     r"sed\s+-i|tee\s+[\w./-]|cat\s*>|str_replace|git apply|patch\s+-p|applypatch|"
@@ -111,16 +110,25 @@ def _build_source(name: str, root: Path, *, max_workers: int = 8) -> dict:
     name_pattern = shard_glob.rsplit("/", 1)[-1]
     files = sorted(data_dir.glob(name_pattern), key=lambda p: p.name)
     if not files:
-        raise SystemExit(f"{name}: no parquet shards under {data_dir} (run prepare_datasets.py first)")
+        raise SystemExit(
+            f"{name}: no parquet shards under {data_dir} (run prepare_datasets.py first)"
+        )
 
     def _shard(path: Path) -> dict:
         shard_path = f"{name}/data/{path.name}"
         if not _SHARD_RE.match(shard_path):
-            raise SystemExit(f"{name}: shard name {shard_path!r} is not a valid (<source>/)data/train-*.parquet")
+            raise SystemExit(
+                f"{name}: shard name {shard_path!r} is not a valid (<source>/)data/train-*.parquet"
+            )
         rows_meta = _row_meta(
             path, frozenset(SOURCES[name].get("exclude_ids", ())), SOURCES[name].get("language", "")
         )
-        return {"path": shard_path, "rows": len(rows_meta), "sha256": _sha256(path), "rows_meta": rows_meta}
+        return {
+            "path": shard_path,
+            "rows": len(rows_meta),
+            "sha256": _sha256(path),
+            "rows_meta": rows_meta,
+        }
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         shards = list(pool.map(_shard, files))
@@ -183,11 +191,15 @@ def print_manifest_summary(out_path: Path, manifest: dict, digest: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the combined eval dataset manifest.")
-    parser.add_argument("--dataset-root", required=True, help="Root dir holding <source>/data/*.parquet.")
+    parser.add_argument(
+        "--dataset-root", required=True, help="Root dir holding <source>/data/*.parquet."
+    )
     parser.add_argument("--sources", required=True, help="e.g. 'mini-coder,open-swe-traces'")
     parser.add_argument("--version", default=DEFAULT_VERSION, help="Manifest version label.")
     parser.add_argument("--out", default=None, help="Output path (default: <root>/manifest.json).")
-    parser.add_argument("--max-workers", type=int, default=8, help="Parallel shard-hashing workers (default: 8).")
+    parser.add_argument(
+        "--max-workers", type=int, default=8, help="Parallel shard-hashing workers (default: 8)."
+    )
     args = parser.parse_args()
 
     out_path, manifest, digest = write_manifest(

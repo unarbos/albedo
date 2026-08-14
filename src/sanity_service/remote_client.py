@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -15,10 +14,13 @@ _RETRY_BACKOFF_S = 1.0
 
 
 class SanityRemoteClient:
-
-    def __init__(self, *, base_url: str, auth_token: str = "", timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self, *, base_url: str, auth_token: str = "", timeout_seconds: float = 30.0
+    ) -> None:
         headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
-        self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_seconds)
+        self._client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout_seconds
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -53,11 +55,18 @@ class SanityRemoteClient:
     async def ready(self) -> dict[str, Any]:
         r = await self._fetch("GET", "/ready")
         data = r.json()
-        logger.info("[sanity-client] worker ready host_id={} role={} active_runs={}", data.get("host_id"), data.get("role"), data.get("active_runs"),)
+        logger.info(
+            "[sanity-client] worker ready host_id={} role={} active_runs={}",
+            data.get("host_id"),
+            data.get("role"),
+            data.get("active_runs"),
+        )
         return data
 
     async def start_run(self, request: SanityRunRequest) -> dict[str, Any]:
-        logger.info("[sanity-client] submitting run={} digest={:.16}", request.run_id, request.digest)
+        logger.info(
+            "[sanity-client] submitting run={} digest={:.16}", request.run_id, request.digest
+        )
         r = await self._fetch("POST", "/sanity-runs", json=request.model_dump(mode="json"))
         data = r.json()
         logger.info("[sanity-client] run submitted state={}", data.get("state"))

@@ -21,7 +21,7 @@ module.exports = {
       name: "albedo-eval-requeuer",
       cwd: path.resolve(__dirname, ".."),
       script: ".venv/bin/python",
-      args: "-m albedo_eval_service.requeuer",
+      args: "-m albedo_eval_service.control.requeuer",
       cron_restart: "*/1 * * * *",
       autorestart: false,
       env: loadEnv(),

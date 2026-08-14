@@ -5,7 +5,7 @@ import re
 
 from loguru import logger
 
-from config_validation.config import REPO_PATTERN
+from albedo_config.chain_spec import REPO_PATTERN
 from config_validation.models import BACKEND_HF, BACKEND_HIPPIUS, ModelRef
 
 _PREFIX = os.environ.get("ALBEDO_REPO_PREFIX", "albedo-qwen3.6-35b")
@@ -16,7 +16,7 @@ def make_repo(namespace: str, name: str) -> str:
     name = name.strip().lower()
     for p in (f"{_PREFIX}-", _PREFIX):
         if name.startswith(p):
-            name = name[len(p):]
+            name = name[len(p) :]
     name = name.lstrip("-")
     if not namespace or not name:
         raise ValueError("both --namespace and --name (suffix) are required")
@@ -44,8 +44,9 @@ def _auth() -> str | None:
     return None
 
 
-def upload_to_hippius(local_dir: str, repo: str, *, revision: str = "main",
-                      commit_message: str = "") -> ModelRef:
+def upload_to_hippius(
+    local_dir: str, repo: str, *, revision: str = "main", commit_message: str = ""
+) -> ModelRef:
     import hippius_hub
 
     token = _auth()
@@ -65,8 +66,14 @@ def upload_to_hippius(local_dir: str, repo: str, *, revision: str = "main",
     return ModelRef(repo=repo.lower(), digest=digest, backend=BACKEND_HIPPIUS)
 
 
-def upload_to_hf(local_dir: str, repo: str, *, revision: str = "main",
-                 commit_message: str = "", private: bool = False) -> ModelRef:
+def upload_to_hf(
+    local_dir: str,
+    repo: str,
+    *,
+    revision: str = "main",
+    commit_message: str = "",
+    private: bool = False,
+) -> ModelRef:
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
     from huggingface_hub import HfApi
 

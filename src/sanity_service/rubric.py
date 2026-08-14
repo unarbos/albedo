@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -10,6 +9,7 @@ from sanity_service.rubricisity import PROBE_SYSTEM, VIABILITY_SYSTEM
 INJECTION_SYSTEM: str = PROBE_SYSTEM
 
 VIABILITY_SYSTEM: str = VIABILITY_SYSTEM
+
 
 def _context_and_reply(prompt: str, reply: str) -> str:
     return (

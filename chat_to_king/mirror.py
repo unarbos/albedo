@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -6,7 +5,6 @@ import os
 import re
 
 import httpx
-
 from config import KingChatSettings
 
 _HF_API = "https://huggingface.co/api/models"
@@ -46,7 +44,9 @@ def mirror_revision(repo_id: str, original_repo: str) -> str:
 
     mirrored = _original_repo(repo_id, sha, token)
     if mirrored and original_repo and mirrored.lower() != original_repo.lower():
-        raise MirrorNotReady(f"{repo_id} mirrors {mirrored}, not the current king's {original_repo}")
+        raise MirrorNotReady(
+            f"{repo_id} mirrors {mirrored}, not the current king's {original_repo}"
+        )
     return sha
 
 
@@ -57,7 +57,9 @@ def _missing_files(repo_id: str, sha: str, present: set[str], token: str | None)
             missing.append("*.safetensors")
         return missing
     try:
-        weight_map = json.loads(_get(f"{_HF_RAW}/{repo_id}/raw/{sha}/{_INDEX}", token))["weight_map"]
+        weight_map = json.loads(_get(f"{_HF_RAW}/{repo_id}/raw/{sha}/{_INDEX}", token))[
+            "weight_map"
+        ]
     except Exception as exc:
         return missing + [f"{_INDEX} unreadable ({exc})"]
     return missing + sorted({s for s in weight_map.values() if s not in present})

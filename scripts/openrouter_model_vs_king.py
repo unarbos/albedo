@@ -17,12 +17,12 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from albedo_eval_service.judge_config import JudgeSettings
-from albedo_eval_service.judge_core import JUDGE_MODELS, aggregate_scores
+from albedo_config import JudgeSettings
+from albedo_config.models import JUDGE_MODELS
+from albedo_eval_service.judge_core import aggregate_scores
 from albedo_eval_service.judge_llm_client import JudgeLLMClient
-from albedo_eval_service.remote_generation import format_scored_trajectory
-
-COMPLETE_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+from albedo_eval_service.remote.generation import format_scored_trajectory
+from albedo_eval_service.simulator.prompt_simulator import COMPLETE_MARKER
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -281,8 +281,7 @@ async def main_async() -> None:
     ]
     turns_by_id = {
         item["sample_id"]: [
-            {"role": message["role"], "content": message["content"]}
-            for message in item["messages"]
+            {"role": message["role"], "content": message["content"]} for message in item["messages"]
         ]
         for item in active
     }
@@ -293,7 +292,7 @@ async def main_async() -> None:
     started_at = time.monotonic()
     log(
         f"openrouter-vs-king start eval_run_id={args.eval_run_id} model={args.model} "
-        f"samples={len(rows)} turns={turn_count} generation_batch_size={args.generation_batch_size} "
+        f"samples={len(rows)} turns={turn_count} generation_batch_size={args.generation_batch_size} "  # noqa: E501
         f"score_batch_size={args.score_batch_size} judges={judge_models}"
     )
     append_progress(
@@ -330,7 +329,7 @@ async def main_async() -> None:
             for batch_index, batch in enumerate(turn_batches, start=1):
                 batch_started = time.monotonic()
                 log(
-                    f"generation turn {turn_index}/{turn_count} batch {batch_index}/{len(turn_batches)} "
+                    f"generation turn {turn_index}/{turn_count} batch {batch_index}/{len(turn_batches)} "  # noqa: E501
                     f"samples={len(batch)}"
                 )
                 results = await generate_batch(
@@ -354,7 +353,10 @@ async def main_async() -> None:
                     for item in batch
                     if result_by_id.get(item["sample_id"])
                     and not result_by_id[item["sample_id"]].get("error")
-                    and (turn_index < turn_count or assistant_submitted(result_by_id[item["sample_id"]]["text"]))
+                    and (
+                        turn_index < turn_count
+                        or assistant_submitted(result_by_id[item["sample_id"]]["text"])
+                    )
                 ]
                 if needs_observation:
                     observations = await simulate_observations(
@@ -397,7 +399,7 @@ async def main_async() -> None:
                             }
                         )
                 log(
-                    f"generation turn {turn_index}/{turn_count} batch {batch_index}/{len(turn_batches)} "
+                    f"generation turn {turn_index}/{turn_count} batch {batch_index}/{len(turn_batches)} "  # noqa: E501
                     f"done errors={sum(1 for r in results if r.get('error'))} "
                     f"elapsed_s={time.monotonic() - batch_started:.1f}"
                 )
@@ -474,7 +476,7 @@ async def main_async() -> None:
             summary = body.get("summary", {})
             log(
                 f"score batch {index}/{len(score_batches)} done "
-                f"batch_scored={sum(1 for record in batch_records if record.get('scored'))}/{len(batch)} "
+                f"batch_scored={sum(1 for record in batch_records if record.get('scored'))}/{len(batch)} "  # noqa: E501
                 f"king={summary.get('score_king')} chal={summary.get('score_challenger')} "
                 f"elapsed_s={time.monotonic() - batch_started:.1f}"
             )

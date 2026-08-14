@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import fnmatch
 
-from config_validation.checks import CheckOutcome
-from config_validation.config import (
+from albedo_config.chain_spec import (
     ALLOWED_FILES,
     ALLOWED_GLOBS,
     FORBIDDEN_GLOBS,
     REQUIRE_SAFETENSORS,
     REQUIRED_FILES,
 )
+from config_validation.checks import CheckOutcome
 
 NAME = "file_manifest"
 
@@ -28,8 +28,10 @@ def check(files: list[str]) -> CheckOutcome:
 
     allowed_exact = set(REQUIRED_FILES) | set(ALLOWED_FILES)
     extras = sorted(
-        f for f in present
-        if f not in allowed_exact and not _matches_any(f, ALLOWED_GLOBS)
+        f
+        for f in present
+        if f not in allowed_exact
+        and not _matches_any(f, ALLOWED_GLOBS)
         and not _matches_any(f, FORBIDDEN_GLOBS)
     )
 
@@ -46,6 +48,10 @@ def check(files: list[str]) -> CheckOutcome:
         name=NAME,
         ok=ok,
         reason="; ".join(reasons),
-        details={"missing": missing, "forbidden": forbidden, "extras": extras,
-                 "n_files": len(present)},
+        details={
+            "missing": missing,
+            "forbidden": forbidden,
+            "extras": extras,
+            "n_files": len(present),
+        },
     )

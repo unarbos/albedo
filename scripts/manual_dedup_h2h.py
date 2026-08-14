@@ -2,9 +2,7 @@
 
 WORKERS = 16
 
-MODELS = [
-    "path"
-]
+MODELS = ["path"]
 
 DOWNLOAD_REPO = ""
 DOWNLOAD_DIR = "/root/models"
@@ -37,7 +35,7 @@ def bf16_codes(raw: np.ndarray, dtype: str) -> np.ndarray:
     if dtype == "BF16":
         return raw.view("<u2") if raw.dtype != np.uint16 else raw
     u = raw.astype(np.float32).view(np.uint32).astype(np.uint64)
-    return (((u + 0x7FFF + ((u >> 16) & 1)) >> 16).astype(np.uint16))
+    return ((u + 0x7FFF + ((u >> 16) & 1)) >> 16).astype(np.uint16)
 
 
 def decode_bf16(u16: np.ndarray) -> np.ndarray:
@@ -79,20 +77,25 @@ def _compare_tensor(args):
     with open(pa, "rb") as fa, open(pb, "rb") as fb:
         for off in range(0, n, _CHUNK):
             m = min(_CHUNK, n - off)
-            fa.seek(sa + off * _ITEM[da]); ca = bf16_codes(np.frombuffer(fa.read(m * _ITEM[da]), _NP[da]), da)
-            fb.seek(sb + off * _ITEM[db]); cb = bf16_codes(np.frombuffer(fb.read(m * _ITEM[db]), _NP[db]), db)
+            fa.seek(sa + off * _ITEM[da])
+            ca = bf16_codes(np.frombuffer(fa.read(m * _ITEM[da]), _NP[da]), da)
+            fb.seek(sb + off * _ITEM[db])
+            cb = bf16_codes(np.frombuffer(fb.read(m * _ITEM[db]), _NP[db]), db)
             changed += int(np.count_nonzero(ca != cb))
             a = decode_bf16(ca).astype(np.float64)
             b = decode_bf16(cb).astype(np.float64)
             d = a - b
             d2 = d * d
-            S1 += d.sum(); S2 += d2.sum(); S3 += (d2 * d).sum(); S4 += (d2 * d2).sum()
+            S1 += d.sum()
+            S2 += d2.sum()
+            S3 += (d2 * d).sum()
+            S4 += (d2 * d2).sum()
             Sb2 += (b * b).sum()
     mu = S1 / n
     m2 = S2 / n - mu * mu
     rel = float(np.sqrt(S2 / Sb2)) if Sb2 > 0 else 0.0
     if m2 > 0:
-        m4 = S4 / n - 4.0 * mu * S3 / n + 6.0 * mu * mu * S2 / n - 3.0 * mu ** 4
+        m4 = S4 / n - 4.0 * mu * S3 / n + 6.0 * mu * mu * S2 / n - 3.0 * mu**4
         kurt = float(m4 / (m2 * m2) - 3.0)
     else:
         kurt = 0.0
@@ -115,8 +118,7 @@ def compare(name_a, idx_a, name_b, idx_b, pool):
     if not keys:
         print(f"\n{name_a}  vs  {name_b}\n  → DIFFERENT ARCHITECTURE (no shared tensors)")
         return
-    results = [r for r in pool.map(_compare_tensor,
-                                   [(k, idx_a[k], idx_b[k]) for k in keys]) if r]
+    results = [r for r in pool.map(_compare_tensor, [(k, idx_a[k], idx_b[k]) for k in keys]) if r]
     total = sum(r["n"] for r in results)
     changed = sum(r["changed"] for r in results)
     frac = changed / total if total else 0.0
@@ -126,8 +128,10 @@ def compare(name_a, idx_a, name_b, idx_b, pool):
     kurt = float(np.median(kurts)) if kurts else 0.0
     label, reason = verdict(frac, het, kurt)
     print(f"\n{name_a}  vs  {name_b}")
-    print(f"  tensors={len(results)} weights={total/1e9:.2f}B  "
-          f"frac_changed={frac:.4%}  het_cv={het:.3f}  kurt={kurt:.2f}")
+    print(
+        f"  tensors={len(results)} weights={total / 1e9:.2f}B  "
+        f"frac_changed={frac:.4%}  het_cv={het:.3f}  kurt={kurt:.2f}"
+    )
     print(f"  → {label}: {reason}")
 
 
@@ -135,20 +139,28 @@ def maybe_download():
     if not DOWNLOAD_REPO:
         return
     from huggingface_hub import snapshot_download
+
     repo, _, rev = DOWNLOAD_REPO.partition("@")
     token = HF_TOKEN or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     dest = Path(DOWNLOAD_DIR) / repo.replace("/", "__")
     print(f"downloading {DOWNLOAD_REPO} → {dest} ...")
-    path = snapshot_download(repo_id=repo, revision=rev or None, token=token,
-                             local_dir=str(dest),
-                             ignore_patterns=["*.md", ".gitattributes", "LICENSE"])
+    path = snapshot_download(
+        repo_id=repo,
+        revision=rev or None,
+        token=token,
+        local_dir=str(dest),
+        ignore_patterns=["*.md", ".gitattributes", "LICENSE"],
+    )
     MODELS.append(path)
 
 
 def main():
     maybe_download()
-    models = [m for m in MODELS if Path(m, "model.safetensors.index.json").exists()
-              or list(Path(m).glob("*.safetensors"))]
+    models = [
+        m
+        for m in MODELS
+        if Path(m, "model.safetensors.index.json").exists() or list(Path(m).glob("*.safetensors"))
+    ]
     if len(models) < 2:
         sys.exit("need at least 2 valid model dirs in MODELS")
     print(f"indexing {len(models)} model(s) ...")

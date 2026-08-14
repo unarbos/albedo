@@ -19,8 +19,9 @@ def check_dtypes(shard_dtypes: dict[str, set[str]]) -> tuple[bool, str]:
     for name in sorted(shard_dtypes):
         bad = sorted(shard_dtypes[name] - ALLOWED_DTYPES)
         if bad:
-            return False, (f"model weights must be 16-bit (F16/BF16); shard {name} "
-                           f"has dtype(s): {bad}")
+            return False, (
+                f"model weights must be 16-bit (F16/BF16); shard {name} has dtype(s): {bad}"
+            )
     return True, ""
 
 
@@ -30,6 +31,8 @@ def check(model_dir: str) -> tuple[bool, str]:
         try:
             shard_dtypes[shard.name] = _shard_dtypes(shard)
         except Exception as exc:
-            logger.warning(f"[hippius-val] could not read safetensors header of {shard.name}: {exc}")
+            logger.warning(
+                f"[hippius-val] could not read safetensors header of {shard.name}: {exc}"
+            )
             return False, f"could not read safetensors header of {shard.name}: {exc}"
     return check_dtypes(shard_dtypes)

@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 
+from config import KingChatSettings, get_king_chat_settings
 from loguru import logger
-
-from config import get_king_chat_settings, KingChatSettings
-
 
 _SETTINGS = get_king_chat_settings()
 os.environ["ALBEDO_MODEL_CACHE_DIR"] = _SETTINGS.models_dir
@@ -53,8 +51,11 @@ def main() -> None:
     settings = _SETTINGS
     logger.info(
         "[king-chat] starting: gateway :{} -> vLLM :{} (served as {!r}), king dir {}, poll {}s",
-        settings.gateway_port, settings.vllm_port, settings.served_model_name,
-        settings.models_dir, settings.poll_interval_s,
+        settings.gateway_port,
+        settings.vllm_port,
+        settings.served_model_name,
+        settings.models_dir,
+        settings.poll_interval_s,
     )
     engine = KingVllmEngine(settings)
     app = create_app(engine, settings)

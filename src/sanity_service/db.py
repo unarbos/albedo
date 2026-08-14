@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -11,7 +10,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from albedo_eval_service.models import RemoteHost
+from albedo_eval_service.shared.models import RemoteHost
 
 
 @dataclass(frozen=True)
@@ -37,8 +36,9 @@ class ActivePreEval:
 
 
 class PreEvalRepository:
-
-    def __init__(self, database_url: str, *, min_free_gpus: int = 1, max_retry_count: int = 5) -> None:
+    def __init__(
+        self, database_url: str, *, min_free_gpus: int = 1, max_retry_count: int = 5
+    ) -> None:
         self.database_url = database_url
         self._min_free_gpus = min_free_gpus
         self._max_retry_count = max_retry_count
@@ -46,10 +46,14 @@ class PreEvalRepository:
     def _connect(self) -> psycopg.Connection:
         return psycopg.connect(self.database_url, row_factory=dict_row)
 
-    def claim_next_pre_eval(self, *, worker_id: str, lease_seconds: int, request_builder: Callable[..., Any]) -> ClaimedPreEval | None:
+    def claim_next_pre_eval(
+        self, *, worker_id: str, lease_seconds: int, request_builder: Callable[..., Any]
+    ) -> ClaimedPreEval | None:
         lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
         with self._connect() as conn, conn.transaction():
-            locked = conn.execute("SELECT pg_try_advisory_xact_lock(hashtext('pre_eval')) AS locked").fetchone()
+            locked = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext('pre_eval')) AS locked"
+            ).fetchone()
             if not locked or not locked["locked"]:
                 return None
 
@@ -145,7 +149,9 @@ class PreEvalRepository:
                 (lease_expires_at, attempt_id),
             )
 
-    def record_remote_event(self, *, submission_id: UUID, attempt_id: UUID, event: dict[str, Any]) -> None:
+    def record_remote_event(
+        self, *, submission_id: UUID, attempt_id: UUID, event: dict[str, Any]
+    ) -> None:
         with self._connect() as conn, conn.transaction():
             self.record_event_inside_tx(
                 conn,
@@ -199,7 +205,17 @@ class PreEvalRepository:
             )
         return active
 
-    def mark_pre_eval_passed(self, *, submission_id: UUID, attempt_id: UUID, repo: str, digest: str, responses: list[str], reason: str, timing: dict[str, Any],) -> None:
+    def mark_pre_eval_passed(
+        self,
+        *,
+        submission_id: UUID,
+        attempt_id: UUID,
+        repo: str,
+        digest: str,
+        responses: list[str],
+        reason: str,
+        timing: dict[str, Any],
+    ) -> None:
         with self._connect() as conn, conn.transaction():
             self._write_sanity_result(conn, repo, digest, True, reason, responses, timing)
             conn.execute(
@@ -220,7 +236,20 @@ class PreEvalRepository:
                 data={},
             )
 
-    def mark_pre_eval_failed(self, *, submission_id: UUID, attempt_id: UUID, repo: str, digest: str, fault_class: str, fault_code: str, fault_message: str, retryable: bool, responses: list[str] | None = None, artifact_uri: str | None = None,) -> None:
+    def mark_pre_eval_failed(
+        self,
+        *,
+        submission_id: UUID,
+        attempt_id: UUID,
+        repo: str,
+        digest: str,
+        fault_class: str,
+        fault_code: str,
+        fault_message: str,
+        retryable: bool,
+        responses: list[str] | None = None,
+        artifact_uri: str | None = None,
+    ) -> None:
         attempt_state = "FAILED_RETRYABLE" if retryable else "FAILED_TERMINAL"
         with self._connect() as conn, conn.transaction():
             if not retryable:
@@ -249,7 +278,15 @@ class PreEvalRepository:
                     retry_count = retry_count + 1, updated_at = now()
                 WHERE id = %s
                 """,
-                (retryable, self._max_retry_count, retryable, fault_class, fault_code, fault_message, submission_id),
+                (
+                    retryable,
+                    self._max_retry_count,
+                    retryable,
+                    fault_class,
+                    fault_code,
+                    fault_message,
+                    submission_id,
+                ),
             )
             self.record_event_inside_tx(
                 conn,
@@ -261,7 +298,9 @@ class PreEvalRepository:
                 data={"fault_class": fault_class, "fault_code": fault_code, "retryable": retryable},
             )
 
-    def release_pre_eval_attempt(self, *, submission_id: UUID, attempt_id: UUID, fault_message: str) -> None:
+    def release_pre_eval_attempt(
+        self, *, submission_id: UUID, attempt_id: UUID, fault_message: str
+    ) -> None:
         with self._connect() as conn, conn.transaction():
             conn.execute(
                 """
@@ -328,7 +367,9 @@ class PreEvalRepository:
             return len(rows)
 
     @staticmethod
-    def _insert_sanity_artifact(conn: psycopg.Connection, submission_id: UUID, attempt_id: UUID, uri: str) -> None:
+    def _insert_sanity_artifact(
+        conn: psycopg.Connection, submission_id: UUID, attempt_id: UUID, uri: str
+    ) -> None:
         bucket, object_key = (None, None)
         if uri.startswith("s3://"):
             bucket, _, object_key = uri[len("s3://") :].partition("/")
@@ -344,7 +385,15 @@ class PreEvalRepository:
         )
 
     @staticmethod
-    def _write_sanity_result(conn: psycopg.Connection, repo: str, digest: str, passed: bool, reason: str, responses: list[str], timing: dict[str, Any],) -> None:
+    def _write_sanity_result(
+        conn: psycopg.Connection,
+        repo: str,
+        digest: str,
+        passed: bool,
+        reason: str,
+        responses: list[str],
+        timing: dict[str, Any],
+    ) -> None:
         conn.execute(
             """
             INSERT INTO sanity_results (repo, digest, passed, reason, responses, timing, checked_at)
@@ -355,7 +404,16 @@ class PreEvalRepository:
         )
 
     @staticmethod
-    def record_event_inside_tx(conn: psycopg.Connection, *, submission_id: UUID, stage_attempt_id: UUID | None, event_type: str, severity: str, message: str, data: dict[str, Any],) -> None:
+    def record_event_inside_tx(
+        conn: psycopg.Connection,
+        *,
+        submission_id: UUID,
+        stage_attempt_id: UUID | None,
+        event_type: str,
+        severity: str,
+        message: str,
+        data: dict[str, Any],
+    ) -> None:
         conn.execute(
             """
             INSERT INTO events (id, submission_id, stage_attempt_id, event_type, severity, message, data)

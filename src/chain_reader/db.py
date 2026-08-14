@@ -5,10 +5,10 @@ import json
 
 import asyncpg
 
-from chain_reader.chain import Commit
 from chain_guard import db as guard
-from chain_guard import uploads as guard_s3
 from chain_guard import swap as guard_swap
+from chain_guard import uploads as guard_s3
+from chain_reader.chain import Commit
 
 
 async def connect(db_url: str) -> asyncpg.Pool:
@@ -112,16 +112,18 @@ async def insert_new_commits(pool: asyncpg.Pool, commits: list[Commit]) -> int:
                     "chain_commit_discovered",
                     "INFO",
                     "Chain reader discovered model commit and created submission",
-                    json.dumps({
-                        "chain_commit_id": str(row["id"]),
-                        "netuid": c.netuid,
-                        "block_number": c.block_number,
-                        "block_hash": c.block_hash,
-                        "hotkey": c.hotkey,
-                        "uid": c.uid,
-                        "model_uri": c.model_uri,
-                        "payload_hash": c.payload_hash,
-                    }),
+                    json.dumps(
+                        {
+                            "chain_commit_id": str(row["id"]),
+                            "netuid": c.netuid,
+                            "block_number": c.block_number,
+                            "block_hash": c.block_hash,
+                            "hotkey": c.hotkey,
+                            "uid": c.uid,
+                            "model_uri": c.model_uri,
+                            "payload_hash": c.payload_hash,
+                        }
+                    ),
                 )
     return inserted
 
@@ -183,7 +185,9 @@ async def _reject_reused_commit(
         "uid": c.uid,
         "model_uri": c.model_uri,
         "payload_hash": c.payload_hash,
-        "prior_submission_id": str(prior["submission_id"]) if prior and prior["submission_id"] else None,
+        "prior_submission_id": str(prior["submission_id"])
+        if prior and prior["submission_id"]
+        else None,
         "prior_source": prior["source"] if prior else None,
         "prior_block_number": prior["block_number"] if prior else None,
         "swap": swap_detail,

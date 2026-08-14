@@ -31,8 +31,10 @@ def load() -> None:
         if files:
             data[model_dir.name] = files
     n = sum(len(rows) for files in data.values() for rows in files.values())
-    print(f"loaded {n} samples from {sum(len(f) for f in data.values())} parquets "
-          f"({len(data)} models)")
+    print(
+        f"loaded {n} samples from {sum(len(f) for f in data.values())} parquets "
+        f"({len(data)} models)"
+    )
 
 
 PAGE = r"""<!DOCTYPE html>
@@ -223,14 +225,19 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif url.path == "/api/index":
-            self._json({m: {f: len(rows) for f, rows in files.items()}
-                        for m, files in data.items()})
+            self._json(
+                {m: {f: len(rows) for f, rows in files.items()} for m, files in data.items()}
+            )
         elif url.path == "/api/list":
             rows = data.get(q.get("model", ""), {}).get(q.get("file", ""))
             if rows is None:
                 return self._json({"error": "not found"}, 404)
-            self._json([{"idx": i, "sample_id": r["sample_id"], "n_messages": len(r["messages"])}
-                        for i, r in enumerate(rows)])
+            self._json(
+                [
+                    {"idx": i, "sample_id": r["sample_id"], "n_messages": len(r["messages"])}
+                    for i, r in enumerate(rows)
+                ]
+            )
         elif url.path == "/api/sample":
             rows = data.get(q.get("model", ""), {}).get(q.get("file", ""))
             try:
@@ -249,8 +256,12 @@ def main():
     global BASE
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--dir", type=Path, default=None,
-                    help="dataset dir (default: <data_dir>/hf_out from config)")
+    ap.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        help="dataset dir (default: <data_dir>/hf_out from config)",
+    )
     args = ap.parse_args()
     BASE = args.dir if args.dir else Config().out_dir
     load()

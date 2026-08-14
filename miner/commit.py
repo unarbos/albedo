@@ -34,7 +34,9 @@ def registration_check(coldkey: str, hotkey: str, netuid: int, network: str) -> 
     return ss58, ss58 in hotkeys
 
 
-def preview(ref: ModelRef, *, ss58: str, coldkey: str, hotkey: str, netuid: int, network: str) -> str:
+def preview(
+    ref: ModelRef, *, ss58: str, coldkey: str, hotkey: str, netuid: int, network: str
+) -> str:
     return (
         f"about to commit on-chain:\n"
         f"  payload : {build_reveal(ref)}\n"
@@ -52,19 +54,24 @@ def submit(ref: ModelRef, *, coldkey: str, hotkey: str, netuid: int, network: st
     st = bt.Subtensor(network=network)
     logger.info(f"submitting reveal on netuid {netuid}: {build_reveal(ref)}")
     result = st.set_reveal_commitment(
-        wallet=wallet, netuid=netuid, data=build_reveal(ref),
+        wallet=wallet,
+        netuid=netuid,
+        data=build_reveal(ref),
         blocks_until_reveal=1,
     )
     logger.info("reveal submitted")
     return result
 
 
-def commit_reveal(ref: ModelRef, *, coldkey: str, hotkey: str, netuid: int, network: str,
-                  assume_yes: bool = False):
+def commit_reveal(
+    ref: ModelRef, *, coldkey: str, hotkey: str, netuid: int, network: str, assume_yes: bool = False
+):
     ss58, registered = registration_check(coldkey, hotkey, netuid, network)
     if not registered:
-        raise SystemExit(f"hotkey {ss58} is NOT registered on netuid {netuid} ({network}); "
-                         f"register it before committing")
+        raise SystemExit(
+            f"hotkey {ss58} is NOT registered on netuid {netuid} ({network}); "
+            f"register it before committing"
+        )
     logger.info(f"hotkey {ss58} is registered on netuid {netuid}")
     print(preview(ref, ss58=ss58, coldkey=coldkey, hotkey=hotkey, netuid=netuid, network=network))
     if not assume_yes:

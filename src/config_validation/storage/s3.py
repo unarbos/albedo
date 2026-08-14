@@ -26,8 +26,9 @@ def _client():
         aws_access_key_id=_ACCESS_KEY,
         aws_secret_access_key=_SECRET_KEY,
         region_name=_REGION,
-        config=Config(connect_timeout=15, read_timeout=45,
-                      retries={"mode": "adaptive", "max_attempts": 3}),
+        config=Config(
+            connect_timeout=15, read_timeout=45, retries={"mode": "adaptive", "max_attempts": 3}
+        ),
     )
 
 

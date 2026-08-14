@@ -16,7 +16,7 @@ def _load_file(path: Path) -> None:
         key, _, val = line.partition("=")
         key = key.strip()
         if key.startswith("export "):
-            key = key[len("export "):].strip()
+            key = key[len("export ") :].strip()
         os.environ.setdefault(key, val.strip().strip('"').strip("'"))
 
 

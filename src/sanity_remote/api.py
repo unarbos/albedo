@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Annotated
@@ -6,7 +5,7 @@ from typing import Annotated
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from loguru import logger
 
-from sanity_remote.config import SanityRemoteSettings, get_remote_settings
+from albedo_config import SanityRemoteSettings, get_sanity_remote_settings
 from sanity_remote.models import SanityRunRequest
 from sanity_remote.state import SanityRunStore
 from sanity_remote.worker import generate, teardown
@@ -15,7 +14,10 @@ app = FastAPI(title="Albedo Sanity Remote Worker", version="0.1.0")
 store = SanityRunStore()
 
 
-def require_auth(authorization: Annotated[str | None, Header()] = None, settings: SanityRemoteSettings = Depends(get_remote_settings),) -> None:
+def require_auth(
+    authorization: Annotated[str | None, Header()] = None,
+    settings: SanityRemoteSettings = Depends(get_sanity_remote_settings),
+) -> None:
     if not settings.auth_token:
         return
     if authorization != f"Bearer {settings.auth_token}":
@@ -28,7 +30,10 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-def ready(settings: SanityRemoteSettings = Depends(get_remote_settings), _: None = Depends(require_auth)) -> dict[str, object]:
+def ready(
+    settings: SanityRemoteSettings = Depends(get_sanity_remote_settings),
+    _: None = Depends(require_auth),
+) -> dict[str, object]:
     return {
         "ready": settings.ready,
         "host_id": settings.host_id,
@@ -38,7 +43,10 @@ def ready(settings: SanityRemoteSettings = Depends(get_remote_settings), _: None
 
 
 @app.get("/capacity")
-def capacity(settings: SanityRemoteSettings = Depends(get_remote_settings), _: None = Depends(require_auth)) -> dict[str, object]:
+def capacity(
+    settings: SanityRemoteSettings = Depends(get_sanity_remote_settings),
+    _: None = Depends(require_auth),
+) -> dict[str, object]:
     return {
         "host_id": settings.host_id,
         "role": settings.host_role,
@@ -47,13 +55,20 @@ def capacity(settings: SanityRemoteSettings = Depends(get_remote_settings), _: N
 
 
 @app.post("/sanity-runs")
-async def start_run(request: SanityRunRequest, background_tasks: BackgroundTasks, settings: SanityRemoteSettings = Depends(get_remote_settings), _: None = Depends(require_auth),) -> dict[str, str]:
+async def start_run(
+    request: SanityRunRequest,
+    background_tasks: BackgroundTasks,
+    settings: SanityRemoteSettings = Depends(get_sanity_remote_settings),
+    _: None = Depends(require_auth),
+) -> dict[str, str]:
     if not settings.ready:
         raise HTTPException(status_code=503, detail="sanity worker is not ready")
     active = store.list_active()
     incoming = getattr(request, "run_id", None)
     if active and (incoming is None or all(r.run_id != incoming for r in active)):
-        raise HTTPException(status_code=409, detail=f"sanity worker busy: {len(active)} active run(s)")
+        raise HTTPException(
+            status_code=409, detail=f"sanity worker busy: {len(active)} active run(s)"
+        )
     run = store.start(request)
     queued = store.mark_worker_started(run.run_id)
     if queued is not None:
@@ -73,7 +88,9 @@ def get_run(run_id: str, _: None = Depends(require_auth)) -> dict[str, object]:
 
 
 @app.get("/sanity-runs/{run_id}/events")
-def get_run_events(run_id: str, _: None = Depends(require_auth)) -> dict[str, list[dict[str, object]]]:
+def get_run_events(
+    run_id: str, _: None = Depends(require_auth)
+) -> dict[str, list[dict[str, object]]]:
     run = store.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run not found")
@@ -97,12 +114,9 @@ async def teardown_worker(_: None = Depends(require_auth)) -> dict[str, str]:
 
 
 def main() -> None:
-    import os
-
     import uvicorn
 
-    settings = get_remote_settings()
-    os.environ.setdefault("ALBEDO_MODEL_CACHE_DIR", settings.model_cache_dir)
+    settings = get_sanity_remote_settings()
     uvicorn.run(
         "sanity_remote.api:app",
         host="0.0.0.0",

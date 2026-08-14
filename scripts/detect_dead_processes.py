@@ -70,6 +70,5 @@ def main() -> None:
     print("Detection only — no processes were signalled or killed.")
 
 
-
 if __name__ == "__main__":
     main()

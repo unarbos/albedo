@@ -14,11 +14,23 @@ import psycopg
 
 GENESIS_MARKERS = ("teutonic__qwen3.6-35b-a3b-genesis", "qwen3.6-35b-a3b-genesis")
 IN_FLIGHT = {
-    "SUBMITTED", "HIPPIUS_RUNNING", "HIPPIUS_RETRYABLE", "HIPPIUS_VALIDATED",
-    "PRE_EVAL_QUEUED", "PRE_EVAL_RUNNING", "PRE_EVAL_RETRYABLE", "PRE_EVAL_PASSED",
-    "EVAL_QUEUED", "EVAL_RUNNING", "EVAL_RETRYABLE", "EVAL_WIN",
-    "SET_REIGN_RUNNING", "SET_REIGN_RETRYABLE", "REIGN_SET",
-    "WEIGHT_SET_RUNNING", "WEIGHT_SET_RETRYABLE",
+    "SUBMITTED",
+    "HIPPIUS_RUNNING",
+    "HIPPIUS_RETRYABLE",
+    "HIPPIUS_VALIDATED",
+    "PRE_EVAL_QUEUED",
+    "PRE_EVAL_RUNNING",
+    "PRE_EVAL_RETRYABLE",
+    "PRE_EVAL_PASSED",
+    "EVAL_QUEUED",
+    "EVAL_RUNNING",
+    "EVAL_RETRYABLE",
+    "EVAL_WIN",
+    "SET_REIGN_RUNNING",
+    "SET_REIGN_RETRYABLE",
+    "REIGN_SET",
+    "WEIGHT_SET_RUNNING",
+    "WEIGHT_SET_RETRYABLE",
 }
 FAILED = {"TERMINAL_INVALID", "TERMINAL_INFRA_FAILED"}
 
@@ -47,8 +59,12 @@ def load_env() -> None:
 
 
 def connect():
-    required = ("ALBEDO_POSTGRES_HOST", "ALBEDO_POSTGRES_DB",
-                "ALBEDO_POSTGRES_USER", "ALBEDO_POSTGRES_PASSWORD")
+    required = (
+        "ALBEDO_POSTGRES_HOST",
+        "ALBEDO_POSTGRES_DB",
+        "ALBEDO_POSTGRES_USER",
+        "ALBEDO_POSTGRES_PASSWORD",
+    )
     missing = [v for v in required if not os.environ.get(v)]
     if missing:
         raise SystemExit("missing required DB env vars (set in env / .env): " + ", ".join(missing))
@@ -81,10 +97,13 @@ def load_db_state(cur):
         """SELECT ms.model_uri FROM reigns r
            JOIN reign_members rm ON rm.reign_id = r.id
            JOIN model_submissions ms ON ms.id = rm.submission_id
-           WHERE r.state = 'ACTIVE' AND ms.model_uri IS NOT NULL""")
+           WHERE r.state = 'ACTIVE' AND ms.model_uri IS NOT NULL"""
+    )
     king = {d for d in (digest_of(r[0]) for r in cur.fetchall()) if d}
 
-    cur.execute("SELECT model_uri, state, finished_at FROM model_submissions WHERE model_uri IS NOT NULL")
+    cur.execute(
+        "SELECT model_uri, state, finished_at FROM model_submissions WHERE model_uri IS NOT NULL"
+    )
     subs: dict[str, list[tuple[str, object]]] = {}
     for uri, state, finished in cur.fetchall():
         d = digest_of(uri)
@@ -119,7 +138,7 @@ def _scan_repo_dir(repo: Path):
         if not model.is_dir():
             continue
         is_partial = model.name.endswith(".partial")
-        digest = model.name[:-len(".partial")] if is_partial else model.name
+        digest = model.name[: -len(".partial")] if is_partial else model.name
         yield model, repo.name, digest, is_partial
 
 
@@ -176,8 +195,10 @@ def run_once(cache_dir: Path, grace_hours: float, execute: bool) -> None:
     with connect() as conn, conn.cursor() as cur:
         king, subs = load_db_state(cur)
     now = datetime.now(timezone.utc)
-    log(f"king models (active reign): {len(king)} | known digests: {len(subs)} | "
-        f"cache={cache_dir} grace={grace_hours}h execute={execute}")
+    log(
+        f"king models (active reign): {len(king)} | known digests: {len(subs)} | "
+        f"cache={cache_dir} grace={grace_hours}h execute={execute}"
+    )
     kept = deleted = 0
     freed = 0
     for model_dir, repo, digest, is_partial in scan(cache_dir):
@@ -193,8 +214,10 @@ def run_once(cache_dir: Path, grace_hours: float, execute: bool) -> None:
         else:
             log(f"keep   {label} — {reason}")
             kept += 1
-    log(f"=== {'EXECUTED' if execute else 'DRY-RUN'}: kept {kept}, "
-        f"{'deleted' if execute else 'would delete'} {deleted} ({freed / 1e9:.1f} GB) ===")
+    log(
+        f"=== {'EXECUTED' if execute else 'DRY-RUN'}: kept {kept}, "
+        f"{'deleted' if execute else 'would delete'} {deleted} ({freed / 1e9:.1f} GB) ==="
+    )
 
 
 def acquire_lock():
@@ -204,7 +227,8 @@ def acquire_lock():
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         raise SystemExit(
-            f"another eval_cache_cleanup instance is already running (lock held: {lock_path})")
+            f"another eval_cache_cleanup instance is already running (lock held: {lock_path})"
+        )
     handle.write(f"{os.getpid()}\n")
     handle.flush()
     return handle
@@ -215,18 +239,28 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--execute", action="store_true", help="actually delete (default: dry-run)")
     ap.add_argument("--once", action="store_true", help="single pass then exit (default: loop)")
-    ap.add_argument("--interval", type=float,
-                    default=float(os.environ.get("CLEANUP_POLL_SECONDS", "60")),
-                    help="seconds between passes in service mode")
-    ap.add_argument("--grace-hours", type=float,
-                    default=float(os.environ.get("CLEANUP_FAIL_GRACE_HOURS", "2")),
-                    help="keep failed models this long before deleting")
-    ap.add_argument("--cache-dir",
-                    default=(os.environ.get("EVAL_CLEAN_WATCH_DIR")
-                             or os.environ.get("ALBEDO_CACHE_DIR", "/root/albedo-models")),
-                    help="dir to watch for cached models (env: EVAL_CLEAN_WATCH_DIR)")
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=float(os.environ.get("CLEANUP_POLL_SECONDS", "60")),
+        help="seconds between passes in service mode",
+    )
+    ap.add_argument(
+        "--grace-hours",
+        type=float,
+        default=float(os.environ.get("CLEANUP_FAIL_GRACE_HOURS", "2")),
+        help="keep failed models this long before deleting",
+    )
+    ap.add_argument(
+        "--cache-dir",
+        default=(
+            os.environ.get("EVAL_CLEAN_WATCH_DIR")
+            or os.environ.get("ALBEDO_CACHE_DIR", "/root/albedo-models")
+        ),
+        help="dir to watch for cached models (env: EVAL_CLEAN_WATCH_DIR)",
+    )
     args = ap.parse_args()
-    lock = acquire_lock()
+    _lock = acquire_lock()
     execute = args.execute or os.environ.get("CLEANUP_EXECUTE") == "1"
     cache_dir = Path(args.cache_dir)
 

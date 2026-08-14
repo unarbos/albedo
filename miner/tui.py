@@ -6,7 +6,9 @@ import os
 import shlex
 import threading
 
-from miner import check_commits, commit as commit_mod, publish, register as register_mod, upload, validate
+from miner import check_commits, publish, upload, validate
+from miner import commit as commit_mod
+from miner import register as register_mod
 
 _GLYPH = {
     "pending": "<grey>⬜</grey>",
@@ -14,9 +16,11 @@ _GLYPH = {
     "ok": "<ansigreen>✓</ansigreen>",
     "fail": "<ansired>✗</ansired>",
 }
-_HELP = ("check-model (--path | --repo --digest) · upload --path --namespace --name · "
-         "register --coldkey --hotkey · commit --repo --digest --coldkey --hotkey · "
-         "check-commit [--hotkey] · publish --path --namespace --name --coldkey --hotkey · help · off")
+_HELP = (
+    "check-model (--path | --repo --digest) · upload --path --namespace --name · "
+    "register --coldkey --hotkey · commit --repo --digest --coldkey --hotkey · "
+    "check-commit [--hotkey] · publish --path --namespace --name --coldkey --hotkey · help · off"
+)
 
 
 class _State:
@@ -30,7 +34,6 @@ class _State:
 
 
 class _LogWriter:
-
     def __init__(self, log):
         self._log = log
         self._buf = ""
@@ -53,10 +56,12 @@ def _clipboard_text() -> str:
     import shutil
     import subprocess
 
-    for cmd in (["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"],
-                ["wl-paste", "-n"],
-                ["xclip", "-selection", "clipboard", "-o"],
-                ["xsel", "-b", "-o"]):
+    for cmd in (
+        ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"],
+        ["wl-paste", "-n"],
+        ["xclip", "-selection", "clipboard", "-o"],
+        ["xsel", "-b", "-o"],
+    ):
         if shutil.which(cmd[0]):
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
@@ -75,9 +80,11 @@ def _parse_opts(tokens: list[str]) -> dict:
         if t.startswith("--"):
             key = t[2:]
             if i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
-                opts[key] = tokens[i + 1]; i += 2
+                opts[key] = tokens[i + 1]
+                i += 2
             else:
-                opts[key] = True; i += 1
+                opts[key] = True
+                i += 1
         else:
             i += 1
     return opts
@@ -99,7 +106,8 @@ def _dispatch(cmd, opts, state, log, confirm, refresh, netuid, network):
         elif opts.get("repo") and opts.get("digest"):
             ok, res = validate.validate_remote(opts["repo"], opts["digest"])
         else:
-            log("check-model needs --path OR (--repo and --digest)"); return
+            log("check-model needs --path OR (--repo and --digest)")
+            return
         for k, v in res.items():
             log(f"  {k}: {'PASS' if v['ok'] else 'FAIL — ' + v['reason']}")
         log("VALID" if ok else "INVALID")
@@ -110,34 +118,55 @@ def _dispatch(cmd, opts, state, log, confirm, refresh, netuid, network):
         log(f"  reveal: {commit_mod.build_reveal(ref)}")
     elif cmd == "commit":
         from config_validation.models import ModelRef
+
         ref = ModelRef(repo=opts["repo"], digest=opts["digest"])
         nu, nw = int(opts.get("netuid", netuid)), opts.get("network", network)
         ss58, reg = commit_mod.registration_check(opts["coldkey"], opts["hotkey"], nu, nw)
         log(f"  hotkey {ss58} — {'registered' if reg else 'NOT registered'}")
         if not reg:
-            log("aborted — hotkey not registered"); return
-        if not confirm(commit_mod.preview(ref, ss58=ss58, coldkey=opts["coldkey"],
-                                          hotkey=opts["hotkey"], netuid=nu, network=nw)):
-            log("aborted — nothing committed"); return
-        commit_mod.submit(ref, coldkey=opts["coldkey"], hotkey=opts["hotkey"], netuid=nu, network=nw)
+            log("aborted — hotkey not registered")
+            return
+        if not confirm(
+            commit_mod.preview(
+                ref,
+                ss58=ss58,
+                coldkey=opts["coldkey"],
+                hotkey=opts["hotkey"],
+                netuid=nu,
+                network=nw,
+            )
+        ):
+            log("aborted — nothing committed")
+            return
+        commit_mod.submit(
+            ref, coldkey=opts["coldkey"], hotkey=opts["hotkey"], netuid=nu, network=nw
+        )
         log("committed")
     elif cmd == "register":
         nu, nw = int(opts.get("netuid", netuid)), opts.get("network", network)
         uid = register_mod.register(opts["coldkey"], opts["hotkey"], nu, nw, confirm=confirm)
         log(f"uid {uid}" if uid is not None else "not registered")
     elif cmd == "check-commit":
-        commits = check_commits.fetch(int(opts.get("netuid", netuid)),
-                                      opts.get("network", network), opts.get("hotkey"))
+        commits = check_commits.fetch(
+            int(opts.get("netuid", netuid)), opts.get("network", network), opts.get("hotkey")
+        )
         for c in commits:
             log(f"  block={c.block_number} {c.model_uri}")
         log(f"{len(commits)} commit(s)")
     elif cmd == "publish":
         state.reset_steps()
         ok, _ = publish.run(
-            path=opts["path"], namespace=opts["namespace"], name=opts["name"],
-            coldkey=opts["coldkey"], hotkey=opts["hotkey"],
-            netuid=int(opts.get("netuid", netuid)), network=opts.get("network", network),
-            on_step=on_step, log=log, confirm=confirm)
+            path=opts["path"],
+            namespace=opts["namespace"],
+            name=opts["name"],
+            coldkey=opts["coldkey"],
+            hotkey=opts["hotkey"],
+            netuid=int(opts.get("netuid", netuid)),
+            network=opts.get("network", network),
+            on_step=on_step,
+            log=log,
+            confirm=confirm,
+        )
         log("PUBLISHED" if ok else "stopped")
     else:
         log(f"unknown command: {cmd}  (try `help`)")
@@ -169,10 +198,14 @@ def run() -> None:
     cevent = threading.Event()
     follow = {"on": True}
 
-    log_area = TextArea(text="welcome — type a command (`help`), `off` to quit.\n",
-                        read_only=True, scrollbar=True, focusable=True, wrap_lines=True)
-    input_area = TextArea(height=1, prompt="albedo> ", multiline=False,
-                          history=InMemoryHistory())
+    log_area = TextArea(
+        text="welcome — type a command (`help`), `off` to quit.\n",
+        read_only=True,
+        scrollbar=True,
+        focusable=True,
+        wrap_lines=True,
+    )
+    input_area = TextArea(height=1, prompt="albedo> ", multiline=False, history=InMemoryHistory())
 
     def _ui_append(line: str):
         text = log_area.text + line + "\n"
@@ -205,6 +238,7 @@ def run() -> None:
 
     writer = _LogWriter(log)
     from loguru import logger as _logger
+
     _logger.remove()
     _logger.add(writer.write, format="{message}", level="INFO", colorize=False)
 
@@ -233,12 +267,16 @@ def run() -> None:
     input_area.accept_handler = accept
 
     def header_text():
-        return HTML(f"<b><ansicyan>albedo</ansicyan></b> — miner publish console\n<grey>{_HELP}</grey>")
+        return HTML(
+            f"<b><ansicyan>albedo</ansicyan></b> — miner publish console\n<grey>{_HELP}</grey>"
+        )
 
     def steps_text():
-        rows = [f"{_GLYPH[state.steps[k]]} {label}"
-                + (f"   <grey>{state.detail.get(k, '')}</grey>" if state.detail.get(k) else "")
-                for k, label in publish.STEPS]
+        rows = [
+            f"{_GLYPH[state.steps[k]]} {label}"
+            + (f"   <grey>{state.detail.get(k, '')}</grey>" if state.detail.get(k) else "")
+            for k, label in publish.STEPS
+        ]
         return HTML("\n".join(rows))
 
     kb = KeyBindings()
@@ -293,11 +331,15 @@ def run() -> None:
 
     @kb.add("y", filter=Condition(lambda: confirming["on"]))
     def _(event):
-        confirming["on"] = False; cresult["v"] = True; cevent.set()
+        confirming["on"] = False
+        cresult["v"] = True
+        cevent.set()
 
     @kb.add("n", filter=Condition(lambda: confirming["on"]))
     def _(event):
-        confirming["on"] = False; cresult["v"] = False; cevent.set()
+        confirming["on"] = False
+        cresult["v"] = False
+        cevent.set()
 
     _orig_log_mouse = log_area.control.mouse_handler
 
@@ -318,14 +360,25 @@ def run() -> None:
 
     log_area.control.mouse_handler = _log_mouse
 
-    body = HSplit([
-        Window(FormattedTextControl(header_text), height=3, style="bg:default"),
-        Frame(Window(FormattedTextControl(steps_text), height=len(publish.STEPS)), title="steps"),
-        Frame(log_area, title="log (history + output) — PgUp/PgDn or Ctrl+↑/↓ scroll · Home/End jump"),
-        Frame(input_area),
-    ])
-    app = Application(layout=Layout(body, focused_element=input_area), key_bindings=kb,
-                      full_screen=True, mouse_support=True)
+    body = HSplit(
+        [
+            Window(FormattedTextControl(header_text), height=3, style="bg:default"),
+            Frame(
+                Window(FormattedTextControl(steps_text), height=len(publish.STEPS)), title="steps"
+            ),
+            Frame(
+                log_area,
+                title="log (history + output) — PgUp/PgDn or Ctrl+↑/↓ scroll · Home/End jump",
+            ),
+            Frame(input_area),
+        ]
+    )
+    app = Application(
+        layout=Layout(body, focused_element=input_area),
+        key_bindings=kb,
+        full_screen=True,
+        mouse_support=True,
+    )
     ref["app"] = app
     ref["loop"] = asyncio.get_event_loop_policy().get_event_loop()
     try:

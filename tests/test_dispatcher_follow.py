@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-from albedo_eval_service.config import Settings
-from albedo_eval_service.dispatcher import EvalDispatcher
-import albedo_eval_service.dispatcher as dispatcher_module
+import albedo_eval_service.control.dispatcher as dispatcher_module
+from albedo_config import Settings
+from albedo_eval_service.control.dispatcher import EvalDispatcher
 
 
 class RecordingRepository:
@@ -76,7 +76,11 @@ def test_follow_until_verdict_polls_and_records_only_new_events():
     )
 
     assert verdict["state"] == "succeeded"
-    assert [event["type"] for event in repo.events] == ["eval_started", "generation_started", "verdict"]
+    assert [event["type"] for event in repo.events] == [
+        "eval_started",
+        "generation_started",
+        "verdict",
+    ]
     assert repo.heartbeats == 5
 
 

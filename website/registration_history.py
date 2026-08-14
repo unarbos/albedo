@@ -25,7 +25,15 @@ PERIODS = {
     "7d": timedelta(days=7),
     "30d": timedelta(days=30),
 }
-FIELDS = ["timestamp", "block_number", "uid", "hotkey", "coldkey", "registration_cost", "registration_cost_tao"]
+FIELDS = [
+    "timestamp",
+    "block_number",
+    "uid",
+    "hotkey",
+    "coldkey",
+    "registration_cost",
+    "registration_cost_tao",
+]
 
 log = logging.getLogger("registration-history")
 
@@ -38,7 +46,7 @@ def load_env(path: Path) -> None:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):]
+            line = line[len("export ") :]
         if "=" not in line:
             continue
         key, val = line.split("=", 1)
@@ -152,7 +160,9 @@ def fetch_30d(*, api_key: str, netuid: int, now: datetime) -> list[dict[str, Any
     return sorted(rows, key=lambda r: (r["timestamp"], r["uid"] if r["uid"] is not None else -1))
 
 
-def period_rows(rows: list[dict[str, Any]], *, now: datetime, delta: timedelta) -> list[dict[str, Any]]:
+def period_rows(
+    rows: list[dict[str, Any]], *, now: datetime, delta: timedelta
+) -> list[dict[str, Any]]:
     start = int((now - delta).timestamp())
     return [row for row in rows if row["timestamp"] >= start]
 
@@ -184,14 +194,18 @@ def upload_to_hippius(key: str, path: Path) -> bool:
         import boto3
         from botocore.config import Config
 
-        region = os.environ.get("ALBEDO_S3_REGION") or ("auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized")
+        region = os.environ.get("ALBEDO_S3_REGION") or (
+            "auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized"
+        )
         client = boto3.client(
             "s3",
             endpoint_url=endpoint,
             aws_access_key_id=access,
             aws_secret_access_key=secret,
             region_name=region,
-            config=Config(connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}),
+            config=Config(
+                connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+            ),
         )
         put_args = dict(
             Bucket=bucket,
@@ -230,17 +244,27 @@ def generate(*, api_key: str, netuid: int) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish TaoStats subnet 97 registration history JSON/CSV.")
-    parser.add_argument("--once", action="store_true", help="Generate once and exit (default: loop)")
+    parser = argparse.ArgumentParser(
+        description="Publish TaoStats subnet 97 registration history JSON/CSV."
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Generate once and exit (default: loop)"
+    )
     parser.add_argument("--netuid", type=int, default=None)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout
+    )
     load_env(ENV_PATH)
     api_key = os.environ.get("TAOSTATS_API_KEY")
     if not api_key:
         sys.exit("TAOSTATS_API_KEY is not set")
-    netuid = args.netuid if args.netuid is not None else int(os.environ.get("ALBEDO_DASHBOARD_NETUID", "97"))
+    netuid = (
+        args.netuid
+        if args.netuid is not None
+        else int(os.environ.get("ALBEDO_DASHBOARD_NETUID", "97"))
+    )
     interval = float(os.environ.get("ALBEDO_REGISTRATION_HISTORY_INTERVAL_S", "600"))
 
     if args.once:

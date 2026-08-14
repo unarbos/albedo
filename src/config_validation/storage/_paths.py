@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from config_validation.config import MODEL_CACHE_DIR
+from albedo_config.chain_spec import MODEL_CACHE_DIR
 from config_validation.models import ModelRef
 
 

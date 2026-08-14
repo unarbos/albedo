@@ -14,8 +14,7 @@ GENESIS_SHA256: dict[str, str] = {
     "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
     "tokenizer_config.json": "5186f0defcd7f232382c7f0aebcd2252d073bb921ab240e407b7ae8745d2b29b",
     "tokenizer.json": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
-    "video_preprocessor_config.json":
-        "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+    "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",  # noqa: E501
     "chat_template.jinja": "e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259",
 }
 
@@ -44,8 +43,7 @@ def check(model_dir: str, files: list[str]) -> CheckOutcome:
             continue
         if got != expected:
             problems.append(
-                f"{name} sha256 {got} != {expected} "
-                f"(does not match genesis {GENESIS_MODEL})"
+                f"{name} sha256 {got} != {expected} (does not match genesis {GENESIS_MODEL})"
             )
 
     return CheckOutcome(

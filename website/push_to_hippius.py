@@ -40,7 +40,7 @@ def load_env(path: Path) -> None:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):]
+            line = line[len("export ") :]
         if "=" not in line:
             continue
         key, val = line.split("=", 1)
@@ -56,14 +56,18 @@ def make_client(endpoint: str, access_key: str, secret_key: str):
         from botocore.config import Config
     except ImportError:
         sys.exit("boto3 is required: pip install boto3")
-    region = os.environ.get("ALBEDO_S3_REGION") or ("auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized")
+    region = os.environ.get("ALBEDO_S3_REGION") or (
+        "auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized"
+    )
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name=region,
-        config=Config(connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}),
+        config=Config(
+            connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+        ),
     )
 
 
@@ -114,10 +118,16 @@ def iter_website_files():
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Push the Albedo dashboard / website to Hippius S3.")
-    ap.add_argument("--website", action="store_true", help="upload the whole static site, not just the dashboard")
+    ap.add_argument(
+        "--website",
+        action="store_true",
+        help="upload the whole static site, not just the dashboard",
+    )
     ap.add_argument("--file", type=Path, help="upload a single arbitrary file (with --key)")
     ap.add_argument("--key", help="S3 key for --file (defaults to the file name)")
-    ap.add_argument("--dry-run", action="store_true", help="print what would be uploaded; do nothing")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="print what would be uploaded; do nothing"
+    )
     args = ap.parse_args()
 
     load_env(ENV_PATH)
@@ -130,7 +140,9 @@ def main() -> int:
         sys.exit("missing ALBEDO_S3_ACCESS_KEY / ALBEDO_S3_SECRET_KEY (set them in .env)")
 
     client = None if args.dry_run else make_client(endpoint, access_key, secret_key)
-    region = os.environ.get("ALBEDO_S3_REGION") or ("auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized")
+    region = os.environ.get("ALBEDO_S3_REGION") or (
+        "auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized"
+    )
     print(f"target: {endpoint}/{bucket}/  (region={region}, acl=public-read if supported)")
 
     if args.file:

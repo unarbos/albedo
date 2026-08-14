@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -13,10 +12,10 @@ from uuid import UUID, uuid4
 
 import psycopg
 from loguru import logger as log
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+from albedo_config import SetReignSettings
 
 
 @dataclass(frozen=True)
@@ -35,18 +34,6 @@ class PlannedReignMember:
     slot: int
     weight_bps: int
     is_challenger: bool = False
-
-
-class SetReignSettings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_prefix="ALBEDO_EVAL_",
-        extra="ignore",
-    )
-
-    database_url: str = Field(..., description="Postgres DSN")
-    lease_seconds: int = 1800
-    dispatch_poll_seconds: float = 5.0
 
 
 class SetReignRepository:
@@ -158,7 +145,7 @@ class SetReignRepository:
                         submission_id=submission["id"],
                         attempt_id=attempt_id,
                         fault_code="missing_winning_eval_run",
-                        fault_message="No successful winning eval run is available for reign promotion",
+                        fault_message="No successful winning eval run is available for reign promotion",  # noqa: E501
                     )
                     return True
 
@@ -174,7 +161,7 @@ class SetReignRepository:
                         submission_id=submission["id"],
                         attempt_id=attempt_id,
                         fault_code="challenger_model_hash_mismatch",
-                        fault_message="Winning eval challenger model hash does not match submission model hash",
+                        fault_message="Winning eval challenger model hash does not match submission model hash",  # noqa: E501
                     )
                     return True
 
@@ -282,7 +269,7 @@ class SetReignRepository:
                         submission_id=submission["id"],
                         attempt_id=attempt_id,
                         fault_code="missing_challenger_model_artifact",
-                        fault_message="Winning submission has no MODEL_MANIFEST artifact for king version",
+                        fault_message="Winning submission has no MODEL_MANIFEST artifact for king version",  # noqa: E501
                     )
                     return True
 
@@ -684,11 +671,9 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = SetReignSettings()
-    worker_id = os.environ.get("ALBEDO_SET_REIGN_WORKER_ID", "set-reign-worker")
-    lease_seconds = int(os.environ.get("ALBEDO_SET_REIGN_LEASE_SECONDS", settings.lease_seconds))
-    poll_seconds = float(
-        os.environ.get("ALBEDO_SET_REIGN_POLL_SECONDS", settings.dispatch_poll_seconds)
-    )
+    worker_id = settings.worker_id
+    lease_seconds = settings.lease_seconds
+    poll_seconds = settings.dispatch_poll_seconds
     repository = SetReignRepository(settings.database_url)
 
     if args.once:

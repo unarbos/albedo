@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -94,8 +93,6 @@ class GateResult:
     per_sample: list[SampleVerdict] = field(default_factory=list)
 
 
-
-
 async def _injection_probe(
     client,
     prompt: str,
@@ -103,7 +100,13 @@ async def _injection_probe(
     models: tuple[str, ...] = SANITY_DEFAULT_JUDGE_MODELS,
     temperature: float | None = None,
 ) -> tuple[bool | None, list[JudgeVote]]:
-    raws = await query_panel(client, INJECTION_SYSTEM, build_injection_user(prompt, response), models, temperature=temperature)
+    raws = await query_panel(
+        client,
+        INJECTION_SYSTEM,
+        build_injection_user(prompt, response),
+        models,
+        temperature=temperature,
+    )
     votes: list[JudgeVote] = []
     details: list[dict[str, object]] = []
     for r in raws:
@@ -141,7 +144,9 @@ async def _viability_probe(
     consensus: bool,
     models: tuple[str, ...] = SANITY_DEFAULT_JUDGE_MODELS,
 ) -> tuple[bool | None, str, list[JudgeVote]]:
-    raws = await query_panel(client, VIABILITY_SYSTEM, build_viability_user(prompt, response), models)
+    raws = await query_panel(
+        client, VIABILITY_SYSTEM, build_viability_user(prompt, response), models
+    )
     votes: list[JudgeVote] = []
     details: list[dict[str, object]] = []
     for r in raws:
@@ -189,12 +194,16 @@ async def _judge_sample(
     gate_response = _response_for_gate(s.response)
     suspected, votes = await _injection_probe(client, s.prompt, gate_response, models)
     if suspected is None:
-        return SampleVerdict(excerpt, False, "injection judges unavailable", infra=True, votes=votes)
+        return SampleVerdict(
+            excerpt, False, "injection judges unavailable", infra=True, votes=votes
+        )
 
     rechecked = False
     if suspected:
         rechecked = True
-        confirmed, votes = await _injection_probe(client, s.prompt, gate_response, models, temperature=_RECHECK_TEMPERATURE)
+        confirmed, votes = await _injection_probe(
+            client, s.prompt, gate_response, models, temperature=_RECHECK_TEMPERATURE
+        )
         if confirmed is None:
             return SampleVerdict(
                 excerpt,
@@ -218,12 +227,12 @@ async def _judge_sample(
     if skip_viability:
         return SampleVerdict(excerpt, passed=True, reason="viability skipped", rechecked=rechecked)
 
-    decided, reason, vvotes = await _viability_probe(client, s.prompt, s.response, consensus, models)
+    decided, reason, vvotes = await _viability_probe(
+        client, s.prompt, s.response, consensus, models
+    )
     if decided is None:
         return SampleVerdict(excerpt, False, reason, infra=True, rechecked=rechecked, votes=vvotes)
     return SampleVerdict(excerpt, passed=decided, reason=reason, rechecked=rechecked, votes=vvotes)
-
-
 
 
 def _aggregate(verdicts: list[SampleVerdict], mode: str) -> GateResult:
@@ -266,11 +275,20 @@ def _aggregate(verdicts: list[SampleVerdict], mode: str) -> GateResult:
     )
 
 
-async def run_gate(samples: list[SampleInput], client, *, consensus: bool = False, skip_viability: bool = False, models: tuple[str, ...] | None = None,) -> GateResult:
+async def run_gate(
+    samples: list[SampleInput],
+    client,
+    *,
+    consensus: bool = False,
+    skip_viability: bool = False,
+    models: tuple[str, ...] | None = None,
+) -> GateResult:
     mode = "consensus" if consensus else "veto"
     resolved = _resolve_models(models)
     if not samples:
-        return GateResult(False, "no samples", infra_fault=True, llm_gate=LLMGate.SKIPPED, decision_mode=mode)
+        return GateResult(
+            False, "no samples", infra_fault=True, llm_gate=LLMGate.SKIPPED, decision_mode=mode
+        )
 
     heuristic_failed = any(not s.heuristic_passed for s in samples)
     if heuristic_failed:
@@ -281,10 +299,16 @@ async def run_gate(samples: list[SampleInput], client, *, consensus: bool = Fals
             if not s.heuristic_passed:
                 sv = SampleVerdict(excerpt, passed=False, reason=f"heuristic: {s.heuristic_reason}")
             else:
-                sv = SampleVerdict(excerpt, passed=True, reason="skipped: another sample already failed heuristics")
+                sv = SampleVerdict(
+                    excerpt, passed=True, reason="skipped: another sample already failed heuristics"
+                )
             verdicts.append(sv)
     else:
-        verdicts = list(await asyncio.gather(*[_judge_sample(s, client, consensus, skip_viability, resolved) for s in samples]))
+        verdicts = list(
+            await asyncio.gather(
+                *[_judge_sample(s, client, consensus, skip_viability, resolved) for s in samples]
+            )
+        )
 
     result = _aggregate(verdicts, mode)
     (logger.info if result.passed else logger.warning)(

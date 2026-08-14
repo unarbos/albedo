@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import sys
@@ -54,7 +53,7 @@ class KingChatSettings(BaseSettings):
     vllm_enforce_eager: bool = False
     cpu_offload_gb: int = 0
     vllm_startup_s: float = 900.0
-    download_timeout_s: float = 3600.0  
+    download_timeout_s: float = 3600.0
     models_dir: str = "/root/albedo-current-king"
 
 

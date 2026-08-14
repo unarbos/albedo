@@ -39,7 +39,7 @@ def find_swaps(
 def describe(detail: dict) -> str:
     return (
         f"hotkey swap detected: uid {detail['uid']} "
-        f"BEFORE hotkey={detail['old_hotkey']} BlockAtRegistration={detail['registration_block']} | "
+        f"BEFORE hotkey={detail['old_hotkey']} BlockAtRegistration={detail['registration_block']} | "  # noqa: E501
         f"AFTER hotkey={detail['new_hotkey']} BlockAtRegistration={detail['registration_block']} "
         f"<- identical, no re-registration -> swap_hotkey"
     )

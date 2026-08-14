@@ -17,10 +17,17 @@ log = logging.getLogger("prepare_datasets")
 
 _MINI_CODER_LEAKS = ("modin-project__modin.8c7799fd.pr_7434", "scrapy__scrapy.35212ec5.pr_6671")
 _OPEN_SWE_LEAKS = (
-    "agronholm__anyio-935", "astropy__ccdproc-901", "beeware__briefcase-2302",
-    "beeware__briefcase-2401", "conan-io__conan-18327", "conan-io__conan-18444",
-    "ethereum__web3.py-3690", "geopandas__geopandas-3591",
-    "matthewwithanm__python-markdownify-230", "pdm-project__pdm-3575", "pydata__sparse-870",
+    "agronholm__anyio-935",
+    "astropy__ccdproc-901",
+    "beeware__briefcase-2302",
+    "beeware__briefcase-2401",
+    "conan-io__conan-18327",
+    "conan-io__conan-18444",
+    "ethereum__web3.py-3690",
+    "geopandas__geopandas-3591",
+    "matthewwithanm__python-markdownify-230",
+    "pdm-project__pdm-3575",
+    "pydata__sparse-870",
 )
 
 SOURCES: dict[str, dict] = {
@@ -83,7 +90,13 @@ def _local_parquet_shards(dest: Path, shard_glob: str) -> set[str]:
 
 
 def download_source(
-    name: str, repo_id: str, shard_glob: str, root: Path, *, force: bool, max_workers: int,
+    name: str,
+    repo_id: str,
+    shard_glob: str,
+    root: Path,
+    *,
+    force: bool,
+    max_workers: int,
     dest_name: str | None = None,
 ) -> Path:
     from huggingface_hub import hf_hub_download
@@ -97,17 +110,28 @@ def download_source(
     to_fetch = sorted(expected) if force else sorted(expected - present)
 
     if not to_fetch:
-        log.info("%s: complete (%d/%d shards present) — skipping", name, len(present), len(expected))
+        log.info(
+            "%s: complete (%d/%d shards present) — skipping", name, len(present), len(expected)
+        )
         return dest
     log.info(
         "%s: %d/%d present, downloading %d missing -> %s (%d parallel workers)",
-        name, len(present), len(expected), len(to_fetch), dest, max_workers,
+        name,
+        len(present),
+        len(expected),
+        len(to_fetch),
+        dest,
+        max_workers,
     )
 
     def _one(rel: str) -> None:
         hf_hub_download(
-            repo_id, rel, repo_type="dataset", local_dir=str(dest),
-            force_download=force, token=os.environ.get("HF_TOKEN"),
+            repo_id,
+            rel,
+            repo_type="dataset",
+            local_dir=str(dest),
+            force_download=force,
+            token=os.environ.get("HF_TOKEN"),
         )
 
     done = 0
@@ -134,7 +158,9 @@ def _upload_manifest_to_hippius(manifest_path: Path, key: str) -> str:
     from botocore.config import Config
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    from model_validation import config as hv
+    from albedo_config import get_model_validation_settings
+
+    hv = get_model_validation_settings()
 
     if not (hv.S3_BUCKET and hv.S3_ACCESS_KEY and hv.S3_SECRET_KEY):
         raise SystemExit(
@@ -149,11 +175,16 @@ def _upload_manifest_to_hippius(manifest_path: Path, key: str) -> str:
         aws_access_key_id=hv.S3_ACCESS_KEY,
         aws_secret_access_key=hv.S3_SECRET_KEY,
         region_name="decentralized",
-        config=Config(connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}),
+        config=Config(
+            connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+        ),
     )
     client.put_object(
-        Bucket=hv.S3_BUCKET, Key=key, Body=body,
-        ContentType="application/json", ACL="public-read",
+        Bucket=hv.S3_BUCKET,
+        Key=key,
+        Body=body,
+        ContentType="application/json",
+        ACL="public-read",
     )
     log.info("manifest sha256: %s", hashlib.sha256(body).hexdigest())
     return f"s3://{hv.S3_BUCKET}/{key}"
@@ -161,7 +192,7 @@ def _upload_manifest_to_hippius(manifest_path: Path, key: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Download eval datasets from HuggingFace and build the combined manifest locally."
+        description="Download eval datasets from HuggingFace and build the combined manifest locally."  # noqa: E501
     )
     parser.add_argument(
         "--dataset-root",
@@ -178,22 +209,30 @@ def main() -> None:
         default=",".join(SOURCES),
         help=f"Comma-separated source names to fetch (default: all of {','.join(SOURCES)}).",
     )
-    parser.add_argument("--force", action="store_true", help="Re-download even if shards already exist.")
+    parser.add_argument(
+        "--force", action="store_true", help="Re-download even if shards already exist."
+    )
     parser.add_argument(
         "--max-workers",
         type=int,
         default=16,
         help="Concurrent files downloaded in parallel (default: 16). Raise for many small shards.",
     )
-    parser.add_argument("--skip-manifest", action="store_true", help="Only download; do not build manifest.json.")
-    parser.add_argument("--out", default=None, help="Manifest output path (default: <dataset-root>/manifest.json).")
     parser.add_argument(
-        "--upload", action="store_true",
-        help="Upload only manifest.json to Hippius S3 (ALBEDO_S3_* creds); does not upload the datasets.",
+        "--skip-manifest", action="store_true", help="Only download; do not build manifest.json."
     )
     parser.add_argument(
-        "--upload-key", default="datasets/manifest.json",
-        help="Destination key in the Hippius bucket for --upload (default: datasets/manifest.json).",
+        "--out", default=None, help="Manifest output path (default: <dataset-root>/manifest.json)."
+    )
+    parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="Upload only manifest.json to Hippius S3 (ALBEDO_S3_* creds); does not upload the datasets.",  # noqa: E501
+    )
+    parser.add_argument(
+        "--upload-key",
+        default="datasets/manifest.json",
+        help="Destination key in the Hippius bucket for --upload (default: datasets/manifest.json).",  # noqa: E501
     )
     args = parser.parse_args()
 
@@ -212,17 +251,25 @@ def main() -> None:
         glob = meta.get("raw_glob", meta["shard_glob"])
         for repo_id in meta["repos"]:
             download_source(
-                name, repo_id, glob,
+                name,
+                repo_id,
+                glob,
                 Path(args.raw_root) if args.raw_root and meta.get("render") else root,
-                force=args.force, max_workers=args.max_workers,
+                force=args.force,
+                max_workers=args.max_workers,
                 dest_name=repo_id.split("/")[-1] if meta.get("render") else name,
             )
         if meta.get("render"):
             from render_trajectories import render_source
 
             stats = render_source(name, Path(args.raw_root or root), root)
-            log.info("%s: rendered %s/%s rows -> %s shards",
-                     name, stats["rows_out"], stats["rows_in"], stats["shards_written"])
+            log.info(
+                "%s: rendered %s/%s rows -> %s shards",
+                name,
+                stats["rows_out"],
+                stats["rows_in"],
+                stats["shards_written"],
+            )
 
     out_path = Path(args.out) if args.out else root / "manifest.json"
 
@@ -239,7 +286,9 @@ def main() -> None:
 
     if args.upload:
         if not out_path.exists():
-            raise SystemExit(f"--upload: no manifest at {out_path} (build one first, or drop --skip-manifest).")
+            raise SystemExit(
+                f"--upload: no manifest at {out_path} (build one first, or drop --skip-manifest)."
+            )
         log.info("uploaded manifest -> %s", _upload_manifest_to_hippius(out_path, args.upload_key))
 
 

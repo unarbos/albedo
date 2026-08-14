@@ -9,10 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from albedo_eval_service import remote_models
-from albedo_eval_service.canonical_model_config import canonical_max_model_len
-from albedo_eval_service.remote_config import RemoteSettings
-from albedo_eval_service.remote_models import ModelArtifactResolver, parse_oci_ref
+from albedo_config import RemoteSettings
+from albedo_eval_service.modelstore import resolver as remote_models
+from albedo_eval_service.modelstore.canonical_model_config import canonical_max_model_len
+from albedo_eval_service.modelstore.resolver import ModelArtifactResolver, parse_oci_ref
 
 
 def _sha256(payload: bytes) -> str:
@@ -22,15 +22,23 @@ def _sha256(payload: bytes) -> str:
 def test_parse_oci_ref_accepts_hippius_registry_digest():
     ref = "registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@sha256:" + "8" * 64
 
-    assert parse_oci_ref(ref) == ("registry.hippius.com", "sota1028/albedo-qwen3.6-35b-miner_5", "sha256:" + "8" * 64)
+    assert parse_oci_ref(ref) == (
+        "registry.hippius.com",
+        "sota1028/albedo-qwen3.6-35b-miner_5",
+        "sha256:" + "8" * 64,
+    )
 
 
 def test_model_resolver_passes_through_existing_local_path(tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()
-    (model_dir / "config.json").write_text('{"model_type":"bad","max_position_embeddings":4096,"auto_map":{"x":"y"}}', encoding="utf-8")
+    (model_dir / "config.json").write_text(
+        '{"model_type":"bad","max_position_embeddings":4096,"auto_map":{"x":"y"}}', encoding="utf-8"
+    )
 
-    resolved = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache"))).resolve(str(model_dir))
+    resolved = ModelArtifactResolver(
+        RemoteSettings(model_cache_dir=str(tmp_path / "cache"))
+    ).resolve(str(model_dir))
 
     assert resolved.local_path == str(model_dir)
     assert resolved.source == "local"
@@ -43,7 +51,7 @@ def test_model_resolver_passes_through_existing_local_path(tmp_path):
 
 
 def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, monkeypatch):
-    layer_payload = b"{\n  \"model_type\": \"qwen3\"\n}\n"
+    layer_payload = b'{\n  "model_type": "qwen3"\n}\n'
     weights_payload = b"not-real-safetensors"
     layer_digest = _sha256(layer_payload)
     weights_digest = _sha256(weights_payload)
@@ -60,8 +68,10 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
                 "mediaType": "application/octet-stream",
                 "digest": weights_digest,
                 "size": len(weights_payload),
-                "annotations": {"org.opencontainers.image.title": "model-00001-of-00001.safetensors"},
-            }
+                "annotations": {
+                    "org.opencontainers.image.title": "model-00001-of-00001.safetensors"
+                },
+            },
         ],
     }
     manifest_payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
@@ -93,7 +103,9 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
             if "/manifests/" in url and not (headers or {}).get("Authorization"):
                 return httpx.Response(
                     401,
-                    headers={"www-authenticate": 'Bearer realm="https://registry.hippius.com/service/token",service="harbor-registry"'},
+                    headers={
+                        "www-authenticate": 'Bearer realm="https://registry.hippius.com/service/token",service="harbor-registry"'
+                    },
                     request=request,
                 )
             if "/manifests/" in url:
@@ -104,10 +116,14 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
                 return httpx.Response(200, content=weights_payload, request=request)
             raise AssertionError(url)
 
-    monkeypatch.setattr("albedo_eval_service.remote_models.httpx.Client", lambda **_: FakeClient())
+    monkeypatch.setattr(
+        "albedo_eval_service.modelstore.resolver.httpx.Client", lambda **_: FakeClient()
+    )
     ref = f"registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@{manifest_digest}"
 
-    resolved = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(tmp_path / "cache"))).resolve(ref)
+    resolved = ModelArtifactResolver(
+        RemoteSettings(model_cache_dir=str(tmp_path / "cache"))
+    ).resolve(ref)
 
     rewritten = json.loads(Path(resolved.local_path, "config.json").read_text(encoding="utf-8"))
     assert rewritten["model_type"] == "qwen3_5_moe"
@@ -116,9 +132,8 @@ def test_model_resolver_downloads_oci_layers_with_digest_verification(tmp_path, 
     assert resolved.cache_hit is False
 
 
-
 def test_model_resolver_redownloads_marker_only_oci_cache(tmp_path, monkeypatch):
-    config_payload = b"{\n  \"model_type\": \"qwen3\"\n}\n"
+    config_payload = b'{\n  "model_type": "qwen3"\n}\n'
     weights_payload = b"not-real-safetensors"
     config_digest = _sha256(config_payload)
     weights_digest = _sha256(weights_payload)
@@ -135,7 +150,9 @@ def test_model_resolver_redownloads_marker_only_oci_cache(tmp_path, monkeypatch)
                 "mediaType": "application/octet-stream",
                 "digest": weights_digest,
                 "size": len(weights_payload),
-                "annotations": {"org.opencontainers.image.title": "model-00001-of-00001.safetensors"},
+                "annotations": {
+                    "org.opencontainers.image.title": "model-00001-of-00001.safetensors"
+                },
             },
         ],
     }
@@ -178,7 +195,9 @@ def test_model_resolver_redownloads_marker_only_oci_cache(tmp_path, monkeypatch)
             if "/manifests/" in url and not (headers or {}).get("Authorization"):
                 return httpx.Response(
                     401,
-                    headers={"www-authenticate": "Bearer realm=\"https://registry.hippius.com/service/token\",service=\"harbor-registry\""},
+                    headers={
+                        "www-authenticate": 'Bearer realm="https://registry.hippius.com/service/token",service="harbor-registry"'
+                    },
                     request=request,
                 )
             if "/manifests/" in url:
@@ -189,7 +208,9 @@ def test_model_resolver_redownloads_marker_only_oci_cache(tmp_path, monkeypatch)
                 return httpx.Response(200, content=weights_payload, request=request)
             raise AssertionError(url)
 
-    monkeypatch.setattr("albedo_eval_service.remote_models.httpx.Client", lambda **_: FakeClient())
+    monkeypatch.setattr(
+        "albedo_eval_service.modelstore.resolver.httpx.Client", lambda **_: FakeClient()
+    )
     ref = f"registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@{manifest_digest}"
 
     resolved = ModelArtifactResolver(RemoteSettings(model_cache_dir=str(cache_root))).resolve(ref)
@@ -218,7 +239,9 @@ def test_model_resolver_rejects_oci_download_without_model_files(tmp_path, monke
                 return httpx.Response(200, content=manifest_payload, request=request)
             raise AssertionError(url)
 
-    monkeypatch.setattr("albedo_eval_service.remote_models.httpx.Client", lambda **_: FakeClient())
+    monkeypatch.setattr(
+        "albedo_eval_service.modelstore.resolver.httpx.Client", lambda **_: FakeClient()
+    )
     ref = f"registry.hippius.com/sota1028/albedo-qwen3.6-35b-miner_5@{manifest_digest}"
     resolver = ModelArtifactResolver(
         RemoteSettings(model_cache_dir=str(cache_root), use_canonical_model_config=False)
@@ -238,10 +261,14 @@ def test_model_resolver_rejects_oci_download_without_model_files(tmp_path, monke
 
 
 def test_resolve_lock_is_shared_per_ref():
-    from albedo_eval_service.remote_models import _resolve_lock
+    from albedo_eval_service.modelstore.resolver import _resolve_lock
 
-    assert _resolve_lock("oci://registry/a@sha256:aa") is _resolve_lock("oci://registry/a@sha256:aa")
-    assert _resolve_lock("oci://registry/a@sha256:aa") is not _resolve_lock("oci://registry/b@sha256:bb")
+    assert _resolve_lock("oci://registry/a@sha256:aa") is _resolve_lock(
+        "oci://registry/a@sha256:aa"
+    )
+    assert _resolve_lock("oci://registry/a@sha256:aa") is not _resolve_lock(
+        "oci://registry/b@sha256:bb"
+    )
 
 
 def test_model_resolver_downloads_hf_ref(tmp_path, monkeypatch):
@@ -328,7 +355,9 @@ def test_download_supervisor_kills_stalled_child(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
     launched: list[subprocess.Popen] = []
 
-    def fake_spawn(repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"):
+    def fake_spawn(
+        repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"
+    ):
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(600)"],
             start_new_session=True,
@@ -359,7 +388,9 @@ def test_download_supervisor_kills_stalled_child(tmp_path, monkeypatch):
 def test_download_supervisor_raises_on_child_error(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
 
-    def fake_spawn(repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"):
+    def fake_spawn(
+        repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"
+    ):
         Path(log_path).write_text("RepositoryNotFoundError: 404\n", encoding="utf-8")
         return subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
 
@@ -383,7 +414,9 @@ def test_download_supervisor_budget_resets_on_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
     launched: list[subprocess.Popen] = []
 
-    def fake_spawn(repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"):
+    def fake_spawn(
+        repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"
+    ):
         attempt = len(launched) + 1
         marker = Path(temp_dir) / "model-00001.safetensors"
         if attempt == 1:
@@ -420,7 +453,9 @@ def test_download_supervisor_budget_resets_on_progress(tmp_path, monkeypatch):
 def test_download_supervisor_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(remote_models, "_HEARTBEAT_INTERVAL_S", 0.05)
 
-    def fake_spawn(repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"):
+    def fake_spawn(
+        repo, revision, temp_dir, concurrency, log_path, child_entry="_hf_download_child"
+    ):
         (Path(temp_dir) / "model.safetensors").write_bytes(b"x" * 1024)
         return subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
 

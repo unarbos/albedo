@@ -7,9 +7,9 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 
-from albedo_eval_service.config import Settings
-from albedo_eval_service.dispatcher import build_eval_request
-from albedo_eval_service.repository import EvalRepository
+from albedo_config import Settings
+from albedo_eval_service.control.dispatcher import build_eval_request
+from albedo_eval_service.control.repository import EvalRepository
 from weight_setter.service import WeightSetterRepository
 
 pytestmark = pytest.mark.integration
@@ -135,9 +135,7 @@ def _seed_scored_duplicate(database_url: str, *, hotkey: str) -> UUID:
     submission_id = uuid4()
     chain_commit_id = uuid4()
     with psycopg.connect(database_url) as conn, conn.transaction():
-        miner_id = conn.execute(
-            "SELECT id FROM miners WHERE hotkey = %s", (hotkey,)
-        ).fetchone()[0]
+        miner_id = conn.execute("SELECT id FROM miners WHERE hotkey = %s", (hotkey,)).fetchone()[0]
         conn.execute(
             """
             INSERT INTO chain_commits (
@@ -411,7 +409,7 @@ def test_requeue_retryable_eval_terminalizes_at_retry_cap(db_url: str):
 
 def test_record_remote_event_skips_exact_replay(db_url: str):
     repo = EvalRepository(db_url)
-    submission_id = _seed_eval_ready_submission(db_url)
+    _submission_id = _seed_eval_ready_submission(db_url)
     claimed = repo.claim_next_eval(
         worker_id="worker-a", lease_seconds=60, request_builder=_request_builder
     )
@@ -452,7 +450,7 @@ def test_record_remote_event_skips_exact_replay(db_url: str):
 
 def test_record_remote_progress_and_verdict_artifacts_update_eval_run(db_url: str):
     repo = EvalRepository(db_url)
-    submission_id = _seed_eval_ready_submission(db_url)
+    _submission_id = _seed_eval_ready_submission(db_url)
     claimed = repo.claim_next_eval(
         worker_id="worker-a", lease_seconds=60, request_builder=_request_builder
     )

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import functools
@@ -38,7 +37,9 @@ def _safe_digest(digest: str) -> str:
 
 def put_sanity_fault(submission_id: str, digest: str, detail: dict) -> str | None:
     if not ENABLED:
-        log.debug("S3 disabled (ALBEDO_S3_* unset); skipping sanity fault upload for {}", submission_id)
+        log.debug(
+            "S3 disabled (ALBEDO_S3_* unset); skipping sanity fault upload for {}", submission_id
+        )
         return None
     key = f"sanity/{submission_id}/{_safe_digest(digest)}/fault.json"
     try:

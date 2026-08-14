@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from albedo_eval_service.dataset_manifest import load_manifest_file
+from albedo_eval_service.shared.dataset_manifest import load_manifest_file
 
 
 def test_load_manifest_file_verifies_sha256(tmp_path):

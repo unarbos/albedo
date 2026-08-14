@@ -13,7 +13,12 @@ log = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL_S = 10.0
 
-OUT_OF_PROCESS = os.environ.get("ALBEDO_DOWNLOAD_OUT_OF_PROCESS", "1") not in ("0", "false", "False", "")
+OUT_OF_PROCESS = os.environ.get("ALBEDO_DOWNLOAD_OUT_OF_PROCESS", "1") not in (
+    "0",
+    "false",
+    "False",
+    "",
+)
 STALL_SECONDS = float(os.environ.get("ALBEDO_DOWNLOAD_STALL_SECONDS", "180"))
 STALL_RETRIES = int(os.environ.get("ALBEDO_DOWNLOAD_STALL_RETRIES", "3"))
 HIPPIUS_STALL_SECONDS = float(os.environ.get("ALBEDO_HIPPIUS_DOWNLOAD_STALL_SECONDS", "1200"))
@@ -126,7 +131,10 @@ def supervise_download(
             now = time.monotonic()
             log.info(
                 "download %s attempt=%d elapsed=%.0fs bytes=%d",
-                label, attempt, now - start, current,
+                label,
+                attempt,
+                now - start,
+                current,
             )
             if current != last_bytes:
                 last_bytes = current
@@ -135,7 +143,10 @@ def supervise_download(
             elif now - last_progress >= stall:
                 log.warning(
                     "download %s stalled attempt=%d bytes=%d no_progress=%.0fs — killing",
-                    label, attempt, current, now - last_progress,
+                    label,
+                    attempt,
+                    current,
+                    now - last_progress,
                 )
                 _terminate(proc)
                 stalled = True

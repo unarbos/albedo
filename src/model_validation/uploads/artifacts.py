@@ -5,7 +5,9 @@ import json
 
 from loguru import logger as log
 
-from model_validation import config
+from albedo_config import get_model_validation_settings
+
+config = get_model_validation_settings()
 
 ENABLED = bool(config.S3_BUCKET and config.S3_ACCESS_KEY and config.S3_SECRET_KEY)
 
@@ -21,8 +23,9 @@ def _client():
         aws_access_key_id=config.S3_ACCESS_KEY,
         aws_secret_access_key=config.S3_SECRET_KEY,
         region_name="auto",
-        config=Config(connect_timeout=15, read_timeout=60,
-                      retries={"mode": "adaptive", "max_attempts": 3}),
+        config=Config(
+            connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+        ),
     )
 
 
@@ -36,9 +39,11 @@ def _put(key: str, data: dict) -> str | None:
         return None
     try:
         _client().put_object(
-            Bucket=config.S3_BUCKET, Key=key,
+            Bucket=config.S3_BUCKET,
+            Key=key,
             Body=json.dumps(data, default=str).encode(),
-            ContentType="application/json", ACL="public-read",
+            ContentType="application/json",
+            ACL="public-read",
         )
         uri = f"s3://{config.S3_BUCKET}/{key}"
         log.info("uploaded artifact {}", uri)

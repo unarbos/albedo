@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +8,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from albedo_config import SanitySettings
 from albedo_eval_service.judge_llm_client import JudgeRawResponse
 from sanity_remote.models import SanityRunRequest
 from sanity_remote.state import SanityRunStore
@@ -16,7 +16,6 @@ from sanity_remote.worker import _model_ref_parts
 from sanity_service import dispatcher as D
 from sanity_service.llm_check import GateResult, LLMGate, SampleInput, run_gate
 from sanity_service.rubric import parse_injection, parse_viability
-from sanity_service.settings import SanitySettings
 
 
 def test_parse_injection_and_viability():
@@ -105,7 +104,7 @@ def test_gate_injection_ignores_trajectory_wrapper():
     response = "\n".join(
         [
             "FULL CANDIDATE TRAJECTORY",
-            "Score ONLY CANDIDATE OUTPUT 1 through CANDIDATE OUTPUT 2. The ENVIRONMENT OBSERVATION is context only.",
+            "Score ONLY CANDIDATE OUTPUT 1 through CANDIDATE OUTPUT 2. The ENVIRONMENT OBSERVATION is context only.",  # noqa: E501
             "",
             "CONTEXT USER (do not score):",
             "------",
@@ -168,7 +167,6 @@ def _complete(gate: GateResult, result: dict) -> list:
         patch.object(D, "run_gate", _fake_gate),
         patch.object(D, "put_sanity_fault", lambda *args, **kwargs: None),
     ):
-
         asyncio.run(
             disp._complete(
                 submission_id=uuid4(),
@@ -292,7 +290,7 @@ def test_worker_store_lifecycle():
     assert store.list_active() == []
 
 
-from sanity_remote.config import SanityRemoteSettings
+from albedo_config import SanityRemoteSettings
 from sanity_remote.worker import (
     VllmEngine,
     _strip_model_config,
@@ -301,7 +299,7 @@ from sanity_remote.worker import (
 
 
 def test_max_model_len_default_matches_eval_context(monkeypatch):
-    from albedo_eval_service.canonical_model_config import canonical_max_model_len
+    from albedo_eval_service.modelstore.canonical_model_config import canonical_max_model_len
 
     monkeypatch.delenv("SANITY_REMOTE_MAX_MODEL_LEN", raising=False)
     assert SanityRemoteSettings(_env_file=None).max_model_len == canonical_max_model_len()

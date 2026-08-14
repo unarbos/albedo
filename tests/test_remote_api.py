@@ -4,11 +4,17 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-import albedo_eval_service.remote_api as remote_api_module
-from albedo_eval_service.models import Challenger, DatasetConfig, EvalRequest, PreviousKing, ScoringConfig
-from albedo_eval_service.remote_api import app, store
-from albedo_eval_service.remote_config import RemoteSettings, get_remote_settings
-from albedo_eval_service.score_bridge import score_bridge_hub
+import albedo_eval_service.remote.api as remote_api_module
+from albedo_config import RemoteSettings, get_remote_settings
+from albedo_eval_service.remote.api import app, store
+from albedo_eval_service.scoring.score_bridge import score_bridge_hub
+from albedo_eval_service.shared.models import (
+    Challenger,
+    DatasetConfig,
+    EvalRequest,
+    PreviousKing,
+    ScoringConfig,
+)
 
 
 def _settings() -> RemoteSettings:
@@ -20,7 +26,9 @@ def _request() -> dict:
         eval_run_id=uuid4(),
         submission_id=uuid4(),
         challenger=Challenger(model_uri="s3://models/challenger", model_hash="sha256:chal"),
-        previous_king=PreviousKing(model_uri="s3://models/king", model_hash="sha256:king", king_version=1),
+        previous_king=PreviousKing(
+            model_uri="s3://models/king", model_hash="sha256:king", king_version=1
+        ),
         dataset=DatasetConfig(
             version="AlienKevin/SWE-ZERO-12M-trajectories",
             manifest_uri="s3://albedo-artifacts/datasets/swe-zero/manifest.json",
@@ -66,7 +74,9 @@ def test_remote_api_starts_idempotent_run_and_replays_verdict():
     assert second.status_code == 200
     assert first.json()["remote_run_id"] == second.json()["remote_run_id"]
 
-    events = client.get(f"/eval-runs/{first.json()['remote_run_id']}/events", headers=headers).json()["events"]
+    events = client.get(
+        f"/eval-runs/{first.json()['remote_run_id']}/events", headers=headers
+    ).json()["events"]
     verdict = events[-1]
     assert verdict["type"] == "verdict"
     assert verdict["state"] == "succeeded"
@@ -127,6 +137,7 @@ def test_remote_api_score_bridge_round_trips_backend_initiated_socket():
     result = {}
 
     with client.websocket_connect("/score-bridge", headers=headers) as websocket:
+
         def call_hub():
             result["body"] = score_bridge_hub.request({"batch_id": "score-0001"}, timeout_seconds=2)
 

@@ -63,12 +63,16 @@ def test_hf_download_and_list(monkeypatch, tmp_path):
     monkeypatch.setattr(_supervise, "OUT_OF_PROCESS", False)
     monkeypatch.setattr(hf, "_cache_dir", lambda ref: tmp_path)
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download",
-        lambda **kw: calls.update(kw) or kw["local_dir"], raising=False,
+        huggingface_hub,
+        "snapshot_download",
+        lambda **kw: calls.update(kw) or kw["local_dir"],
+        raising=False,
     )
     monkeypatch.setattr(
-        huggingface_hub, "list_repo_files",
-        lambda **kw: ["config.json", "model.safetensors"], raising=False,
+        huggingface_hub,
+        "list_repo_files",
+        lambda **kw: ["config.json", "model.safetensors"],
+        raising=False,
     )
     from config_validation.storage import download_full, list_files
 
@@ -83,12 +87,17 @@ def test_hf_preflight_dtypes(monkeypatch):
     import model_validation.storage.preflight as pf
 
     monkeypatch.setattr(
-        huggingface_hub, "list_repo_files",
-        lambda **kw: ["model.safetensors", "config.json"], raising=False,
+        huggingface_hub,
+        "list_repo_files",
+        lambda **kw: ["model.safetensors", "config.json"],
+        raising=False,
     )
-    monkeypatch.setattr(huggingface_hub, "hf_hub_url", lambda **kw: "https://hf/resolve/x", raising=False)
     monkeypatch.setattr(
-        pf, "_read_header",
+        huggingface_hub, "hf_hub_url", lambda **kw: "https://hf/resolve/x", raising=False
+    )
+    monkeypatch.setattr(
+        pf,
+        "_read_header",
         lambda client, url, headers: {"w": {"dtype": "BF16"}, "__metadata__": {}},
     )
     out = pf.safetensors_dtypes(ModelRef("ns/m", _GIT_SHA1))

@@ -36,9 +36,18 @@ function queueRow(row, netuid) {
   const repo = modelRepo(item.model_uri);
   const repoUrl = hubRepoUrl(item.model_uri);
   const tao = taoMinerUrl(netuid, item.hotkey);
+  let status = row.status;
+  let statusTitle = null;
+  if (row.stageKey === "eval" && row.status === "working") {
+    const pass = (item.prior_wins ?? 0) >= 1 ? 2 : 1;
+    status = `working ${pass}/2`;
+    statusTitle = pass === 2
+      ? "confirmation eval: won pass 1, must win again on fresh samples to be crowned"
+      : "pass 1 of 2: a win here queues a confirmation eval on fresh samples";
+  }
   return el("tr", { class: row.status === "working" ? "q-row working" : "q-row" },
     el("td", {}, el("span", { class: "q-stage-badge" }, row.stage)),
-    el("td", {}, el("span", { class: row.status === "working" ? "q-status working" : "q-status" }, row.status)),
+    el("td", {}, el("span", { class: row.status === "working" ? "q-status working" : "q-status", title: statusTitle }, status)),
     el("td", { class: "uid" }, tao ? link(tao, String(item.uid ?? "-")) : String(item.uid ?? "-")),
     el("td", { class: "model" }, repoUrl ? link(repoUrl, name, { class: "model-cell", title: repo }) : el("span", { class: "model-cell", title: repo }, name)),
     el("td", { class: "r when", title: fmtDateTime(item.updated_at) }, fmtRelative(item.updated_at)));

@@ -25,7 +25,8 @@ def test_all_matching_passes(tmp_path, monkeypatch):
     for name, data in files.items():
         (tmp_path / name).write_bytes(data)
     monkeypatch.setattr(
-        genesis_files, "GENESIS_SHA256",
+        genesis_files,
+        "GENESIS_SHA256",
         {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
     )
     ok, msg = check(str(tmp_path), list(files))

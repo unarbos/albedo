@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import subprocess
@@ -59,19 +58,31 @@ def _query_direct(db_url: str, anchor: datetime) -> list[tuple[str, str, str, in
 
 
 def _query_ssh(cfg: Config, anchor: str) -> list[tuple[str, str, str, int]]:
-    missing = [name for name, value in (
-        ("DATASET_CREATOR_DB_SSH_HOST", cfg.ssh_host),
-        ("DATASET_CREATOR_DB_ENV_FILE", cfg.remote_env_file),
-        ("DATASET_CREATOR_DB_CONTAINER", cfg.pg_container),
-    ) if not value]
+    missing = [
+        name
+        for name, value in (
+            ("DATASET_CREATOR_DB_SSH_HOST", cfg.ssh_host),
+            ("DATASET_CREATOR_DB_ENV_FILE", cfg.remote_env_file),
+            ("DATASET_CREATOR_DB_CONTAINER", cfg.pg_container),
+        )
+        if not value
+    ]
     if missing:
-        raise RuntimeError("missing env vars for DB access (set DATASET_CREATOR_DB_URL "
-                           f"or: {', '.join(missing)})")
-    script = REMOTE_TEMPLATE.format(env_file=cfg.remote_env_file,
-                                    container=cfg.pg_container,
-                                    query=QUERY_SSH.format(anchor=anchor))
-    res = subprocess.run(["ssh", cfg.ssh_host, "bash", "-s"], input=script,
-                         capture_output=True, text=True, timeout=120)
+        raise RuntimeError(
+            f"missing env vars for DB access (set DATASET_CREATOR_DB_URL or: {', '.join(missing)})"
+        )
+    script = REMOTE_TEMPLATE.format(
+        env_file=cfg.remote_env_file,
+        container=cfg.pg_container,
+        query=QUERY_SSH.format(anchor=anchor),
+    )
+    res = subprocess.run(
+        ["ssh", cfg.ssh_host, "bash", "-s"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     if res.returncode != 0:
         raise RuntimeError(f"DB query failed: {res.stderr.strip()[:500]}")
     rows = []

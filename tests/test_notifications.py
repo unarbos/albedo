@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from albedo_eval_service.notifications import EvalErrorNotification, notify_eval_error
+from albedo_eval_service.control.notifications import EvalErrorNotification, notify_eval_error
 
 
 def test_notify_eval_error_sends_slack_blocks_and_redacts(monkeypatch):

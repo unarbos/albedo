@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from albedo_eval_service.sampling import (
+from albedo_eval_service.shared.sampling import (
     BENCHMARK_LANGUAGE,
     FAMILY_MIX,
     MAX_PREFIX_CHARS,

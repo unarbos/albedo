@@ -1,4 +1,4 @@
-from albedo_eval_service.faults import (
+from albedo_eval_service.shared.faults import (
     MINER_FAULT,
     PROVIDER_FAULT,
     REMOTE_EVAL_FAULT,

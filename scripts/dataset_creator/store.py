@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -6,7 +5,6 @@ import re
 from pathlib import Path
 
 import pandas as pd
-
 from config import Config
 from state import State
 
@@ -63,9 +61,9 @@ def _reconcile_orphans(cfg: Config, state: State, model: str, pending: list[dict
         if state.chunk_exists(rel):
             continue
         chunk_ids = list(pd.read_parquet(f, columns=["sample_id"])["sample_id"])
-        head_ids = [r["sample_id"] for r in pending[:len(chunk_ids)]]
+        head_ids = [r["sample_id"] for r in pending[: len(chunk_ids)]]
         if head_ids == chunk_ids:
-            pending = pending[len(chunk_ids):]
+            pending = pending[len(chunk_ids) :]
             _save_pending(cfg, model, pending)
         state.record_chunk(rel, model)
     return pending
@@ -73,23 +71,31 @@ def _reconcile_orphans(cfg: Config, state: State, model: str, pending: list[dict
 
 def _next_chunk_no(cfg: Config, model: str) -> int:
     model_dir = cfg.out_dir / model
-    nos = [int(m.group(1)) for f in model_dir.glob("*.parquet")
-           if (m := _CHUNK_NO_RE.search(f.name))] if model_dir.is_dir() else []
+    nos = (
+        [int(m.group(1)) for f in model_dir.glob("*.parquet") if (m := _CHUNK_NO_RE.search(f.name))]
+        if model_dir.is_dir()
+        else []
+    )
     return max(nos, default=0) + 1
 
 
 def cut_chunks(cfg: Config, state: State) -> None:
-    models = sorted({p.stem for p in cfg.pending_dir.glob("*.json")}
-                    | set(state.chunk_models())) if cfg.pending_dir.exists() \
+    models = (
+        sorted({p.stem for p in cfg.pending_dir.glob("*.json")} | set(state.chunk_models()))
+        if cfg.pending_dir.exists()
         else state.chunk_models()
+    )
     for model in models:
         pending = _reconcile_orphans(cfg, state, model, _load_pending(cfg, model))
         cut = 0
         while len(pending) >= cfg.chunk_size:
-            rows, pending = pending[:cfg.chunk_size], pending[cfg.chunk_size:]
+            rows, pending = pending[: cfg.chunk_size], pending[cfg.chunk_size :]
             name = _write_chunk(cfg, model, _next_chunk_no(cfg, model), rows)
             _save_pending(cfg, model, pending)
             state.record_chunk(_repo_path(model, name), model)
             cut += 1
-        print(f"  {model}: {state.chunk_count(model)} chunks"
-              + (f" (+{cut} new)" if cut else "") + f", {len(pending)} waiting")
+        print(
+            f"  {model}: {state.chunk_count(model)} chunks"
+            + (f" (+{cut} new)" if cut else "")
+            + f", {len(pending)} waiting"
+        )

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from albedo_eval_service.observation_format import (
-    FORMAT_MINI_CODER,
-    FORMAT_OPENHANDS,
-    FORMAT_SWE_AGENT,
+from albedo_eval_service.shared.observation_format import (
     OPENHANDS,
     RETURNCODE,
     SWE_AGENT,
@@ -11,12 +8,17 @@ from albedo_eval_service.observation_format import (
     classify,
     detect_format,
     empty_output,
-    format_block,
     is_truncated,
     repair_output,
     truncation_notice,
     valid_output,
     wrap,
+)
+from albedo_eval_service.simulator.prompt_simulator import (
+    FORMAT_MINI_CODER,
+    FORMAT_OPENHANDS,
+    FORMAT_SWE_AGENT,
+    format_block,
 )
 
 RC_OBS = "<returncode>0</returncode>\n<output>\ntotal 228\ndrwxr-xr-x 12 root root\n</output>"

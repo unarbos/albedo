@@ -33,7 +33,6 @@ def _allow_mutable() -> bool:
 
 @dataclass(frozen=True)
 class ModelRef:
-
     repo: str
     digest: str
     backend: str = ""

@@ -83,7 +83,7 @@ Please make sure you specified the correct `repo_id` and `repo_type`.
 def test_summarize_error_log_keeps_final_exception_only():
     summary = _supervise._summarize_error_log(_HF_404_LOG)
     assert "Traceback" not in summary
-    assert "File \"" not in summary
+    assert 'File "' not in summary
     assert summary.startswith("huggingface_hub.errors.RepositoryNotFoundError: 404")
     assert "Repository Not Found for url" in summary
     assert "Please make sure" not in summary
@@ -129,7 +129,9 @@ def test_hf_full_download_routes_through_supervisor(tmp_path, monkeypatch):
     monkeypatch.setattr(_supervise, "OUT_OF_PROCESS", True)
     calls = {}
 
-    def fake_supervise(*, child_call, args, watch_dir, label, stall_seconds=None, max_attempts=None):
+    def fake_supervise(
+        *, child_call, args, watch_dir, label, stall_seconds=None, max_attempts=None
+    ):
         calls["child_call"] = child_call
         calls["args"] = args
         calls["label"] = label
@@ -156,8 +158,10 @@ def test_hf_config_only_stays_in_process(tmp_path, monkeypatch):
     monkeypatch.setattr(_supervise, "supervise_download", lambda **kw: boom())
     seen = {}
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download",
-        lambda **kw: seen.update(kw) or kw["local_dir"], raising=False,
+        huggingface_hub,
+        "snapshot_download",
+        lambda **kw: seen.update(kw) or kw["local_dir"],
+        raising=False,
     )
 
     _hf.download_config(ModelRef("ns/m", _GIT_SHA1))
@@ -170,7 +174,9 @@ def test_hippius_full_download_routes_through_supervisor(tmp_path, monkeypatch):
     monkeypatch.setattr(_supervise, "OUT_OF_PROCESS", True)
     calls = {}
 
-    def fake_supervise(*, child_call, args, watch_dir, label, stall_seconds=None, max_attempts=None):
+    def fake_supervise(
+        *, child_call, args, watch_dir, label, stall_seconds=None, max_attempts=None
+    ):
         calls["child_call"] = child_call
         calls["args"] = args
         calls["stall_seconds"] = stall_seconds

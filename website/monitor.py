@@ -24,18 +24,39 @@ log = logging.getLogger("monitor")
 JUDGE_MODELS = ["z-ai/glm-5.2", "qwen/qwen3.5-397b-a17b", "deepseek/deepseek-v3.2"]
 
 DASHBOARD_ARTIFACT_TYPES = [
-    "EVAL_VERDICT", "GENERATED_SAMPLES", "SCORING_RESULTS", "JUDGE_RESULTS",
-    "EVAL_TRANSCRIPT", "REMOTE_PROGRESS", "REMOTE_LOGS", "SANITY_RESULT",
+    "EVAL_VERDICT",
+    "GENERATED_SAMPLES",
+    "SCORING_RESULTS",
+    "JUDGE_RESULTS",
+    "EVAL_TRANSCRIPT",
+    "REMOTE_PROGRESS",
+    "REMOTE_LOGS",
+    "SANITY_RESULT",
 ]
 
-QUEUE_STATES = ("PRE_EVAL_QUEUED", "PRE_EVAL_RUNNING", "PRE_EVAL_PASSED", "EVAL_QUEUED", "EVAL_RUNNING")
+QUEUE_STATES = (
+    "PRE_EVAL_QUEUED",
+    "PRE_EVAL_RUNNING",
+    "PRE_EVAL_PASSED",
+    "EVAL_QUEUED",
+    "EVAL_RUNNING",
+)
 FAIL_STATES = ("TERMINAL_INVALID", "TERMINAL_INFRA_FAILED")
 ACTIVE_EVAL_STATES = ("QUEUED", "DISPATCHED", "GENERATING", "SCORING", "VERDICT_READY")
 
 STAGE_BUCKETS: dict[str, dict[str, tuple[str, ...]]] = {
-    "hippius_validate": {"queued": ("SUBMITTED", "HIPPIUS_RETRYABLE"), "running": ("HIPPIUS_RUNNING",)},
-    "pre_eval": {"queued": ("HIPPIUS_VALIDATED", "PRE_EVAL_QUEUED", "PRE_EVAL_RETRYABLE"), "running": ("PRE_EVAL_RUNNING",)},
-    "eval": {"queued": ("PRE_EVAL_PASSED", "EVAL_QUEUED", "EVAL_RETRYABLE"), "running": ("EVAL_RUNNING",)},
+    "hippius_validate": {
+        "queued": ("SUBMITTED", "HIPPIUS_RETRYABLE"),
+        "running": ("HIPPIUS_RUNNING",),
+    },
+    "pre_eval": {
+        "queued": ("HIPPIUS_VALIDATED", "PRE_EVAL_QUEUED", "PRE_EVAL_RETRYABLE"),
+        "running": ("PRE_EVAL_RUNNING",),
+    },
+    "eval": {
+        "queued": ("PRE_EVAL_PASSED", "EVAL_QUEUED", "EVAL_RETRYABLE"),
+        "running": ("EVAL_RUNNING",),
+    },
 }
 
 
@@ -48,7 +69,7 @@ def load_env(path: Path) -> None:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):]
+            line = line[len("export ") :]
         if "=" not in line:
             continue
         key, val = line.split("=", 1)
@@ -80,7 +101,7 @@ def _public_url(uri: str | None, base: str) -> str | None:
     if not uri:
         return None
     if uri.startswith("s3://"):
-        bucket_and_key = uri[len("s3://"):]
+        bucket_and_key = uri[len("s3://") :]
         if ".r2.dev" in base or "albedo.tech" in base:
             _, _, bucket_and_key = bucket_and_key.partition("/")
         return f"{base.rstrip('/')}/{bucket_and_key}"
@@ -97,7 +118,6 @@ def _eval_artifact_tail(uri: str | None) -> tuple[str, str] | None:
         return None
     eval_run_id, name = tail.split("/", 1)
     return (eval_run_id, name) if eval_run_id and name else None
-
 
 
 KING_CACHE_PATH = DATA_DIR / "king_by_judge_cache.json"
@@ -137,11 +157,13 @@ def _king_by_judge_from_artifact(url: str) -> dict[str, float] | None:
         if not record.get("scored"):
             continue
         for result in record.get("judge_results", []):
-            if result.get("side") == "previous_king" and result.get("parse_ok") and result.get("yes_rate") is not None:
+            if (
+                result.get("side") == "previous_king"
+                and result.get("parse_ok")
+                and result.get("yes_rate") is not None
+            ):
                 rates.setdefault(result["judge_model"], []).append(float(result["yes_rate"]))
     return {model: round(sum(v) / len(v), 6) for model, v in rates.items()}
-
-
 
 
 def _king_version_map(conn, *, model_filter: str) -> dict[int, int]:
@@ -248,13 +270,19 @@ def _artifacts_for(conn, submission_ids: list, base: str) -> dict[str, dict[str,
     return out
 
 
-def _eval_runs(conn, *, limit: int, base: str, model_filter: str, version_map: dict[int, int]) -> list[dict[str, Any]]:
+def _eval_runs(
+    conn, *, limit: int, base: str, model_filter: str, version_map: dict[int, int]
+) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT er.id AS eval_run_id, er.submission_id,
                er.challenger_won, er.score_challenger, er.score_king, er.win_margin,
                er.valid_turns, er.total_turns, er.chal_vllm_errors, er.king_vllm_errors,
                er.finished_at,
+               (SELECT json_agg(w.win_margin ORDER BY w.finished_at)
+                FROM eval_runs w
+                WHERE w.submission_id = er.submission_id AND w.state = 'SUCCEEDED'
+                  AND w.win_margin IS NOT NULL) AS pass_margins,
                ms.uid, ms.hotkey, ms.model_uri,
                sa.result_summary,
                ckv.version AS crowned_king_version,
@@ -308,6 +336,9 @@ def _eval_runs(conn, *, limit: int, base: str, model_filter: str, version_map: d
                 "score_challenger": _num(row["score_challenger"]),
                 "score_king": _num(row["score_king"]),
                 "win_margin": _num(row["win_margin"]),
+                # win-on-both: margins of every scored pass for this submission, in
+                # eval order — two entries when a pass-1 win led to a confirmation eval
+                "pass_margins": [_num(m) for m in (row["pass_margins"] or [])],
                 "finished_at": row["finished_at"],
                 "model_uri": row["model_uri"],
                 "hotkey": row["hotkey"],
@@ -344,7 +375,10 @@ def _current_eval(conn, *, model_filter: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT er.id AS eval_run_id, er.state, er.sample_count, er.generated_sample_count,
-               er.started_at, ms.id AS submission_id, ms.model_uri, ms.hotkey, ms.uid
+               er.started_at, ms.id AS submission_id, ms.model_uri, ms.hotkey, ms.uid,
+               (SELECT count(*) FROM eval_runs w
+                WHERE w.submission_id = ms.id AND w.state = 'SUCCEEDED'
+                  AND w.challenger_won IS TRUE AND w.id != er.id) AS prior_wins
         FROM eval_runs er
         JOIN model_submissions ms ON ms.id = er.submission_id
         WHERE er.state = ANY(%s)
@@ -366,17 +400,22 @@ def _current_eval(conn, *, model_filter: str) -> dict[str, Any] | None:
         "model_uri": row["model_uri"],
         "hotkey": row["hotkey"],
         "uid": row["uid"],
+        # win-on-both: >=1 means this running eval is the confirmation pass (2/2)
+        "prior_wins": int(row["prior_wins"] or 0),
     }
 
 
 def _queue(conn, *, exclude_submission_id: str | None, model_filter: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT id AS submission_id, state, model_uri, hotkey, uid, created_at
-        FROM model_submissions
-        WHERE state = ANY(%s)
-          AND model_uri LIKE %s
-        ORDER BY priority ASC, created_at ASC
+        SELECT ms.id AS submission_id, ms.state, ms.model_uri, ms.hotkey, ms.uid, ms.created_at,
+               (SELECT count(*) FROM eval_runs w
+                WHERE w.submission_id = ms.id AND w.state = 'SUCCEEDED'
+                  AND w.challenger_won IS TRUE) AS prior_wins
+        FROM model_submissions ms
+        WHERE ms.state = ANY(%s)
+          AND ms.model_uri LIKE %s
+        ORDER BY ms.priority ASC, ms.created_at ASC
         """,
         (list(QUEUE_STATES), f"%{model_filter}%"),
     ).fetchall()
@@ -388,6 +427,8 @@ def _queue(conn, *, exclude_submission_id: str | None, model_filter: str) -> lis
             "hotkey": row["hotkey"],
             "uid": row["uid"],
             "created_at": row["created_at"],
+            # win-on-both: >=1 means pass 1 is won and the confirmation eval is queued
+            "prior_wins": int(row["prior_wins"] or 0),
         }
         for row in rows
         if str(row["submission_id"]) != exclude_submission_id
@@ -444,7 +485,9 @@ def _stats(conn, *, model_filter: str) -> dict[str, Any]:
     return {"evaluated": int(row["n"]) if row else 0}
 
 
-def build_dashboard(conn, *, netuid: int, history_limit: int, artifact_base: str, model_filter: str) -> dict[str, Any]:
+def build_dashboard(
+    conn, *, netuid: int, history_limit: int, artifact_base: str, model_filter: str
+) -> dict[str, Any]:
     current = _current_eval(conn, model_filter=model_filter)
     version_map = _king_version_map(conn, model_filter=model_filter)
     return {
@@ -453,28 +496,43 @@ def build_dashboard(conn, *, netuid: int, history_limit: int, artifact_base: str
         "stats": _stats(conn, model_filter=model_filter),
         "reign": _reign(conn, version_map=version_map),
         "current_eval": current,
-        "queue": _queue(conn, exclude_submission_id=current["submission_id"] if current else None, model_filter=model_filter),
-        "eval_runs": _eval_runs(conn, limit=history_limit, base=artifact_base, model_filter=model_filter, version_map=version_map),
+        "queue": _queue(
+            conn,
+            exclude_submission_id=current["submission_id"] if current else None,
+            model_filter=model_filter,
+        ),
+        "eval_runs": _eval_runs(
+            conn,
+            limit=history_limit,
+            base=artifact_base,
+            model_filter=model_filter,
+            version_map=version_map,
+        ),
         "fails": _fails(conn, limit=history_limit, base=artifact_base, model_filter=model_filter),
     }
 
 
-
-
 def build_state(conn, *, model_filter: str) -> dict[str, Any]:
-    tracked = sorted({s for stage in STAGE_BUCKETS.values() for bucket in stage.values() for s in bucket})
+    tracked = sorted(
+        {s for stage in STAGE_BUCKETS.values() for bucket in stage.values() for s in bucket}
+    )
     rows = conn.execute(
         """
-        SELECT id AS submission_id, state, uid, hotkey, model_uri, updated_at
-        FROM model_submissions
-        WHERE state = ANY(%s)
-          AND model_uri LIKE %s
-        ORDER BY updated_at DESC
+        SELECT ms.id AS submission_id, ms.state, ms.uid, ms.hotkey, ms.model_uri, ms.updated_at,
+               (SELECT count(*) FROM eval_runs w
+                WHERE w.submission_id = ms.id AND w.state = 'SUCCEEDED'
+                  AND w.challenger_won IS TRUE) AS prior_wins
+        FROM model_submissions ms
+        WHERE ms.state = ANY(%s)
+          AND ms.model_uri LIKE %s
+        ORDER BY ms.updated_at DESC
         """,
         (tracked, f"%{model_filter}%"),
     ).fetchall()
 
-    stages: dict[str, dict[str, list]] = {name: {"running": [], "queued": []} for name in STAGE_BUCKETS}
+    stages: dict[str, dict[str, list]] = {
+        name: {"running": [], "queued": []} for name in STAGE_BUCKETS
+    }
     for row in rows:
         item = {
             "submission_id": str(row["submission_id"]),
@@ -483,15 +541,17 @@ def build_state(conn, *, model_filter: str) -> dict[str, Any]:
             "model_uri": row["model_uri"],
             "state": row["state"],
             "updated_at": row["updated_at"],
+            # win-on-both: >=1 -> pass 1 won; running = confirmation pass, queued = awaiting it
+            "prior_wins": int(row["prior_wins"] or 0),
         }
         for stage_name, buckets in STAGE_BUCKETS.items():
             for bucket, states in buckets.items():
                 if row["state"] in states:
                     stages[stage_name][bucket].append(item)
-    counts = {name: {b: len(items) for b, items in buckets.items()} for name, buckets in stages.items()}
+    counts = {
+        name: {b: len(items) for b, items in buckets.items()} for name, buckets in stages.items()
+    }
     return {"updated_at": datetime.now(UTC).isoformat(), "counts": counts, "stages": stages}
-
-
 
 
 def _upload_to_hippius(key: str, path: Path) -> bool:
@@ -506,14 +566,18 @@ def _upload_to_hippius(key: str, path: Path) -> bool:
         import boto3
         from botocore.config import Config
 
-        region = os.environ.get("ALBEDO_S3_REGION") or ("auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized")
+        region = os.environ.get("ALBEDO_S3_REGION") or (
+            "auto" if "r2.cloudflarestorage.com" in endpoint else "decentralized"
+        )
         client = boto3.client(
             "s3",
             endpoint_url=endpoint,
             aws_access_key_id=access,
             aws_secret_access_key=secret,
             region_name=region,
-            config=Config(connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}),
+            config=Config(
+                connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+            ),
         )
         put_args = dict(
             Bucket=bucket,
@@ -536,8 +600,6 @@ def _upload_to_hippius(key: str, path: Path) -> bool:
         return False
 
 
-
-
 def _signature(conn) -> tuple:
     row = conn.execute(
         """
@@ -550,12 +612,20 @@ def _signature(conn) -> tuple:
     return (row["ms_max"], row["ms_count"], row["er_max"], row["reign_max"])
 
 
-def generate(*, database_url: str, netuid: int, history_limit: int, artifact_base: str, model_filter: str) -> None:
+def generate(
+    *, database_url: str, netuid: int, history_limit: int, artifact_base: str, model_filter: str
+) -> None:
     import psycopg
     from psycopg.rows import dict_row
 
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
-        dashboard = build_dashboard(conn, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base, model_filter=model_filter)
+        dashboard = build_dashboard(
+            conn,
+            netuid=netuid,
+            history_limit=history_limit,
+            artifact_base=artifact_base,
+            model_filter=model_filter,
+        )
         state = build_state(conn, model_filter=model_filter)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     uploads: dict[str, bool] = {}
@@ -565,10 +635,12 @@ def generate(*, database_url: str, netuid: int, history_limit: int, artifact_bas
         uploads[name] = _upload_to_hippius(f"data/{name}", path)
 
     members = dashboard["reign"]["members"]
-    king_version = max((m["king_version"] for m in members if m.get("king_version") is not None), default=None)
+    king_version = max(
+        (m["king_version"] for m in members if m.get("king_version") is not None), default=None
+    )
     current = dashboard["current_eval"]
     log.info(
-        "published update: evaluated=%s reign_king=v%s eval_runs=%d queued=%d current_eval=%s fails=%d upload=%s",
+        "published update: evaluated=%s reign_king=v%s eval_runs=%d queued=%d current_eval=%s fails=%d upload=%s",  # noqa: E501
         dashboard["stats"]["evaluated"],
         king_version,
         len(dashboard["eval_runs"]),
@@ -580,26 +652,46 @@ def generate(*, database_url: str, netuid: int, history_limit: int, artifact_bas
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish website dashboard.json + state.json from Postgres.")
-    parser.add_argument("--once", action="store_true", help="Generate once and exit (default: watch for changes)")
+    parser = argparse.ArgumentParser(
+        description="Publish website dashboard.json + state.json from Postgres."
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Generate once and exit (default: watch for changes)"
+    )
     parser.add_argument("--netuid", type=int, default=None)
     parser.add_argument("--history-limit", type=int, default=None)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout
+    )
 
     load_env(ENV_PATH)
     database_url = os.environ.get("ALBEDO_EVAL_DATABASE_URL")
     if not database_url:
         sys.exit("ALBEDO_EVAL_DATABASE_URL is not set")
-    netuid = args.netuid if args.netuid is not None else int(os.environ.get("ALBEDO_DASHBOARD_NETUID", "97"))
-    history_limit = args.history_limit if args.history_limit is not None else int(os.environ.get("ALBEDO_DASHBOARD_HISTORY_LIMIT", "200"))
+    netuid = (
+        args.netuid
+        if args.netuid is not None
+        else int(os.environ.get("ALBEDO_DASHBOARD_NETUID", "97"))
+    )
+    history_limit = (
+        args.history_limit
+        if args.history_limit is not None
+        else int(os.environ.get("ALBEDO_DASHBOARD_HISTORY_LIMIT", "200"))
+    )
     artifact_base = os.environ.get("ALBEDO_DASHBOARD_ARTIFACT_BASE_URL", "https://s3.hippius.com")
     model_filter = os.environ.get("ALBEDO_DASHBOARD_MODEL_FILTER", "qwen3.6-35b")
     interval = float(os.environ.get("ALBEDO_MONITOR_INTERVAL_S", "2"))
 
     def run_once() -> None:
-        generate(database_url=database_url, netuid=netuid, history_limit=history_limit, artifact_base=artifact_base, model_filter=model_filter)
+        generate(
+            database_url=database_url,
+            netuid=netuid,
+            history_limit=history_limit,
+            artifact_base=artifact_base,
+            model_filter=model_filter,
+        )
 
     if args.once:
         run_once()

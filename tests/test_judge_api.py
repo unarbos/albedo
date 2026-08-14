@@ -5,8 +5,9 @@ import json
 
 import pytest
 
+from albedo_config import JudgeSettings
+from albedo_config.models import JUDGE_MODELS
 from albedo_eval_service.judge_api import (
-    BASE_PROMPT,
     JudgeSample,
     ObservationSimulationService,
     QuestionPrepStore,
@@ -19,25 +20,24 @@ from albedo_eval_service.judge_api import (
     _looping_output,
     _role_violation,
     _score_samples,
-    _simulation_system_prompt,
     _simulation_transcript,
 )
-from albedo_eval_service.judge_config import JudgeSettings
-from albedo_eval_service.observation_format import (
-    FORMAT_MINI_CODER,
-    FORMAT_OPENHANDS,
-    FORMAT_SWE_AGENT,
+from albedo_eval_service.judge_llm_client import JudgeLLMClient, JudgeRawResponse
+from albedo_eval_service.shared.observation_format import (
     OPENHANDS,
     RETURNCODE,
     SWE_AGENT,
-    detect_format,
     empty_output,
     truncation_notice,
     valid_output,
 )
-from albedo_eval_service.judge_core import JUDGE_MODELS
-from albedo_eval_service.judge_llm_client import JudgeRawResponse, JudgeLLMClient
-
+from albedo_eval_service.simulator.prompt_simulator import (
+    BASE_PROMPT,
+    FORMAT_MINI_CODER,
+    FORMAT_OPENHANDS,
+    FORMAT_SWE_AGENT,
+    simulation_system_prompt,
+)
 
 _RC_OBSERVATION = "<returncode>0</returncode>\n<output>\nok\n</output>"
 _RC_PREFIX = [
@@ -48,19 +48,45 @@ _RC_PREFIX = [
 
 
 class FakeClient:
-
     def __init__(self, n_questions: int = 3):
         self.n_questions = n_questions
 
-    async def complete(self, *, model, messages, temperature=None, max_tokens=None, provider=None, response_schema=None, accept=None, purpose="", eval_run_id=""):
+    async def complete(
+        self,
+        *,
+        model,
+        messages,
+        temperature=None,
+        max_tokens=None,
+        provider=None,
+        response_schema=None,
+        accept=None,
+        purpose="",
+        eval_run_id="",
+    ):
         questions = [{"text": f"q{i}?", "example_bad": "bad"} for i in range(self.n_questions)]
-        return JudgeRawResponse(model=model, provider="fake", raw=json.dumps({"questions": questions}))
+        return JudgeRawResponse(
+            model=model, provider="fake", raw=json.dumps({"questions": questions})
+        )
 
-    async def score(self, *, model, messages, response_schema=None, schema_name="", max_tokens=None, provider=None, accept=None, purpose=""):
+    async def score(
+        self,
+        *,
+        model,
+        messages,
+        response_schema=None,
+        schema_name="",
+        max_tokens=None,
+        provider=None,
+        accept=None,
+        purpose="",
+    ):
         ids = response_schema["properties"]["answers"]["items"]["properties"]["id"]["enum"]
         content = messages[1]["content"]
         answer = 0 if "KING" in content and "CHAL" not in content else 1
-        raw = json.dumps({"answers": [{"id": qid, "answer": answer, "explanation": "e"} for qid in ids]})
+        raw = json.dumps(
+            {"answers": [{"id": qid, "answer": answer, "explanation": "e"} for qid in ids]}
+        )
         return JudgeRawResponse(model=model, provider="fake", raw=raw)
 
 
@@ -77,7 +103,11 @@ _MESSAGES = [{"role": "user", "content": "fix the bug"}]
 def test_evaluator_provider_is_always_fp8():
     settings = JudgeSettings(evaluator_providers="prov-a, prov-b")
     provider = _evaluator_provider(settings)
-    assert provider == {"allow_fallbacks": False, "quantizations": ["fp8"], "order": ["prov-a", "prov-b"]}
+    assert provider == {
+        "allow_fallbacks": False,
+        "quantizations": ["fp8"],
+        "order": ["prov-a", "prov-b"],
+    }
     bare = _evaluator_provider(JudgeSettings(evaluator_providers=""))
     assert bare == {"allow_fallbacks": True, "quantizations": ["fp8"]}
 
@@ -96,9 +126,9 @@ def test_simulation_transcript_uses_section_markers():
 
 
 def test_simulation_system_prompt_carries_the_formats_block():
-    openhands = _simulation_system_prompt(OPENHANDS)
-    mini = _simulation_system_prompt(RETURNCODE)
-    swe_agent = _simulation_system_prompt(SWE_AGENT)
+    openhands = simulation_system_prompt(OPENHANDS)
+    mini = simulation_system_prompt(RETURNCODE)
+    swe_agent = simulation_system_prompt(SWE_AGENT)
 
     assert BASE_PROMPT in openhands and FORMAT_OPENHANDS in openhands
     assert BASE_PROMPT in mini and FORMAT_MINI_CODER in mini
@@ -108,7 +138,7 @@ def test_simulation_system_prompt_carries_the_formats_block():
     assert "Anchor on evidence" in openhands
 
 
-def test_observation_simulation_primary_single_shot_then_fallback():
+def test_observation_simulation_primary_capped_then_fallback():
     class SimClient:
         def __init__(self, fail_first=False):
             self.calls = []
@@ -144,8 +174,8 @@ def test_observation_simulation_primary_single_shot_then_fallback():
     (primary_call,) = client.calls
     assert primary_call["model"] == "openai/gpt-5.6-luna"
     assert primary_call["provider"] == {"order": ["openai"], "allow_fallbacks": False}
-    assert primary_call["parse_retries"] == 1
-    assert primary_call["retry_count"] == 0
+    assert primary_call["parse_retries"] == 2
+    assert primary_call["retry_count"] == 1
     assert primary_call["max_tokens"] == 123
     assert primary_call["accept"](_RC_OBSERVATION) is True
     assert primary_call["accept"]("Observation: ok") is False
@@ -219,7 +249,7 @@ def test_scoring_scores_both_sides_independently():
     assert record["scored"] is True
     assert record["challenger_score"] == 1.0
     assert record["king_score"] == 0.0
-    assert len(record["judge_results"]) == 6
+    assert len(record["judge_results"]) == 2 * len(JUDGE_MODELS)
     assert {r["side"] for r in record["judge_results"]} == {"previous_king", "challenger"}
 
 
@@ -266,15 +296,37 @@ def test_call_gives_up_after_parse_retries():
 
 
 class OneJudgeBrokenClient:
-
     def __init__(self, n_questions=3):
         self.n_questions = n_questions
 
-    async def complete(self, *, model, messages, temperature=None, max_tokens=None, provider=None, response_schema=None, accept=None, purpose="", eval_run_id=""):
+    async def complete(
+        self,
+        *,
+        model,
+        messages,
+        temperature=None,
+        max_tokens=None,
+        provider=None,
+        response_schema=None,
+        accept=None,
+        purpose="",
+        eval_run_id="",
+    ):
         qs = [{"text": f"q{i}", "example_bad": "b"} for i in range(self.n_questions)]
         return JudgeRawResponse(model=model, provider="fake", raw=json.dumps({"questions": qs}))
 
-    async def score(self, *, model, messages, response_schema=None, schema_name="", max_tokens=None, provider=None, accept=None, purpose=""):
+    async def score(
+        self,
+        *,
+        model,
+        messages,
+        response_schema=None,
+        schema_name="",
+        max_tokens=None,
+        provider=None,
+        accept=None,
+        purpose="",
+    ):
         ids = response_schema["properties"]["answers"]["items"]["properties"]["id"]["enum"]
         if model == JUDGE_MODELS[0]:
             raw = "garbage, not json"
@@ -288,11 +340,23 @@ def test_sample_unscored_if_a_judge_never_parses():
     fake = OneJudgeBrokenClient(n_questions=8)
     store = QuestionPrepStore(settings, _reference_backed_service(settings, fake))
     request = ScoreBatchRequest(
-        eval_run_id="r", batch_id="b", total_sample_count=1, judge_models=list(JUDGE_MODELS[:3]),
-        samples=[JudgeSample(sample_id="s1", prompt="task", previous_king_output="KING",
-                              challenger_output="CHAL", messages=_MESSAGES)],
+        eval_run_id="r",
+        batch_id="b",
+        total_sample_count=1,
+        judge_models=list(JUDGE_MODELS[:3]),
+        samples=[
+            JudgeSample(
+                sample_id="s1",
+                prompt="task",
+                previous_king_output="KING",
+                challenger_output="CHAL",
+                messages=_MESSAGES,
+            )
+        ],
     )
-    records = asyncio.run(_score_samples(client=fake, request=request, settings=settings, prep_store=store))
+    records = asyncio.run(
+        _score_samples(client=fake, request=request, settings=settings, prep_store=store)
+    )
     assert records[0]["scored"] is False
 
 
@@ -312,10 +376,14 @@ def test_truncated_side_scores_zero_without_calling_the_judge():
     fake = RecordingClient()
     store = QuestionPrepStore(settings, _reference_backed_service(settings, fake))
     request = ScoreBatchRequest(
-        eval_run_id="r", batch_id="b", total_sample_count=1, judge_models=list(JUDGE_MODELS[:1]),
+        eval_run_id="r",
+        batch_id="b",
+        total_sample_count=1,
+        judge_models=list(JUDGE_MODELS[:1]),
         samples=[
             JudgeSample(
-                sample_id="s1", prompt="task",
+                sample_id="s1",
+                prompt="task",
                 previous_king_output="KING",
                 challenger_output=f"CANDIDATE OUTPUT 1:\n{truncation_notice(16384)}",
                 messages=_MESSAGES,
@@ -402,33 +470,46 @@ def test_scoring_regenerates_questions_when_async_prep_failed():
 
 
 class _AnchorFakeClient:
-
     def __init__(self, n_questions: int = 30, fail_reference: bool = False):
         self.n_questions = n_questions
         self.fail_reference = fail_reference
         self.saw_reference_prompt = False
 
-    async def complete(self, *, model, messages, temperature=None, max_tokens=None,
-                       provider=None, response_schema=None, accept=None, purpose="",
-                       parse_retries=None, retry_count=None, eval_run_id=""):
+    async def complete(
+        self,
+        *,
+        model,
+        messages,
+        temperature=None,
+        max_tokens=None,
+        provider=None,
+        response_schema=None,
+        accept=None,
+        purpose="",
+        parse_retries=None,
+        retry_count=None,
+        eval_run_id="",
+    ):
         if response_schema is None:
             if self.fail_reference:
                 return JudgeRawResponse(model=model, provider="fake", raw="", error="boom")
             if messages[0]["role"] == "system" and "ENVIRONMENT" in messages[0]["content"]:
                 return JudgeRawResponse(model=model, provider="fake", raw="Observation: ok")
             return JudgeRawResponse(
-                model=model, provider="fake",
+                model=model,
+                provider="fake",
                 raw="THOUGHT: fix lib/x.py\n\n```bash\nsed -i 's/a/b/' lib/x.py\n```",
             )
         if "REFERENCE TRAJECTORY" in messages[1]["content"]:
             self.saw_reference_prompt = True
         questions = [
-            {"text": f"q{i} gate{i}?", "example_bad": "bad"}
-            for i in range(self.n_questions)
+            {"text": f"q{i} gate{i}?", "example_bad": "bad"} for i in range(self.n_questions)
         ]
         questions.append(
-            {"text": "Does it avoid re-running the grep the reference already ran?",
-             "example_bad": "bad"}
+            {
+                "text": "Does it avoid re-running the grep the reference already ran?",
+                "example_bad": "bad",
+            }
         )
         return JudgeRawResponse(
             model=model, provider="fake", raw=json.dumps({"questions": questions})
@@ -440,9 +521,7 @@ def _anchor_service(fake):
 
     settings = JudgeSettings(openrouter_api_key="k", num_questions=50)
     simulator = ObservationSimulationService(settings, fake)
-    return QuestionService(
-        settings, fake, ReferenceTrajectoryService(settings, fake, simulator)
-    )
+    return QuestionService(settings, fake, ReferenceTrajectoryService(settings, fake, simulator))
 
 
 def test_prepare_anchors_on_reference_and_filters_leaks():
@@ -451,8 +530,10 @@ def test_prepare_anchors_on_reference_and_filters_leaks():
     fake = _AnchorFakeClient()
     service = _anchor_service(fake)
     sample = QuestionPrepSample(
-        sample_id="swe-zero/data/train-0.parquet:1:1", prompt="TASK",
-        messages=[{"role": "user", "content": "fix the bug"}], assistant_turns=2,
+        sample_id="swe-zero/data/train-0.parquet:1:1",
+        prompt="TASK",
+        messages=[{"role": "user", "content": "fix the bug"}],
+        assistant_turns=2,
     )
     result = asyncio.run(service.prepare(sample, eval_run_id="run-1"))
     assert fake.saw_reference_prompt
@@ -460,6 +541,27 @@ def test_prepare_anchors_on_reference_and_filters_leaks():
     assert result.source["reference_model"] == "z-ai/glm-5.2"
     assert "REFERENCE STEP" in result.source["reference_trajectory"]
     assert all("the reference" not in q["text"].casefold() for q in result.questions)
+    behavior_tags = {
+        q["tag"]
+        for q in result.questions
+        if q["requires"] == "action" and q["tag"].startswith("behavior:")
+    }
+    assert behavior_tags == {
+        "behavior:precision_reads",
+        "behavior:issue_anchored_narrowing",
+        "behavior:convergence_and_orientation",
+    }
+
+    behavior_tags = {
+        q["tag"]
+        for q in result.questions
+        if q["requires"] == "action" and q["tag"].startswith("behavior:")
+    }
+    assert behavior_tags == {
+        "behavior:precision_reads",
+        "behavior:issue_anchored_narrowing",
+        "behavior:convergence_and_orientation",
+    }
 
 
 def test_prepare_raises_when_reference_generation_and_reroll_both_fail():
@@ -468,8 +570,10 @@ def test_prepare_raises_when_reference_generation_and_reroll_both_fail():
     fake = _AnchorFakeClient(fail_reference=True)
     service = _anchor_service(fake)
     sample = QuestionPrepSample(
-        sample_id="s:1:1", prompt="TASK",
-        messages=[{"role": "user", "content": "fix"}], assistant_turns=2,
+        sample_id="s:1:1",
+        prompt="TASK",
+        messages=[{"role": "user", "content": "fix"}],
+        assistant_turns=2,
     )
     with pytest.raises(QuestionScoringUnavailable):
         asyncio.run(service.prepare(sample, eval_run_id="run-1"))
@@ -482,9 +586,16 @@ def test_prepare_raises_when_sample_has_no_messages():
     fake = _AnchorFakeClient()
     service = _anchor_service(fake)
     with pytest.raises(QuestionScoringUnavailable):
-        asyncio.run(service.prepare(JudgeSample(
-            sample_id="s:1:1", prompt="TASK", previous_king_output="k", challenger_output="c",
-        )))
+        asyncio.run(
+            service.prepare(
+                JudgeSample(
+                    sample_id="s:1:1",
+                    prompt="TASK",
+                    previous_king_output="k",
+                    challenger_output="c",
+                )
+            )
+        )
     assert not fake.saw_reference_prompt
 
 
@@ -494,11 +605,14 @@ def test_simulation_transcript_strips_thought_from_assistant_turns():
     transcript = _simulation_transcript(
         messages=[
             {"role": "user", "content": "fix the bug"},
-            {"role": "assistant", "content": "THOUGHT: files X and Y were already shown\n\n```bash\ncat a.py\n```"},
+            {
+                "role": "assistant",
+                "content": "THOUGHT: files X and Y were already shown\n\n```bash\ncat a.py\n```",
+            },
             {"role": "user", "content": "Observation: ..."},
         ],
         prompt="fix the bug",
-        assistant_output="THOUGHT: the fix is verified and tests pass\n\n```bash\nsed -n '1,5p' a.py\n```",
+        assistant_output="THOUGHT: the fix is verified and tests pass\n\n```bash\nsed -n '1,5p' a.py\n```",  # noqa: E501
     )
     assert "already shown" not in transcript
     assert "tests pass" not in transcript
@@ -510,19 +624,21 @@ def test_simulation_transcript_keeps_text_without_command_block():
     from albedo_eval_service.judge_api import _simulation_transcript
 
     transcript = _simulation_transcript(
-        messages=None, prompt="task", assistant_output="no fenced block here",
+        messages=None,
+        prompt="task",
+        assistant_output="no fenced block here",
     )
     assert "no fenced block here" in transcript
 
 
 def test_simulation_system_prompt_grounded_and_fallback():
-    assert _simulation_system_prompt(OPENHANDS) == f"{BASE_PROMPT}\n{FORMAT_OPENHANDS}"
-    assert _simulation_system_prompt(OPENHANDS, None) == f"{BASE_PROMPT}\n{FORMAT_OPENHANDS}"
-    assert _simulation_system_prompt(OPENHANDS, "") == f"{BASE_PROMPT}\n{FORMAT_OPENHANDS}"
+    assert simulation_system_prompt(OPENHANDS) == f"{BASE_PROMPT}\n{FORMAT_OPENHANDS}"
+    assert simulation_system_prompt(OPENHANDS, None) == f"{BASE_PROMPT}\n{FORMAT_OPENHANDS}"
+    assert simulation_system_prompt(OPENHANDS, "") == f"{BASE_PROMPT}\n{FORMAT_OPENHANDS}"
 
-    grounded = _simulation_system_prompt(OPENHANDS, "GROUNDING BLOCK")
+    grounded = simulation_system_prompt(OPENHANDS, "GROUNDING BLOCK")
     assert grounded == f"{BASE_PROMPT}\nGROUNDING BLOCK\n{FORMAT_OPENHANDS}"
-    assert FORMAT_MINI_CODER in _simulation_system_prompt(RETURNCODE, "GROUNDING BLOCK")
+    assert FORMAT_MINI_CODER in simulation_system_prompt(RETURNCODE, "GROUNDING BLOCK")
 
 
 def test_observation_simulation_uses_repo_context_when_available():
@@ -657,7 +773,9 @@ def test_simulation_primary_model_falls_back_to_evaluator():
         return asyncio.run(
             service.simulate(
                 SimulateObservationRequest(
-                    eval_run_id="run", sample_id="swe-zero/x:0:0", prompt="task",
+                    eval_run_id="run",
+                    sample_id="swe-zero/x:0:0",
+                    prompt="task",
                     messages=[{"role": "user", "content": "task"}],
                     assistant_output="```bash\nls\n```",
                 )
@@ -668,24 +786,30 @@ def test_simulation_primary_model_falls_back_to_evaluator():
     assert run(good) == "ok"
     assert good.calls == ["xiaomi/mimo-v2.5-pro"]
 
-    recovers = Scripted({
-        "xiaomi/mimo-v2.5-pro": [ROLE_LEAK, "recovered"],
-        "z-ai/glm-5.2": ["unused"],
-    })
+    recovers = Scripted(
+        {
+            "xiaomi/mimo-v2.5-pro": [ROLE_LEAK, "recovered"],
+            "z-ai/glm-5.2": ["unused"],
+        }
+    )
     assert run(recovers) == "recovered"
     assert recovers.calls == ["xiaomi/mimo-v2.5-pro"] * 2
 
-    stuck = Scripted({
-        "xiaomi/mimo-v2.5-pro": [ROLE_LEAK],
-        "z-ai/glm-5.2": ["from the fallback"],
-    })
+    stuck = Scripted(
+        {
+            "xiaomi/mimo-v2.5-pro": [ROLE_LEAK],
+            "z-ai/glm-5.2": ["from the fallback"],
+        }
+    )
     assert run(stuck) == "from the fallback"
-    assert stuck.calls == ["xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5-pro", "z-ai/glm-5.2"]
+    assert stuck.calls == ["xiaomi/mimo-v2.5-pro"] * 4 + ["z-ai/glm-5.2"]
 
-    bad_format = Scripted({
-        "xiaomi/mimo-v2.5-pro": ["Observation: wrong dialect"],
-        "z-ai/glm-5.2": ["from the fallback"],
-    })
+    bad_format = Scripted(
+        {
+            "xiaomi/mimo-v2.5-pro": ["Observation: wrong dialect"],
+            "z-ai/glm-5.2": ["from the fallback"],
+        }
+    )
     assert run(bad_format) == "from the fallback"
     assert bad_format.calls[-1] == "z-ai/glm-5.2"
 
@@ -696,7 +820,9 @@ def test_simulation_primary_model_falls_back_to_evaluator():
     asyncio.run(
         service.simulate(
             SimulateObservationRequest(
-                eval_run_id="run", sample_id="swe-zero/x:0:0", prompt="task",
+                eval_run_id="run",
+                sample_id="swe-zero/x:0:0",
+                prompt="task",
                 messages=[{"role": "user", "content": "task"}],
                 assistant_output="```bash\nls\n```",
             )
@@ -720,8 +846,7 @@ def test_same_prompt_used_for_primary_and_fallback():
 
         async def complete(self, **kw):
             self.systems.append((kw["model"], kw["messages"][0]["content"]))
-            raw = ("ok" if kw["model"] == "z-ai/glm-5.2"
-                   else "x\n### assistant\nbad")
+            raw = "ok" if kw["model"] == "z-ai/glm-5.2" else "x\n### assistant\nbad"
             return JudgeRawResponse(model=kw["model"], provider="fake", raw=raw)
 
     class Ctx:
@@ -738,7 +863,9 @@ def test_same_prompt_used_for_primary_and_fallback():
     observation = asyncio.run(
         service.simulate(
             SimulateObservationRequest(
-                eval_run_id="run", sample_id="swe-zero/x:0:0", prompt="task",
+                eval_run_id="run",
+                sample_id="swe-zero/x:0:0",
+                prompt="task",
                 messages=[{"role": "user", "content": "task"}],
                 assistant_output="```bash\nls\n```",
             )

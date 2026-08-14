@@ -22,7 +22,10 @@ def _install(dest: Path, spec: _fastdl.ShardSpec, payload: bytes) -> None:
 
 def test_plan_shards_filters_and_requires_lfs(monkeypatch):
     siblings = [
-        SimpleNamespace(rfilename="model-00001-of-00002.safetensors", lfs=SimpleNamespace(size=10, sha256="a" * 64)),
+        SimpleNamespace(
+            rfilename="model-00001-of-00002.safetensors",
+            lfs=SimpleNamespace(size=10, sha256="a" * 64),
+        ),
         SimpleNamespace(rfilename="config.json", lfs=None),
     ]
     monkeypatch.setattr(

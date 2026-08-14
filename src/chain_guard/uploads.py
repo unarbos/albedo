@@ -6,8 +6,6 @@ import os
 
 from loguru import logger as log
 
-import chain_reader.config
-
 S3_BUCKET = os.environ.get("ALBEDO_S3_BUCKET", "")
 S3_ENDPOINT = os.environ.get("ALBEDO_S3_ENDPOINT", "https://s3.hippius.com")
 S3_ACCESS_KEY = os.environ.get("ALBEDO_S3_ACCESS_KEY", "")
@@ -27,8 +25,9 @@ def _client():
         aws_access_key_id=S3_ACCESS_KEY,
         aws_secret_access_key=S3_SECRET_KEY,
         region_name="auto",
-        config=Config(connect_timeout=15, read_timeout=60,
-                      retries={"mode": "adaptive", "max_attempts": 3}),
+        config=Config(
+            connect_timeout=15, read_timeout=60, retries={"mode": "adaptive", "max_attempts": 3}
+        ),
     )
 
 
@@ -40,9 +39,11 @@ def put_detection(hotkey: str, block: int, detail: dict) -> str | None:
     log.debug(f"[chain-guard] uploading detection hotkey={hotkey} block={block} key={key}")
     try:
         _client().put_object(
-            Bucket=S3_BUCKET, Key=key,
+            Bucket=S3_BUCKET,
+            Key=key,
             Body=json.dumps(detail, default=str).encode(),
-            ContentType="application/json", ACL="public-read",
+            ContentType="application/json",
+            ACL="public-read",
         )
         uri = f"s3://{S3_BUCKET}/{key}"
         log.info("uploaded detection {}", uri)

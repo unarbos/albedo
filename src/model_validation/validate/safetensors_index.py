@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import json
 from pathlib import Path
 
@@ -37,15 +36,19 @@ def check(model_dir: str, files: list[str]) -> tuple[bool, str]:
 
     extra_keys = sorted(set(index) - {"metadata", "weight_map"})
     if extra_keys:
-        return False, (f"{INDEX_NAME} has disallowed top-level keys {extra_keys}; "
-                       "only 'metadata' and 'weight_map' are allowed")
+        return False, (
+            f"{INDEX_NAME} has disallowed top-level keys {extra_keys}; "
+            "only 'metadata' and 'weight_map' are allowed"
+        )
 
     referenced = set(weight_map.values())
 
     extra = sorted(actual - referenced)
     if extra:
-        return False, (f"repo contains {len(extra)} safetensors not used by the model "
-                       f"(not referenced in {INDEX_NAME}): {extra[:10]}")
+        return False, (
+            f"repo contains {len(extra)} safetensors not used by the model "
+            f"(not referenced in {INDEX_NAME}): {extra[:10]}"
+        )
 
     missing = sorted(referenced - actual)
     if missing:

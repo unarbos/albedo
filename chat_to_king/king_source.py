@@ -1,13 +1,11 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from config import KingChatSettings
 from loguru import logger
 
 from sanity_remote.worker import _model_ref_parts
-
-from config import KingChatSettings
 
 _KING_SQL = """
 SELECT ms.model_uri,
@@ -42,9 +40,19 @@ _QWEN_PATTERNS = ("qwen3.6", "qwen3-6", "qwen3_6")
 _SIZE_PATTERNS = ("35b", "35-b")
 _GENESIS_MARKERS = ("qwen3.6-35b-a3b-genesis", "35b-a3b-genesis")
 _ROMAN_NUMERALS = (
-    (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
-    (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
-    (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    (1000, "M"),
+    (900, "CM"),
+    (500, "D"),
+    (400, "CD"),
+    (100, "C"),
+    (90, "XC"),
+    (50, "L"),
+    (40, "XL"),
+    (10, "X"),
+    (9, "IX"),
+    (5, "V"),
+    (4, "IV"),
+    (1, "I"),
 )
 
 
@@ -79,9 +87,7 @@ def _lineage_roman(conn, king_version: int) -> str:
             str(row[key] or "")
             for key in ("model_uri", "artifact_uri", "architecture", "parameter_count")
         ).lower()
-        if not (
-            any(p in text for p in _QWEN_PATTERNS) and any(p in text for p in _SIZE_PATTERNS)
-        ):
+        if not (any(p in text for p in _QWEN_PATTERNS) and any(p in text for p in _SIZE_PATTERNS)):
             continue
         repo = (row["model_uri"] or row["artifact_uri"] or "").lower()
         if row["reason"].upper() == "GENESIS" or any(m in repo for m in _GENESIS_MARKERS):
@@ -94,8 +100,10 @@ def _resolve_dsn(settings: KingChatSettings) -> str:
     if settings.database_url:
         return settings.database_url
     try:
-        from model_validation.config import DB_URL
-        return DB_URL
+        from albedo_config.db import load_dotenv, postgres_dsn
+
+        load_dotenv()
+        return postgres_dsn()
     except Exception as exc:
         logger.warning("[king-chat] could not build DSN from ALBEDO_POSTGRES_*: {}", exc)
         return ""

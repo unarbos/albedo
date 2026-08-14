@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import fnmatch
 
-from model_validation import config
+from albedo_config import get_model_validation_settings
+
+config = get_model_validation_settings()
 
 
 def _matches_any(name: str, globs: tuple[str, ...]) -> bool:
@@ -20,7 +22,8 @@ def check(files: list[str]) -> tuple[bool, str]:
 
     allowed_exact = set(config.REQUIRED_FILES) | set(config.ALLOWED_FILES)
     extras = sorted(
-        f for f in present
+        f
+        for f in present
         if f not in allowed_exact
         and not _matches_any(f, config.ALLOWED_GLOBS)
         and not _matches_any(f, config.FORBIDDEN_GLOBS)

@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+IM_START = "<|im_start|>"
+IM_END = "<|im_end|>"
+QWEN3_CHAT_TEMPLATE = """{%- for message in messages %}
+{{- '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{- '<|im_start|>assistant\n' }}
+{%- if enable_thinking is defined and enable_thinking is false %}
+{{- '<think>\n\n</think>\n\n' }}
+{%- endif %}
+{%- endif %}
+"""
+
+QWEN3_IM_END_TOKEN_ID = 248046

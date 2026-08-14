@@ -16,7 +16,8 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from albedo_eval_service.judge_core import JUDGE_MODELS, aggregate_scores
+from albedo_config.models import JUDGE_MODELS
+from albedo_eval_service.judge_core import aggregate_scores
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -77,7 +78,9 @@ def post_json_with_429_retry(
     raise AssertionError("unreachable")
 
 
-def retry_sleep_seconds(response: httpx.Response, attempt: int, base_backoff_seconds: float) -> float:
+def retry_sleep_seconds(
+    response: httpx.Response, attempt: int, base_backoff_seconds: float
+) -> float:
     retry_after = retry_after_seconds(response.headers.get("retry-after"))
     backoff = base_backoff_seconds * (2**attempt)
     return max(retry_after, backoff)
@@ -161,13 +164,14 @@ def main() -> None:
             "batch_id": "category-prep",
             "total_sample_count": len(samples),
             "samples": [
-                {"sample_id": sample["sample_id"], "prompt": sample["prompt"]}
-                for sample in samples
+                {"sample_id": sample["sample_id"], "prompt": sample["prompt"]} for sample in samples
             ],
         }
         prep_body = post_json_with_429_retry(client, "/category-prep", prep_payload)
         prep_id = prep_body.get("category_prep_id")
-        log(f"question prep accepted prep_id={prep_id} elapsed_s={time.monotonic() - prep_started:.1f}")
+        log(
+            f"question prep accepted prep_id={prep_id} elapsed_s={time.monotonic() - prep_started:.1f}"  # noqa: E501
+        )
         append_progress(
             progress_path,
             {
@@ -213,8 +217,8 @@ def main() -> None:
             batch_summary = body.get("summary", {})
             log(
                 f"batch {index}/{len(batches)} done batch_scored={batch_scored}/{len(batch)} "
-                f"total_scored={total_scored}/{len(records)} total_done={len(records)}/{len(samples)} "
-                f"batch_state={batch_summary.get('state')} batch_king={batch_summary.get('score_king')} "
+                f"total_scored={total_scored}/{len(records)} total_done={len(records)}/{len(samples)} "  # noqa: E501
+                f"batch_state={batch_summary.get('state')} batch_king={batch_summary.get('score_king')} "  # noqa: E501
                 f"batch_chal={batch_summary.get('score_challenger')} "
                 f"elapsed_s={time.monotonic() - batch_started:.1f}"
             )

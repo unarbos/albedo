@@ -4,9 +4,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from config_validation.storage import download_config, list_files
 from config_validation.models import ModelRef
-
+from config_validation.storage import download_config, list_files
 from model_validation.validate import (
     check_architecture,
     check_dtype,
@@ -31,12 +30,14 @@ def validate_local(path: str) -> tuple[bool, dict]:
     index_res = check_index(path, files)
     logger.info("checking weight dtype…")
     dtype_res = check_dtype(path)
-    return _result({
-        "file_manifest": files_res,
-        "architecture": arch_res,
-        "safetensors_index": index_res,
-        "weight_dtype": dtype_res,
-    })
+    return _result(
+        {
+            "file_manifest": files_res,
+            "architecture": arch_res,
+            "safetensors_index": index_res,
+            "weight_dtype": dtype_res,
+        }
+    )
 
 
 def validate_remote(repo: str, digest: str) -> tuple[bool, dict]:
@@ -54,17 +55,33 @@ def validate_remote(repo: str, digest: str) -> tuple[bool, dict]:
         logger.info("downloading config.json…")
         cfg_dir = download_config(ref)
     except RevisionNotFoundError:
-        return _result({"file_manifest": (False, f"digest not found: {digest} is not in {repo}"),
-                        "architecture": (False, "skipped")})
+        return _result(
+            {
+                "file_manifest": (False, f"digest not found: {digest} is not in {repo}"),
+                "architecture": (False, "skipped"),
+            }
+        )
     except RepositoryNotFoundError:
-        return _result({"file_manifest": (False, f"repo not found: {repo}"),
-                        "architecture": (False, "skipped")})
+        return _result(
+            {
+                "file_manifest": (False, f"repo not found: {repo}"),
+                "architecture": (False, "skipped"),
+            }
+        )
     except EntryNotFoundError:
-        return _result({"file_manifest": (False, f"config.json missing from {repo}@{digest}"),
-                        "architecture": (False, "skipped")})
+        return _result(
+            {
+                "file_manifest": (False, f"config.json missing from {repo}@{digest}"),
+                "architecture": (False, "skipped"),
+            }
+        )
     except Exception as exc:
-        return _result({"file_manifest": (False, f"could not read {repo}@{digest}: {exc}"),
-                        "architecture": (False, "skipped")})
+        return _result(
+            {
+                "file_manifest": (False, f"could not read {repo}@{digest}: {exc}"),
+                "architecture": (False, "skipped"),
+            }
+        )
 
     logger.info("checking file manifest…")
     files_res = check_repo(files)

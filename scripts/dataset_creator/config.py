@@ -28,14 +28,20 @@ def _env(key: str, default: str | None = None) -> str | None:
 
 @dataclass
 class Config:
-    data_dir: Path = field(default_factory=lambda: Path(
-        _env("DATASET_CREATOR_DATA_DIR", "data")).expanduser())
+    data_dir: Path = field(
+        default_factory=lambda: Path(_env("DATASET_CREATOR_DATA_DIR", "data")).expanduser()
+    )
     chunk_size: int = 100
     eval_ssh_host: str | None = field(default_factory=lambda: _env("DATASET_CREATOR_EVAL_SSH_HOST"))
-    eval_artifacts_dir: str | None = field(default_factory=lambda: _env(
-        "DATASET_CREATOR_EVAL_ARTIFACTS_DIR"))
-    poll_seconds: int = field(default_factory=lambda: int(_env("DATASET_CREATOR_POLL_SECONDS", "300")))
-    stall_hours: float = field(default_factory=lambda: float(_env("DATASET_CREATOR_STALL_HOURS", "2")))
+    eval_artifacts_dir: str | None = field(
+        default_factory=lambda: _env("DATASET_CREATOR_EVAL_ARTIFACTS_DIR")
+    )
+    poll_seconds: int = field(
+        default_factory=lambda: int(_env("DATASET_CREATOR_POLL_SECONDS", "300"))
+    )
+    stall_hours: float = field(
+        default_factory=lambda: float(_env("DATASET_CREATOR_STALL_HOURS", "2"))
+    )
     db_url: str | None = field(default_factory=lambda: _env("DATASET_CREATOR_DB_URL"))
     ssh_host: str | None = field(default_factory=lambda: _env("DATASET_CREATOR_DB_SSH_HOST"))
     remote_env_file: str | None = field(default_factory=lambda: _env("DATASET_CREATOR_DB_ENV_FILE"))

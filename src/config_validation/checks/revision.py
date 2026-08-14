@@ -9,5 +9,6 @@ NAME = "revision_parity"
 
 def check(ref: ModelRef) -> CheckOutcome:
     ok, detail = revision_resolves(ref)
-    return CheckOutcome(name=NAME, ok=ok, reason="" if ok else detail,
-                        details={"digest": ref.digest})
+    return CheckOutcome(
+        name=NAME, ok=ok, reason="" if ok else detail, details={"digest": ref.digest}
+    )

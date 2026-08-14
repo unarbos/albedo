@@ -20,7 +20,9 @@ def _wallet_arg(parser, name: str, default, help_: str) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="albedo", description="Albedo miner: upload → validate → commit.")
+    p = argparse.ArgumentParser(
+        prog="albedo", description="Albedo miner: upload → validate → commit."
+    )
     sub = p.add_subparsers(dest="cmd")
 
     sub.add_parser("on", help="launch the interactive TUI")
@@ -31,12 +33,16 @@ def _build_parser() -> argparse.ArgumentParser:
     up.add_argument("--name", help="suffix appended after albedo-qwen3.6-35b-")
     up.add_argument("--repo", help="full repo override (ns/albedo-qwen3.6-35b-…)")
 
-    ch = sub.add_parser("check-model", help="validate a model/repo (file manifest + architecture, no dedup)")
+    ch = sub.add_parser(
+        "check-model", help="validate a model/repo (file manifest + architecture, no dedup)"
+    )
     ch.add_argument("--path", help="local model directory")
     ch.add_argument("--repo")
     ch.add_argument("--digest")
 
-    cm = sub.add_parser("commit", help="commit the v7 reveal on-chain (preview + Y/N + registration check)")
+    cm = sub.add_parser(
+        "commit", help="commit the v7 reveal on-chain (preview + Y/N + registration check)"
+    )
     cm.add_argument("--repo", required=True)
     cm.add_argument("--digest", required=True)
     _wallet_arg(cm, "coldkey", _COLDKEY, "wallet (coldkey) name")
@@ -45,7 +51,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cm.add_argument("--network", default=_NETWORK)
     cm.add_argument("--yes", action="store_true", help="skip the Y/N prompt")
 
-    rg = sub.add_parser("register", help="register a hotkey on the subnet (recycle/burned register)")
+    rg = sub.add_parser(
+        "register", help="register a hotkey on the subnet (recycle/burned register)"
+    )
     _wallet_arg(rg, "coldkey", _COLDKEY, "wallet (coldkey) name")
     _wallet_arg(rg, "hotkey", _HOTKEY, "hotkey name")
     rg.add_argument("--netuid", type=int, default=_NETUID)
@@ -100,11 +108,13 @@ def _run(args, parser) -> int:
 
     if args.cmd == "on":
         from miner import tui
+
         tui.run()
         return 0
 
     if args.cmd == "upload":
         from miner import commit, upload
+
         repo = args.repo or upload.make_repo(args.namespace, args.name)
         ref = upload.upload_model(args.path, repo)
         print(ref.immutable_ref)
@@ -113,6 +123,7 @@ def _run(args, parser) -> int:
 
     if args.cmd == "check-model":
         from miner import validate
+
         if args.path:
             ok, res = validate.validate_local(args.path)
         elif args.repo and args.digest:
@@ -123,29 +134,49 @@ def _run(args, parser) -> int:
         return 0 if ok else 1
 
     if args.cmd == "commit":
-        from miner import commit
         from config_validation.models import ModelRef
+        from miner import commit
+
         ref = ModelRef(repo=args.repo, digest=args.digest)
-        result = commit.commit_reveal(ref, coldkey=args.coldkey, hotkey=args.hotkey,
-                                      netuid=args.netuid, network=args.network, assume_yes=args.yes)
+        result = commit.commit_reveal(
+            ref,
+            coldkey=args.coldkey,
+            hotkey=args.hotkey,
+            netuid=args.netuid,
+            network=args.network,
+            assume_yes=args.yes,
+        )
         return 0 if result is not None else 1
 
     if args.cmd == "register":
         from miner import register as reg
-        uid = reg.register(args.coldkey, args.hotkey, args.netuid, args.network, assume_yes=args.yes)
+
+        uid = reg.register(
+            args.coldkey, args.hotkey, args.netuid, args.network, assume_yes=args.yes
+        )
         return 0 if uid is not None else 1
 
     if args.cmd == "check-commit":
         from miner import check_commits
+
         check_commits.print_commits(args.netuid, args.network, args.hotkey)
         return 0
 
     if args.cmd == "publish":
         from miner import publish
-        ok, _ = publish.run(path=args.path, namespace=args.namespace, name=args.name,
-                            coldkey=args.coldkey, hotkey=args.hotkey, netuid=args.netuid,
-                            network=args.network, log=print, assume_yes=args.yes,
-                            skip_commit=args.skip_commit)
+
+        ok, _ = publish.run(
+            path=args.path,
+            namespace=args.namespace,
+            name=args.name,
+            coldkey=args.coldkey,
+            hotkey=args.hotkey,
+            netuid=args.netuid,
+            network=args.network,
+            log=print,
+            assume_yes=args.yes,
+            skip_commit=args.skip_commit,
+        )
         return 0 if ok else 1
 
     return 0

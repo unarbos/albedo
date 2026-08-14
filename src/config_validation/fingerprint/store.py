@@ -9,15 +9,12 @@ log = logging.getLogger(__name__)
 
 
 class FingerprintStore(Protocol):
-    def candidates(self) -> Iterable[dict]:
-        ...
+    def candidates(self) -> Iterable[dict]: ...
 
-    def add(self, key: str, fingerprint: dict, *, hotkey: str, repo: str, digest: str) -> None:
-        ...
+    def add(self, key: str, fingerprint: dict, *, hotkey: str, repo: str, digest: str) -> None: ...
 
 
 class NullFingerprintStore:
-
     def candidates(self) -> Iterable[dict]:
         return ()
 
@@ -26,7 +23,6 @@ class NullFingerprintStore:
 
 
 class JsonlFingerprintStore:
-
     def __init__(self, path: str) -> None:
         self._path = Path(path)
         self._entries: list[dict] = []
@@ -41,8 +37,13 @@ class JsonlFingerprintStore:
         return list(self._entries)
 
     def add(self, key: str, fingerprint: dict, *, hotkey: str, repo: str, digest: str) -> None:
-        entry = {"key": key, "hotkey": hotkey, "repo": repo, "digest": digest,
-                 "fingerprint": fingerprint}
+        entry = {
+            "key": key,
+            "hotkey": hotkey,
+            "repo": repo,
+            "digest": digest,
+            "fingerprint": fingerprint,
+        }
         self._entries.append(entry)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("a") as fh:

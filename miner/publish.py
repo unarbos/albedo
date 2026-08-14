@@ -23,9 +23,21 @@ def _cli_confirm(preview_text: str) -> bool:
     return input("Proceed? [y/N] ").strip().lower() in ("y", "yes")
 
 
-def run(*, path: str, namespace: str, name: str, coldkey: str, hotkey: str,
-        netuid: int, network: str, on_step=None, log=None, confirm=None,
-        assume_yes: bool = False, skip_commit: bool = False):
+def run(
+    *,
+    path: str,
+    namespace: str,
+    name: str,
+    coldkey: str,
+    hotkey: str,
+    netuid: int,
+    network: str,
+    on_step=None,
+    log=None,
+    confirm=None,
+    assume_yes: bool = False,
+    skip_commit: bool = False,
+):
     on_step = on_step or (lambda *a: None)
     log = log or (lambda m: None)
     logger.info(f"publish pipeline: {namespace}/{name} on netuid {netuid} ({network})")
@@ -58,8 +70,9 @@ def run(*, path: str, namespace: str, name: str, coldkey: str, hotkey: str,
     logger.info("step 4/5 — check hotkey registration")
     on_step("registered", "running", "")
     ss58, reg = commit.registration_check(coldkey, hotkey, netuid, network)
-    on_step("registered", "ok" if reg else "fail",
-            f"{ss58} {'registered' if reg else 'NOT registered'}")
+    on_step(
+        "registered", "ok" if reg else "fail", f"{ss58} {'registered' if reg else 'NOT registered'}"
+    )
     if not reg:
         log(f"hotkey {ss58} is not registered on netuid {netuid}")
         return False, ref
@@ -70,8 +83,9 @@ def run(*, path: str, namespace: str, name: str, coldkey: str, hotkey: str,
 
     logger.info("step 5/5 — commit on-chain")
     on_step("commit", "running", "")
-    text = commit.preview(ref, ss58=ss58, coldkey=coldkey, hotkey=hotkey,
-                          netuid=netuid, network=network)
+    text = commit.preview(
+        ref, ss58=ss58, coldkey=coldkey, hotkey=hotkey, netuid=netuid, network=network
+    )
     proceed = assume_yes or (confirm(text) if confirm else _cli_confirm(text))
     if not proceed:
         on_step("commit", "fail", "aborted by user")
@@ -79,6 +93,9 @@ def run(*, path: str, namespace: str, name: str, coldkey: str, hotkey: str,
         return False, ref
     result = commit.submit(ref, coldkey=coldkey, hotkey=hotkey, netuid=netuid, network=network)
     ok = getattr(result, "success", True)
-    on_step("commit", "ok" if ok else "fail",
-            "on-chain" if ok else str(getattr(result, "message", result)))
+    on_step(
+        "commit",
+        "ok" if ok else "fail",
+        "on-chain" if ok else str(getattr(result, "message", result)),
+    )
     return ok, ref

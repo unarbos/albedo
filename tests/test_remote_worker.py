@@ -9,27 +9,18 @@ from uuid import uuid4
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from albedo_eval_service.canonical_model_config import canonical_max_model_len
-from albedo_eval_service.models import (
-    Challenger,
-    DatasetConfig,
-    EvalRequest,
-    PreviousKing,
-    ScoringConfig,
-)
-from albedo_eval_service.remote_config import RemoteSettings
-from albedo_eval_service.remote_generation import (
+from albedo_config import RemoteSettings
+from albedo_eval_service.modelstore.canonical_model_config import canonical_max_model_len
+from albedo_eval_service.modelstore.resolver import ResolvedModel
+from albedo_eval_service.remote.generation import (
     GenerationResult,
     VllmProcessGenerator,
     _generate_payload,
     _vllm_worker,
     format_scored_trajectory,
 )
-from albedo_eval_service.observation_format import TRUNCATION_SENTINEL
-from albedo_eval_service.remote_models import ResolvedModel
-from albedo_eval_service.remote_scoring import ScoringResult
-from albedo_eval_service.remote_state import RemoteRun
-from albedo_eval_service.remote_worker import (
+from albedo_eval_service.remote.state import RemoteRun
+from albedo_eval_service.remote.worker import (
     ObservationResult,
     RemoteEvalWorker,
     _completion_observation,
@@ -37,6 +28,15 @@ from albedo_eval_service.remote_worker import (
     _missing_command_observation,
     _next_turn_samples,
 )
+from albedo_eval_service.scoring.scoring_client import ScoringResult
+from albedo_eval_service.shared.models import (
+    Challenger,
+    DatasetConfig,
+    EvalRequest,
+    PreviousKing,
+    ScoringConfig,
+)
+from albedo_eval_service.shared.observation_format import TRUNCATION_SENTINEL
 
 
 class _Tokenizer:
@@ -166,7 +166,7 @@ def test_vllm_generator_times_out_when_worker_sends_no_payload():
 def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path, monkeypatch):
     _write_dataset(tmp_path)
     monkeypatch.setattr(
-        "albedo_eval_service.remote_dataset._load_tokenizer", lambda _path: _Tokenizer()
+        "albedo_eval_service.remote.dataset._load_tokenizer", lambda _path: _Tokenizer()
     )
     calls: list[dict[str, object]] = []
 
@@ -208,8 +208,11 @@ def test_remote_worker_loads_parquet_and_runs_paired_generation(tmp_path, monkey
     assert [event["batch_id"] for event in scoring_events] == ["score-0001", "score-0002"]
     assert {call["side"] for call in calls if "gpu_ids" in call} == {"previous_king", "challenger"}
     generate_calls = [call for call in calls if "sample_ids" in call]
-    assert [call["side"] for call in generate_calls].count("previous_king") == 2
-    assert [call["side"] for call in generate_calls].count("challenger") == 2
+    assert [call["side"] for call in generate_calls].count("previous_king") == 12
+    assert [call["side"] for call in generate_calls].count("challenger") == 12
+    king_calls = [call for call in generate_calls if call["side"] == "previous_king"]
+    assert all(len(call["sample_ids"]) == 2 for call in king_calls[:8])
+    assert all(len(call["sample_ids"]) == 1 for call in king_calls[8:])
     assert [call["side"] for call in calls if call.get("closed")].count("previous_king") == 1
     assert [call["side"] for call in calls if call.get("closed")].count("challenger") == 1
 
@@ -268,7 +271,7 @@ class RecordingScorer:
 def test_remote_worker_starts_category_prep_before_model_resolution(tmp_path, monkeypatch):
     _write_dataset(tmp_path)
     monkeypatch.setattr(
-        "albedo_eval_service.remote_dataset._load_tokenizer", lambda _path: _Tokenizer()
+        "albedo_eval_service.remote.dataset._load_tokenizer", lambda _path: _Tokenizer()
     )
     calls: list[object] = []
 
@@ -299,7 +302,7 @@ def test_remote_worker_starts_category_prep_before_model_resolution(tmp_path, mo
 
 def test_submit_echo_stops_future_trajectory_turns(monkeypatch):
     monkeypatch.setattr(
-        "albedo_eval_service.remote_worker.format_messages", lambda messages, **_kwargs: "next"
+        "albedo_eval_service.remote.worker.format_messages", lambda messages, **_kwargs: "next"
     )
     sample = types.SimpleNamespace(
         sample_id="sample-1",
@@ -311,17 +314,28 @@ def test_submit_echo_stops_future_trajectory_turns(monkeypatch):
         "sample-1", "Observation: COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
     )
 
-    assert _next_turn_samples(
-        [sample],
-        [GenerationResult("sample-1", "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```")],
-        {("challenger", "sample-1"): observation},
-        side="challenger",
-    ) == []
+    assert (
+        _next_turn_samples(
+            [sample],
+            [
+                GenerationResult(
+                    "sample-1", "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```"
+                )
+            ],
+            {("challenger", "sample-1"): observation},
+            side="challenger",
+        )
+        == []
+    )
 
     merged = _merge_trajectory_results(
         [sample],
         [
-            [GenerationResult("sample-1", "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```")],
+            [
+                GenerationResult(
+                    "sample-1", "```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```"
+                )
+            ],
             [],
         ],
         [{("challenger", "sample-1"): observation}],
@@ -372,19 +386,22 @@ def _trajectory_sample(sample_id: str = "sample-1"):
 
 def test_truncated_response_ends_trajectory_and_stays_valid(monkeypatch):
     monkeypatch.setattr(
-        "albedo_eval_service.remote_worker.format_messages", lambda messages, **_kwargs: "next"
+        "albedo_eval_service.remote.worker.format_messages", lambda messages, **_kwargs: "next"
     )
     sample = _trajectory_sample()
     oversized = "x" * 200
     truncated = GenerationResult("sample-1", oversized, truncated=True)
     observation = ObservationResult("sample-1", "")
 
-    assert _next_turn_samples(
-        [sample],
-        [truncated],
-        {("challenger", "sample-1"): observation},
-        side="challenger",
-    ) == []
+    assert (
+        _next_turn_samples(
+            [sample],
+            [truncated],
+            {("challenger", "sample-1"): observation},
+            side="challenger",
+        )
+        == []
+    )
 
     merged = _merge_trajectory_results(
         [sample],
@@ -444,7 +461,9 @@ def test_score_pairs_counts_truncated_pairs_as_valid():
     scored = {}
 
     class Recording:
-        def score(self, *, request, samples, king_results, challenger_results, category_prep_id=None):
+        def score(
+            self, *, request, samples, king_results, challenger_results, category_prep_id=None
+        ):
             scored["samples"] = len(samples)
             return ScoringResult(records=[], summary={"state": "succeeded"})
 
@@ -591,8 +610,8 @@ def test_vllm_worker_stops_on_qwen_im_end(monkeypatch):
 def test_prefetch_repo_context_fires_only_when_configured(monkeypatch):
     import threading
 
-    import albedo_eval_service.remote_worker as remote_worker_module
-    from albedo_eval_service.remote_dataset import EvalSample
+    import albedo_eval_service.remote.worker as remote_worker_module
+    from albedo_eval_service.remote.dataset import EvalSample
 
     recorded: dict[str, object] = {}
     posted = threading.Event()
@@ -618,9 +637,7 @@ def test_prefetch_repo_context_fires_only_when_configured(monkeypatch):
     assert recorded["json"] == {"sample_ids": ["data/train-00000.parquet:0:0"]}
 
     posted.clear()
-    disabled = RemoteEvalWorker(
-        RemoteSettings(upload_artifacts=False, scoring_backend="mock")
-    )
+    disabled = RemoteEvalWorker(RemoteSettings(upload_artifacts=False, scoring_backend="mock"))
     disabled._prefetch_repo_context(_request(), samples)
     assert not posted.wait(0.2)
 

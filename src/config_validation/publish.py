@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import Iterable
 
-from config_validation.storage import s3
 from config_validation.result import ValidationResult
+from config_validation.storage import s3
 
 log = logging.getLogger(__name__)
 
